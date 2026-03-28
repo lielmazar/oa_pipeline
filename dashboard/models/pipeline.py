@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from db import get_meta_db
+from models.db import get_meta_db
 
 STAGES = [
     "keyword_selection",

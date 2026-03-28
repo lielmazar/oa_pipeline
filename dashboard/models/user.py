@@ -1,7 +1,7 @@
 """User model — create, authenticate, list."""
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from db import get_meta_db
+from models.db import get_meta_db
 
 
 def create_user(username: str, password: str) -> int:
