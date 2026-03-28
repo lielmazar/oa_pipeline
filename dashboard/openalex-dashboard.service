@@ -1,0 +1,33 @@
+# /etc/systemd/system/openalex-dashboard.service
+#
+# Deploy:
+#   cp openalex-dashboard.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now openalex-dashboard
+#   systemctl status openalex-dashboard
+#   journalctl -u openalex-dashboard -f
+
+[Unit]
+Description=OpenAlex Pipeline Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/data/openalex/dashboard
+
+# Change DASHBOARD_PASSWORD to something secure, or remove the line for open access.
+# Generate SECRET_KEY with:  python3 -c 'import secrets; print(secrets.token_hex(32))'
+Environment=DASHBOARD_PASSWORD=changeme
+Environment=SECRET_KEY=REPLACE_WITH_RANDOM_64_HEX_CHARS
+
+ExecStart=/bin/bash /root/data/openalex/dashboard/start.sh
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
