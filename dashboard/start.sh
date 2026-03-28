@@ -15,8 +15,7 @@ if [ -z "$SECRET_KEY" ]; then
     export SECRET_KEY="$("$VENV/bin/python3" -c 'import secrets; print(secrets.token_hex(32))')"
 fi
 
-echo "Starting OpenAlex Dashboard on http://127.0.0.1:5000"
-echo "Password protection: $([ -n "$DASHBOARD_PASSWORD" ] && echo 'enabled' || echo 'disabled (set DASHBOARD_PASSWORD to enable)')"
+echo "Starting OpenAlex Pipeline Dashboard on http://127.0.0.1:5000"
 
 exec "$VENV/bin/python3" -m gunicorn \
     -w 1 \
@@ -25,4 +24,4 @@ exec "$VENV/bin/python3" -m gunicorn \
     -b 127.0.0.1:5000 \
     --timeout 0 \
     --log-level info \
-    app:app
+    "app:create_app()"

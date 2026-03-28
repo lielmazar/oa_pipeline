@@ -29,12 +29,17 @@ class JobManager:
         args: list,
         cwd: str,
         label: str,
+        pipeline_id: int | None = None,
     ) -> dict:
         """Launch a script as a subprocess. Returns job summary dict."""
         with self._global_lock:
-            # Prevent duplicate concurrent runs of the same script
+            # Prevent duplicate concurrent runs of the same script for same pipeline
             for job in self._jobs.values():
-                if job["script"] == script_key and job["status"] == "running":
+                if (
+                    job["script"] == script_key
+                    and job["status"] == "running"
+                    and job.get("pipeline_id") == pipeline_id
+                ):
                     raise ValueError(
                         f"'{script_key}' is already running (job {job['id']}). "
                         "Kill it first or wait for it to finish."
@@ -62,6 +67,7 @@ class JobManager:
             job: dict = {
                 "id": job_id,
                 "script": script_key,
+                "pipeline_id": pipeline_id,
                 "label": label,
                 "cmd": cmd,
                 "pid": proc.pid,
@@ -149,6 +155,7 @@ class JobManager:
         return {
             "id": job["id"],
             "script": job["script"],
+            "pipeline_id": job.get("pipeline_id"),
             "label": job["label"],
             "pid": job["pid"],
             "status": job["status"],

@@ -69,11 +69,12 @@ except ImportError:
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from Proccess_dataset import (  # noqa: E402
+from filter_dataset import (  # noqa: E402
     process_records_to_rows,
     ensure_db,
     _INSERT_SQL,
     _CREATE_TABLE_SQL,
+    _init_terms,
 )
 
 # ---------------------------------------------------------------------------
@@ -665,8 +666,16 @@ def _worker_local(
     gz_path: str,           # full local path, as string for pickling
     worker_status: dict,
     slot_id: int,
+    keyword_config_path: str | None = None,
 ) -> dict:
     """Process a local .gz file. No download needed."""
+    if keyword_config_path:
+        import json as _json_worker
+        _cfg = _json_worker.loads(Path(keyword_config_path).read_text(encoding="utf-8"))
+        _init_terms(_cfg.get("fuel_terms"), _cfg.get("impact_terms"))
+    else:
+        _init_terms()
+
     local = Path(gz_path)
     try:
         size_mb = local.stat().st_size / (1024 ** 2)
@@ -720,8 +729,16 @@ def _worker_s3(
     temp_dir: str,
     worker_status: dict,
     slot_id: int,
+    keyword_config_path: str | None = None,
 ) -> dict:
     """Download one S3 partition, filter it, return matched rows."""
+    if keyword_config_path:
+        import json as _json_worker
+        _cfg = _json_worker.loads(Path(keyword_config_path).read_text(encoding="utf-8"))
+        _init_terms(_cfg.get("fuel_terms"), _cfg.get("impact_terms"))
+    else:
+        _init_terms()
+
     local_path = Path(temp_dir) / f"w{slot_id}_{os.getpid()}.gz"
     dl_mb = 0.0
 
@@ -833,6 +850,7 @@ def run_pipeline(
     workers: int,
     use_color: bool,
     local_dir: Path | None,
+    keyword_config: Path | None = None,
 ) -> None:
     is_tty = sys.stdout.isatty()
     if use_color and is_tty:
@@ -944,6 +962,7 @@ def run_pipeline(
                             gz_path,
                             worker_status,
                             slot,
+                            str(keyword_config) if keyword_config else None,
                         )
                     else:
                         worker_status[slot] = {
@@ -959,6 +978,7 @@ def run_pipeline(
                             temp_dir,
                             worker_status,
                             slot,
+                            str(keyword_config) if keyword_config else None,
                         )
 
                     submitted[fut] = (key, slot)
@@ -1109,6 +1129,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable colored output.",
     )
+    parser.add_argument(
+        "--keyword-config",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="JSON file with {fuel_terms: [...], impact_terms: [...]}. "
+             "Defaults to built-in term lists when omitted.",
+    )
     return parser.parse_args()
 
 
@@ -1123,4 +1151,5 @@ if __name__ == "__main__":
         workers=args.workers,
         use_color=not args.no_color,
         local_dir=args.local_dir,
+        keyword_config=args.keyword_config,
     )

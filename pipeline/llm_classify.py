@@ -59,10 +59,22 @@ _load_env()
 from openai import OpenAI
 
 # ── Configuration ──────────────────────────────────────────────────────────
+# Defaults — overridden at runtime by --db and --batch-dir CLI args
+# (main() sets these before calling any phase function)
 
 DB_PATH    = Path("openalex_works_filtered.sqlite")
 BATCH_DIR  = Path("batch_runs")
 STATE_FILE = BATCH_DIR / "state.json"
+
+
+def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
+    """Update module-level path constants from CLI args."""
+    global DB_PATH, BATCH_DIR, STATE_FILE
+    if db is not None:
+        DB_PATH = db
+    if batch_dir is not None:
+        BATCH_DIR = batch_dir
+    STATE_FILE = BATCH_DIR / "state.json"
 
 PROMPT_ID      = "pmpt_694c136369fc81939aa9e7eb310bd3170ecd05cb5a9fb123"
 PROMPT_VERSION = "19"
@@ -719,11 +731,25 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python batch_process_papers.py estimate\n"
-            "  python batch_process_papers.py prepare --limit 50\n"
-            "  python batch_process_papers.py run --limit 1000\n"
-            "  python batch_process_papers.py run           # all records\n"
+            "  python llm_classify.py estimate\n"
+            "  python llm_classify.py prepare --limit 50\n"
+            "  python llm_classify.py run --limit 1000\n"
+            "  python llm_classify.py run           # all records\n"
         ),
+    )
+    p.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Path to the filtered SQLite database (default: openalex_works_filtered.sqlite)",
+    )
+    p.add_argument(
+        "--batch-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Directory for batch run files (default: batch_runs/)",
     )
     sub = p.add_subparsers(dest="phase", required=True)
 
@@ -793,6 +819,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    _configure_paths(getattr(args, "db", None), getattr(args, "batch_dir", None))
 
     if args.phase == "estimate":
         phase_estimate(args.model, args.limit,

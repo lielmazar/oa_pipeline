@@ -3,523 +3,177 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenAlex Dashboard</title>
+  <title>OpenAlex Pipeline</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    .tab-active { background-color: rgba(255,255,255,0.2); font-weight: 600; }
-    .chevron { transition: transform 0.2s; }
-    .accordion-open .chevron { transform: rotate(180deg); }
-    #job-output, #log-output { font-family: 'Courier New', Courier, monospace; }
-    .status-running  { color: #22c55e; }
-    .status-done     { color: #60a5fa; }
-    .status-error    { color: #f87171; }
-    .status-killed   { color: #fb923c; }
-    .pulse { animation: pulse 1.5s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-    .modal-overlay { backdrop-filter: blur(2px); }
-    pre { white-space: pre-wrap; word-break: break-all; }
+    .terminal { font-family: 'Courier New', monospace; font-size: 0.8rem; }
+    .tag-pill  { display:inline-flex; align-items:center; gap:4px; padding:2px 8px;
+                 background:#dbeafe; color:#1e40af; border-radius:999px; font-size:0.75rem; }
+    .tag-pill button { color:#60a5fa; line-height:1; }
+    .tag-pill button:hover { color:#1e40af; }
   </style>
 </head>
-<body class="bg-gray-100 text-gray-900 min-h-screen">
+<body class="bg-gray-50 text-gray-900 min-h-screen">
 
-<!-- ═══════════════════════════════ LOGIN OVERLAY ══════════════════════════════ -->
-<div id="login-overlay" class="hidden fixed inset-0 bg-gray-900/80 z-50 flex items-center justify-center modal-overlay">
-  <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm">
-    <h1 class="text-2xl font-bold text-center text-blue-900 mb-2">OpenAlex Dashboard</h1>
-    <p class="text-center text-gray-500 text-sm mb-6">Enter your password to continue</p>
-    <input type="password" id="login-password" placeholder="Password"
-           class="w-full border border-gray-300 rounded-lg px-4 py-2.5 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-           onkeydown="if(event.key==='Enter') doLogin()">
-    <button onclick="doLogin()"
-            class="w-full bg-blue-700 text-white rounded-lg px-4 py-2.5 hover:bg-blue-800 font-medium transition">
-      Login
-    </button>
-    <p id="login-error" class="text-red-500 text-sm mt-3 text-center hidden">Incorrect password. Try again.</p>
+<!-- ── Login overlay ──────────────────────────────────────────────────────── -->
+<div id="login-overlay" class="fixed inset-0 bg-gray-900/80 flex items-center justify-center z-50 hidden">
+  <div class="bg-white rounded-xl shadow-2xl p-8 w-full max-w-sm">
+    <h1 class="text-2xl font-bold mb-1">OpenAlex Pipeline</h1>
+    <p class="text-gray-500 text-sm mb-6">Sign in to continue</p>
+    <form id="login-form" class="space-y-4">
+      <input id="login-username" type="text" placeholder="Username" autocomplete="username"
+             class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <input id="login-password" type="password" placeholder="Password" autocomplete="current-password"
+             class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <div id="login-error" class="text-red-600 text-sm hidden"></div>
+      <button type="submit"
+              class="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700 transition">
+        Sign in
+      </button>
+    </form>
   </div>
 </div>
 
-<!-- ══════════════════════════════════ TOAST ═══════════════════════════════════ -->
-<div id="toast" class="hidden fixed top-4 right-4 z-50 px-5 py-3 rounded-lg shadow-lg text-white text-sm font-medium transition-all">
-  <span id="toast-msg"></span>
-</div>
-
-<!-- ═══════════════════════════════════ NAV ═══════════════════════════════════ -->
-<nav class="bg-blue-900 text-white shadow-lg sticky top-0 z-40">
-  <div class="max-w-screen-xl mx-auto px-4 flex items-center justify-between h-14">
-    <span class="font-bold text-lg tracking-wide select-none">⚗ OpenAlex Dashboard</span>
-    <div class="flex gap-1" id="nav-tabs">
-      <button onclick="showTab('dashboard')" data-tab="dashboard"
-              class="tab-btn px-4 py-2 rounded-md text-sm hover:bg-white/20 transition">Dashboard</button>
-      <button onclick="showTab('scripts')"   data-tab="scripts"
-              class="tab-btn px-4 py-2 rounded-md text-sm hover:bg-white/20 transition">Scripts</button>
-      <button onclick="showTab('database')"  data-tab="database"
-              class="tab-btn px-4 py-2 rounded-md text-sm hover:bg-white/20 transition">Database</button>
-      <button onclick="showTab('logs')"      data-tab="logs"
-              class="tab-btn px-4 py-2 rounded-md text-sm hover:bg-white/20 transition">Logs</button>
-      <button onclick="showTab('report')"    data-tab="report"
-              class="tab-btn px-4 py-2 rounded-md text-sm hover:bg-white/20 transition">Report</button>
-    </div>
-    <!-- Database selector -->
-    <div class="flex items-center gap-2 shrink-0">
-      <span class="text-blue-300 text-xs hidden sm:inline">DB:</span>
-      <select id="db-selector" onchange="selectActiveDb(this.value)"
-              class="bg-blue-800 text-white border border-blue-600 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400 max-w-[220px]">
-        <option value="">Loading…</option>
-      </select>
-    </div>
+<!-- ── Top nav ────────────────────────────────────────────────────────────── -->
+<nav class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-40 shadow-sm">
+  <button id="nav-home" class="flex items-center gap-2 font-bold text-lg text-blue-700 hover:text-blue-900 transition">
+    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+    </svg>
+    OpenAlex Pipeline
+  </button>
+  <div class="flex items-center gap-3">
+    <span id="nav-username" class="text-sm text-gray-500"></span>
+    <button id="nav-logout"
+            class="text-sm text-gray-500 hover:text-red-600 transition px-3 py-1 rounded border border-gray-200 hover:border-red-300">
+      Sign out
+    </button>
   </div>
 </nav>
 
-<!-- ═══════════════════════════════ MAIN CONTENT ══════════════════════════════ -->
-<main class="max-w-screen-xl mx-auto px-4 py-6">
-
-<!-- ────────────────────────── DASHBOARD TAB ─────────────────────────────── -->
-<div id="tab-dashboard">
-  <!-- Status cards -->
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" id="status-cards">
-    <div class="bg-white rounded-xl shadow p-4 flex flex-col gap-1">
-      <span class="text-xs text-gray-500 uppercase tracking-wide">Records in DB</span>
-      <span class="text-3xl font-bold text-blue-700" id="sc-records">—</span>
-    </div>
-    <div class="bg-white rounded-xl shadow p-4 flex flex-col gap-1">
-      <span class="text-xs text-gray-500 uppercase tracking-wide">LLM Processed</span>
-      <span class="text-3xl font-bold text-green-600" id="sc-llm">—</span>
-    </div>
-    <div class="bg-white rounded-xl shadow p-4 flex flex-col gap-1">
-      <span class="text-xs text-gray-500 uppercase tracking-wide">DB Size</span>
-      <span class="text-3xl font-bold text-purple-600" id="sc-dbsize">—</span>
-    </div>
-    <div class="bg-white rounded-xl shadow p-4 flex flex-col gap-1">
-      <span class="text-xs text-gray-500 uppercase tracking-wide">Disk Free</span>
-      <span class="text-3xl font-bold text-orange-500" id="sc-diskfree">—</span>
-    </div>
-  </div>
-
-  <!-- Pipeline + Batch state -->
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-    <div class="bg-white rounded-xl shadow p-5">
-      <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-        <span class="w-2 h-2 bg-blue-500 rounded-full inline-block"></span>
-        Pipeline State
-      </h3>
-      <div id="pipeline-state-content" class="text-gray-500 text-sm">Loading…</div>
-    </div>
-    <div class="bg-white rounded-xl shadow p-5">
-      <h3 class="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-        <span class="w-2 h-2 bg-green-500 rounded-full inline-block"></span>
-        Batch Processing State
-      </h3>
-      <div id="batch-state-content" class="text-gray-500 text-sm">Loading…</div>
-    </div>
-  </div>
-
-  <!-- Active jobs -->
-  <div class="bg-white rounded-xl shadow p-5">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="font-semibold text-gray-700">Active Jobs</h3>
-      <button onclick="loadDashboard()" class="text-xs text-blue-600 hover:underline">Refresh</button>
-    </div>
-    <div id="active-jobs-content" class="text-gray-400 text-sm">No active jobs</div>
-  </div>
-</div>
-
-<!-- ─────────────────────────── SCRIPTS TAB ──────────────────────────────── -->
-<div id="tab-scripts" class="hidden">
-  <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
-
-    <!-- Left: Script forms (2/5 width) -->
-    <div class="lg:col-span-2 space-y-3">
-      <h2 class="font-bold text-gray-700 mb-2">Launch Scripts</h2>
-
-      <!-- process_all_works -->
-      <div class="accordion-item bg-white rounded-xl shadow overflow-hidden">
-        <button class="w-full text-left p-4 flex items-center justify-between hover:bg-gray-50 transition"
-                onclick="toggleAccordion(this)">
-          <div>
-            <span class="font-semibold text-blue-800 text-sm">process_all_works.py</span>
-            <span class="block text-xs text-gray-400 mt-0.5">Parallel pipeline orchestrator</span>
-          </div>
-          <svg class="chevron w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-          </svg>
-        </button>
-        <div class="accordion-body hidden border-t px-4 pb-4 pt-3">
-          <form data-script="process_all_works" onsubmit="handleScriptSubmit(event)">
-            <div class="grid grid-cols-2 gap-3">
-              <label class="flex flex-col gap-1 col-span-2">
-                <span class="text-xs text-gray-500">--local-dir</span>
-                <input name="--local-dir" value="/root/data/openalex/works"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--workers</span>
-                <input name="--workers" type="number" value="4" min="1" max="64"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--max-files (optional)</span>
-                <input name="--max-files" type="number" placeholder="all"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--min-free-gb</span>
-                <input name="--min-free-gb" type="number" value="5" min="1"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-            </div>
-            <button type="submit" class="mt-3 bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 text-sm font-medium transition">
-              Launch
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <!-- process_dataset -->
-      <div class="accordion-item bg-white rounded-xl shadow overflow-hidden">
-        <button class="w-full text-left p-4 flex items-center justify-between hover:bg-gray-50 transition"
-                onclick="toggleAccordion(this)">
-          <div>
-            <span class="font-semibold text-blue-800 text-sm">Proccess_dataset.py</span>
-            <span class="block text-xs text-gray-400 mt-0.5">Single .gz file processor</span>
-          </div>
-          <svg class="chevron w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-          </svg>
-        </button>
-        <div class="accordion-body hidden border-t px-4 pb-4 pt-3">
-          <form data-script="process_dataset" onsubmit="handleScriptSubmit(event)">
-            <div class="grid grid-cols-1 gap-3">
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--input (path to .gz file)</span>
-                <input name="--input" placeholder="/root/data/openalex/works/part_0000.gz"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--output-db</span>
-                <input name="--output-db" value="openalex_works_filtered.sqlite"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-            </div>
-            <button type="submit" class="mt-3 bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 text-sm font-medium transition">
-              Launch
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <!-- generate_report -->
-      <div class="accordion-item bg-white rounded-xl shadow overflow-hidden">
-        <button class="w-full text-left p-4 flex items-center justify-between hover:bg-gray-50 transition"
-                onclick="toggleAccordion(this)">
-          <div>
-            <span class="font-semibold text-blue-800 text-sm">generate_report.py</span>
-            <span class="block text-xs text-gray-400 mt-0.5">HTML report with charts</span>
-          </div>
-          <svg class="chevron w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-          </svg>
-        </button>
-        <div class="accordion-body hidden border-t px-4 pb-4 pt-3">
-          <form data-script="generate_report" onsubmit="handleScriptSubmit(event)">
-            <div class="grid grid-cols-1 gap-3">
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--db</span>
-                <input name="--db" value="openalex_works_filtered.sqlite"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--output</span>
-                <input name="--output" value="report.html"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-            </div>
-            <button type="submit" class="mt-3 bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 text-sm font-medium transition">
-              Launch
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <!-- batch_process_papers -->
-      <div class="accordion-item bg-white rounded-xl shadow overflow-hidden">
-        <button class="w-full text-left p-4 flex items-center justify-between hover:bg-gray-50 transition"
-                onclick="toggleAccordion(this)">
-          <div>
-            <span class="font-semibold text-blue-800 text-sm">batch_process_papers.py</span>
-            <span class="block text-xs text-gray-400 mt-0.5">OpenAI Batch API LLM pipeline</span>
-          </div>
-          <svg class="chevron w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-          </svg>
-        </button>
-        <div class="accordion-body hidden border-t px-4 pb-4 pt-3">
-          <form data-script="batch_process" onsubmit="handleScriptSubmit(event)">
-            <div class="mb-3">
-              <span class="text-xs text-gray-500 block mb-2">Subcommand</span>
-              <div class="flex flex-wrap gap-3" id="batch-subcommand-group" onchange="updateBatchFields()">
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" name="subcommand" value="estimate" checked> estimate
-                </label>
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" name="subcommand" value="prepare"> prepare
-                </label>
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" name="subcommand" value="submit"> submit
-                </label>
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" name="subcommand" value="poll"> poll
-                </label>
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" name="subcommand" value="save"> save
-                </label>
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input type="radio" name="subcommand" value="run"> run
-                </label>
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <label class="flex flex-col gap-1" id="batch-limit-field">
-                <span class="text-xs text-gray-500">--limit (prepare/run)</span>
-                <input name="--limit" type="number" placeholder="all records"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1" id="batch-interval-field">
-                <span class="text-xs text-gray-500">--interval sec (poll/run)</span>
-                <input name="--interval" type="number" value="60" min="10"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-            </div>
-            <button type="submit" class="mt-3 bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 text-sm font-medium transition">
-              Launch
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <!-- postprocess_ml_check -->
-      <div class="accordion-item bg-white rounded-xl shadow overflow-hidden">
-        <button class="w-full text-left p-4 flex items-center justify-between hover:bg-gray-50 transition"
-                onclick="toggleAccordion(this)">
-          <div>
-            <span class="font-semibold text-blue-800 text-sm">postprocess_ml_check.py</span>
-            <span class="block text-xs text-gray-400 mt-0.5">Full-text ML scan via Unpaywall</span>
-          </div>
-          <svg class="chevron w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-          </svg>
-        </button>
-        <div class="accordion-body hidden border-t px-4 pb-4 pt-3">
-          <form data-script="postprocess_ml" onsubmit="handleScriptSubmit(event)">
-            <div class="grid grid-cols-2 gap-3">
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--db</span>
-                <input name="--db" value="openalex_works_filtered.sqlite"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--workers</span>
-                <input name="--workers" type="number" value="4" min="1"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--max-records (optional)</span>
-                <input name="--max-records" type="number" placeholder="all"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-gray-500">--email (Unpaywall)</span>
-                <input name="--email" type="email" placeholder="you@example.com"
-                       class="border rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-400">
-              </label>
-              <label class="flex items-center gap-2 text-sm col-span-2 cursor-pointer">
-                <input type="checkbox" name="--skip-fulltext">
-                <span class="text-gray-600">--skip-fulltext (ML terms only, no PDF download)</span>
-              </label>
-            </div>
-            <button type="submit" class="mt-3 bg-blue-700 text-white px-5 py-2 rounded-lg hover:bg-blue-800 text-sm font-medium transition">
-              Launch
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right: Job output panel (3/5 width) -->
-    <div class="lg:col-span-3">
-      <h2 class="font-bold text-gray-700 mb-2">Job Output</h2>
-
-      <!-- Job header bar -->
-      <div id="job-header" class="hidden bg-white rounded-xl shadow px-4 py-3 mb-3 flex items-center justify-between gap-3">
-        <div class="min-w-0">
-          <span id="job-label" class="font-mono text-sm text-gray-800 truncate block"></span>
-          <div class="flex items-center gap-2 mt-1">
-            <span id="job-status-badge" class="text-xs font-semibold uppercase tracking-wide"></span>
-            <span id="job-elapsed" class="text-xs text-gray-400"></span>
-            <span id="job-pid" class="text-xs text-gray-300"></span>
-          </div>
-        </div>
-        <button id="job-kill-btn" onclick="killActiveJob()"
-                class="shrink-0 hidden bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-600 transition">
-          Kill Process
-        </button>
-      </div>
-
-      <!-- Terminal -->
-      <div id="job-output-container" class="bg-gray-950 rounded-xl overflow-auto relative" style="height: 480px;">
-        <pre id="job-output" class="text-gray-300 p-4 text-xs min-h-full leading-5">
-<span class="text-gray-600 italic">Select or launch a script to see output here…</span></pre>
-        <!-- Scroll-to-bottom button -->
-        <button id="scroll-btn" onclick="scrollToBottom()" title="Scroll to bottom"
-                class="hidden absolute bottom-3 right-3 bg-gray-700 text-white rounded-full w-8 h-8 flex items-center justify-center hover:bg-gray-600 shadow text-lg leading-none">
-          ↓
-        </button>
-      </div>
-
-      <!-- Recent jobs pills -->
-      <div class="mt-3" id="recent-jobs-section">
-        <div id="recent-jobs-list" class="flex flex-wrap gap-2"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ─────────────────────────── DATABASE TAB ─────────────────────────────── -->
-<div id="tab-database" class="hidden">
-
-  <!-- Controls bar -->
-  <div class="bg-white rounded-xl shadow p-4 mb-4 flex flex-wrap gap-3 items-center">
-    <input type="text" id="db-search" placeholder="Search title, DOI, abstract…"
-           class="border rounded-lg px-3 py-2 text-sm flex-1 min-w-52 focus:ring-1 focus:ring-blue-400"
-           onkeydown="if(event.key==='Enter') loadDbRecords(1)">
-    <select id="db-sort" class="border rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-blue-400">
-      <option value="publication_year">Sort: Year</option>
-      <option value="fwci">Sort: FWCI</option>
-      <option value="title">Sort: Title</option>
-      <option value="llm_confidence">Sort: LLM Confidence</option>
-    </select>
-    <select id="db-dir" class="border rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-blue-400">
-      <option value="desc">Descending</option>
-      <option value="asc">Ascending</option>
-    </select>
-    <button onclick="loadDbRecords(1)"
-            class="bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-800 transition">
-      Search
+<!-- ── Home view ──────────────────────────────────────────────────────────── -->
+<div id="view-home" class="max-w-6xl mx-auto px-6 py-8 hidden">
+  <div class="flex items-center justify-between mb-6">
+    <h2 class="text-2xl font-bold">Pipelines</h2>
+    <button id="btn-new-pipeline"
+            class="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition flex items-center gap-2">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg>
+      New Pipeline
     </button>
   </div>
+  <div id="pipelines-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div class="col-span-full text-center text-gray-400 py-16">Loading...</div>
+  </div>
+</div>
 
-  <!-- Records table -->
-  <div class="bg-white rounded-xl shadow mb-4 overflow-hidden">
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm" id="db-table">
-        <thead class="bg-gray-50 border-b">
-          <tr id="db-table-head"></tr>
-        </thead>
-        <tbody id="db-table-body" class="divide-y divide-gray-100">
-          <tr><td colspan="12" class="text-center py-12 text-gray-400">Load records to browse the database</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
-      <span id="db-pagination-info" class="text-sm text-gray-500"></span>
-      <div class="flex gap-2">
-        <button id="db-prev-btn" onclick="dbChangePage(-1)"
-                class="px-3 py-1.5 border rounded-lg text-sm hover:bg-gray-100 disabled:opacity-40 transition" disabled>
-          ← Prev
+<!-- ── Pipeline detail view ───────────────────────────────────────────────── -->
+<div id="view-pipeline" class="hidden">
+  <!-- Header bar -->
+  <div class="bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
+    <div class="max-w-5xl mx-auto">
+      <div class="flex items-center gap-3 mb-3">
+        <button id="btn-back" class="text-gray-400 hover:text-gray-700 transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
         </button>
-        <button id="db-next-btn" onclick="dbChangePage(1)"
-                class="px-3 py-1.5 border rounded-lg text-sm hover:bg-gray-100 disabled:opacity-40 transition" disabled>
-          Next →
-        </button>
+        <h2 id="pipeline-title" class="text-xl font-bold"></h2>
+        <span id="pipeline-owner-badge" class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded"></span>
+        <div class="ml-auto flex gap-2">
+          <button id="btn-fork-pipeline"
+                  class="hidden text-sm text-purple-700 border border-purple-300 px-3 py-1 rounded-lg hover:bg-purple-50 transition">
+            Fork
+          </button>
+          <button id="btn-delete-pipeline"
+                  class="hidden text-sm text-red-600 border border-red-300 px-3 py-1 rounded-lg hover:bg-red-50 transition">
+            Delete
+          </button>
+        </div>
       </div>
+      <!-- Stage progress stepper -->
+      <div id="stage-stepper" class="flex items-center overflow-x-auto pb-1 gap-0"></div>
     </div>
   </div>
 
-  <!-- SQL query section -->
-  <div class="bg-white rounded-xl shadow p-5">
-    <h3 class="font-semibold text-gray-700 mb-3">SQL Query</h3>
-    <textarea id="sql-input" rows="4"
-              placeholder="SELECT title, doi, publication_year, fwci FROM filtered_records WHERE publication_year >= 2020 ORDER BY fwci DESC LIMIT 50"
-              class="w-full border rounded-lg p-3 font-mono text-sm resize-y mb-3 focus:ring-1 focus:ring-blue-400"></textarea>
-    <div class="flex gap-3 mb-4">
-      <button onclick="runSqlQuery()"
-              class="bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-800 transition">
-        Run Query
-      </button>
-      <button id="export-csv-btn" onclick="exportQueryCsv()" disabled
-              class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-40 transition">
-        Export CSV
+  <!-- Stage content panel -->
+  <div class="max-w-5xl mx-auto px-6 py-6">
+    <div id="stage-content"></div>
+    <!-- Advance button (owner only, at bottom of stage) -->
+    <div id="advance-bar" class="hidden mt-6 flex justify-end">
+      <button id="btn-advance-stage"
+              class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700 transition">
+        Advance to <span id="advance-stage-label"></span> →
       </button>
     </div>
-    <div id="sql-error" class="hidden bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3 mb-3"></div>
-    <div id="sql-results" class="overflow-x-auto"></div>
   </div>
 </div>
 
-<!-- ──────────────────────────── LOGS TAB ────────────────────────────────── -->
-<div id="tab-logs" class="hidden">
-  <div class="bg-white rounded-xl shadow p-4 mb-4 flex flex-wrap gap-3 items-center">
-    <select id="log-file" class="border rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-blue-400">
-      <option value="pipeline">pipeline.log</option>
-      <option value="postprocess">postprocess.log</option>
-    </select>
-    <select id="log-lines" class="border rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-blue-400">
-      <option value="100">100 lines</option>
-      <option value="200" selected>200 lines</option>
-      <option value="500">500 lines</option>
-      <option value="1000">1000 lines</option>
-      <option value="2000">2000 lines</option>
-    </select>
-    <button onclick="loadLog()"
-            class="bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-800 transition">
-      Load
-    </button>
-    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
-      <input type="checkbox" id="log-autorefresh" onchange="toggleLogRefresh()" class="rounded">
-      Auto-refresh (10s)
-    </label>
-    <span id="log-meta" class="ml-auto text-xs text-gray-400"></span>
-  </div>
-  <div class="bg-gray-950 rounded-xl overflow-auto" style="height: 600px;">
-    <pre id="log-output" class="text-green-400 p-4 text-xs min-h-full leading-5">
-<span class="text-gray-600 italic">Select a log file and click Load…</span></pre>
+<!-- ── New pipeline modal ─────────────────────────────────────────────────── -->
+<div id="modal-new-pipeline" class="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 hidden">
+  <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-bold mb-4">Create New Pipeline</h3>
+    <form id="form-new-pipeline" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+        <input id="new-pipeline-name" type="text" placeholder="e.g. SAF Research 2024"
+               class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+        <input id="new-pipeline-desc" type="text" placeholder="Optional"
+               class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div id="new-pipeline-error" class="text-red-600 text-sm hidden"></div>
+      <div class="flex gap-3 justify-end">
+        <button type="button" id="btn-cancel-new-pipeline"
+                class="px-4 py-2 text-gray-600 border rounded-lg hover:bg-gray-50 transition">Cancel</button>
+        <button type="submit"
+                class="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">Create</button>
+      </div>
+    </form>
   </div>
 </div>
 
-<!-- ──────────────────────────── REPORT TAB ──────────────────────────────── -->
-<div id="tab-report" class="hidden">
-  <div class="bg-white rounded-xl shadow p-3 mb-4 flex gap-3 items-center flex-wrap">
-    <button onclick="reloadReport()"
-            class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition">
-      Refresh
-    </button>
-    <button onclick="launchGenerateReport()"
-            class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition">
-      Regenerate Report
-    </button>
-    <a href="/api/report" target="_blank"
-       class="bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-700 transition">
-      Open in New Tab ↗
-    </a>
-  </div>
-  <div class="bg-white rounded-xl shadow overflow-hidden" style="height: calc(100vh - 220px);">
-    <iframe id="report-iframe" src="/api/report" class="w-full h-full border-0"></iframe>
+<!-- ── Fork pipeline modal ────────────────────────────────────────────────── -->
+<div id="modal-fork-pipeline" class="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 hidden">
+  <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-bold mb-2">Fork Pipeline</h3>
+    <p class="text-sm text-gray-500 mb-4">Creates a full copy of this pipeline's data in your account. Large databases may take a moment.</p>
+    <form id="form-fork-pipeline" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">New Name *</label>
+        <input id="fork-pipeline-name" type="text" placeholder="My Fork of ..."
+               class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500">
+      </div>
+      <div id="fork-pipeline-error" class="text-red-600 text-sm hidden"></div>
+      <div class="flex gap-3 justify-end">
+        <button type="button" id="btn-cancel-fork-pipeline"
+                class="px-4 py-2 text-gray-600 border rounded-lg hover:bg-gray-50 transition">Cancel</button>
+        <button type="submit"
+                class="px-4 py-2 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 transition">Fork</button>
+      </div>
+    </form>
   </div>
 </div>
 
-</main>
-
-<!-- ════════════════════════ RECORD DETAIL MODAL ════════════════════════════ -->
-<div id="record-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 modal-overlay">
-  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-    <div class="flex items-center justify-between px-5 py-4 border-b shrink-0">
-      <h3 class="font-bold text-lg text-gray-800">Record Detail</h3>
-      <button onclick="closeRecordModal()" class="text-gray-400 hover:text-gray-700 text-2xl leading-none font-light">&times;</button>
+<!-- ── Record detail modal ────────────────────────────────────────────────── -->
+<div id="modal-record" class="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 hidden">
+  <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-3xl max-h-[80vh] flex flex-col">
+    <div class="flex justify-between items-start mb-4">
+      <h3 class="text-base font-bold pr-4 flex-1" id="modal-record-title"></h3>
+      <button id="btn-close-record" class="text-gray-400 hover:text-gray-700 flex-shrink-0">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
     </div>
-    <div id="record-modal-content" class="overflow-y-auto p-5 flex-1 text-sm"></div>
+    <div id="modal-record-body" class="overflow-y-auto flex-1 text-sm space-y-2"></div>
   </div>
 </div>
 
-<script>window.__AUTHENTICATED__ = {{ authenticated | tojson }};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>

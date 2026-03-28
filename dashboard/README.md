@@ -1,23 +1,40 @@
-# OpenAlex Dashboard
+# Dashboard
 
-Interactive web UI for running the OpenAlex pipeline scripts, browsing the
-SQLite database, streaming live job output, and viewing reports — all from a
-browser.
+> The main project README at `../README.md` has full setup, deployment, and usage instructions.
+> This file covers dashboard-specific internals.
 
 ---
 
-## Table of Contents
+## Running locally (Windows)
 
-1. [Architecture](#architecture)
-2. [Prerequisites](#prerequisites)
-3. [Server: First-time Setup](#server-first-time-setup)
-4. [Server: Deploy Code Changes](#server-deploy-code-changes)
-5. [Local Development (run on laptop)](#local-development)
-6. [Access from Your Laptop](#access-from-your-laptop)
-7. [Using the Dashboard](#using-the-dashboard)
-8. [Multiple Databases](#multiple-databases)
-9. [Configuration Reference](#configuration-reference)
-10. [Troubleshooting](#troubleshooting)
+```powershell
+# From the repo root:
+cd code\dashboard
+
+# Create venv (one-time)
+python -m venv venv
+venv\Scripts\pip install -r requirements.txt
+
+# Set environment variables
+$env:PIPELINES_BASE_DIR = "$env:LOCALAPPDATA\oa-pipeline\pipelines"
+$env:META_DB_PATH       = "$env:LOCALAPPDATA\oa-pipeline\dashboard.db"
+$env:SECRET_KEY         = "local-dev-secret"
+$env:FLASK_APP          = "app:create_app()"
+$env:FLASK_DEBUG        = "1"
+
+# Run
+venv\Scripts\python -m flask run
+```
+
+Then in a second terminal:
+```powershell
+cd code\dashboard
+venv\Scripts\python manage.py create-user admin
+```
+
+Open `http://localhost:5000/`.
+
+> `gunicorn` and `start.sh` are Linux-only. Use `flask run` on Windows.
 
 ---
 
@@ -26,438 +43,144 @@ browser.
 ```
 Browser
    │
-   ▼
-nginx :80          ← reverse proxy (proxy_buffering off for SSE)
+   ▼  HTTP / SSE
+nginx :80              ← reverse proxy
    │
    ▼
-gunicorn :5000     ← single worker, 16 threads (keeps JobManager in memory)
+gunicorn :5000         ← -w 1 -k gthread --threads 16
    │
-   ├── app.py          Flask routes + SSE streaming
-   ├── job_manager.py  Subprocess lifecycle (Popen + threading.Condition)
-   ├── db_api.py       Read-only SQLite helpers
-   └── config.py       Path constants
+   ├── blueprints/auth.py       Session-cookie auth (/api/auth/*)
+   ├── blueprints/pipelines.py  Pipeline CRUD + stage advance + fork
+   ├── blueprints/jobs.py       Subprocess launch / stream / kill
+   ├── blueprints/data.py       DB browser, SQL query, report, log tail
+   ├── models/db.py             Metadata SQLite (users, pipelines, jobs)
+   ├── models/user.py           User model
+   ├── models/pipeline.py       Pipeline model + stage logic
+   └── core/job_manager.py      Popen + threading.Condition + SSE deque
 ```
 
-**Key design choices**
+**Why single gunicorn worker?** `JobManager` is an in-memory dict of running subprocesses. Multiple workers would each have a separate dict, making it impossible to stream output from a job started by a different worker. `-w 1 --threads 16` gives concurrency through threads without splitting in-memory state.
 
-| Choice | Reason |
-|---|---|
-| SSE not WebSockets | Simpler; `EventSource` is built into every browser |
-| Single gunicorn worker | `JobManager` dict lives in memory; multiple workers would fragment state |
-| `start_new_session=True` | Puts each script in its own process group so Kill terminates all children |
-| `mode=ro` SQLite URI | Prevents any writes even if the SQL query contains mutation keywords |
-| Session cookie auth | `EventSource` cannot send `Authorization` headers, so Basic Auth doesn't work |
+**Why SSE, not WebSockets?** `EventSource` is built into every browser with no JS library needed. It also auto-reconnects on disconnect.
+
+**Why session cookies, not token auth?** The browser's `EventSource` API cannot set custom headers, so `Authorization: Bearer ...` doesn't work for the SSE stream endpoint. Session cookies are sent automatically.
 
 ---
 
-## Prerequisites
+## Working directory for scripts
 
-| Where | What |
-|---|---|
-| Server | Ubuntu 22.04 / 24.04, Python 3.10+, nginx |
-| Laptop | Python 3.10+, OpenSSH (`ssh`/`scp` in PATH) |
+Pipeline scripts are launched by `job_manager.py` with:
+- `cmd = ["python3", "-u", "<absolute-path-to-script>", ...args]`
+- `cwd = PIPELINE_SCRIPTS_DIR`  (i.e. `code/pipeline/` on the server: `/opt/oa-pipeline/pipeline/`)
 
----
-
-## Server: First-time Setup
-
-### 1 — Install system packages
-
-```bash
-apt update && apt install -y nginx python3-venv python3-full
-```
-
-### 2 — Copy files from laptop
-
-From your laptop (PowerShell):
-
-```powershell
-# Set once, reuse forever
-$env:OPENALEX_SERVER = "YOUR_SERVER_IP"
-
-# First deploy: copy dashboard + all scripts
-.\deploy.ps1 -IncludeScripts -IncludeSubdir2
-```
-
-See [deploy.ps1 reference](#server-deploy-code-changes) for all options.
-
-### 3 — Create Python virtualenv
-
-```bash
-cd /root/data/openalex/dashboard
-python3 -m venv venv
-venv/bin/pip install flask gunicorn
-```
-
-### 4 — Configure the service
-
-Generate a secret key:
-
-```bash
-python3 -c 'import secrets; print(secrets.token_hex(32))'
-```
-
-Edit the service file and fill in the values:
-
-```bash
-nano /root/data/openalex/dashboard/openalex-dashboard.service
-# Set:  SECRET_KEY=<paste generated key>
-# Set:  DASHBOARD_PASSWORD=<your chosen password>
-#       (remove the DASHBOARD_PASSWORD line for open access on a private network)
-```
-
-Install and start:
-
-```bash
-cp /root/data/openalex/dashboard/openalex-dashboard.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now openalex-dashboard
-systemctl status openalex-dashboard   # expect: Active: active (running)
-```
-
-### 5 — Configure nginx
-
-```bash
-cp /root/data/openalex/dashboard/nginx_openalex.conf /etc/nginx/sites-available/openalex-dashboard
-ln -sf /etc/nginx/sites-available/openalex-dashboard /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default   # remove default placeholder if present
-nginx -t                                  # must print "test is successful"
-systemctl reload nginx
-```
-
-### 6 — Verify
-
-```bash
-curl -s http://localhost/api/status | python3 -m json.tool
-# Should return JSON with db.record_count etc.
-```
-
-Open `http://YOUR_SERVER_IP/` in a browser.
+The scripts receive absolute paths for `--output-db`, `--state-file`, `--log-file` etc., so the working directory only matters for imports inside the scripts themselves.
 
 ---
 
-## Server: Deploy Code Changes
+## Metadata database schema (dashboard.db)
 
-Use `deploy.ps1` from your laptop. It copies files via scp and restarts the service.
-
-```powershell
-# Dashboard code only (most common during UI development)
-.\deploy.ps1
-
-# Dashboard + pipeline scripts
-.\deploy.ps1 -IncludeScripts
-
-# Dashboard + all scripts including 2/ subdirectory
-.\deploy.ps1 -IncludeScripts -IncludeSubdir2
-
-# Also copy the local database
-.\deploy.ps1 -CopyDb
-
-# Copy a specific database (e.g. from subdirectory)
-.\deploy.ps1 -CopyDb -DbFile "0\openalex_works_filtered.sqlite"
-
-# Deploy but don't restart (useful if service isn't set up yet)
-.\deploy.ps1 -NoRestart
-
-# Full deploy with everything
-.\deploy.ps1 -IncludeScripts -IncludeSubdir2 -CopyDb
-```
-
-**Parameters**
-
-| Parameter | Default | Description |
-|---|---|---|
-| `-Server` | `$env:OPENALEX_SERVER` | Server IP or hostname |
-| `-User` | `root` | SSH user |
-| `-RemoteBase` | `/root/data/openalex` | Remote base directory |
-| `-IncludeScripts` | off | Copy root-level Python scripts |
-| `-IncludeSubdir2` | off | Copy `2/` subdirectory scripts |
-| `-CopyDb` | off | Copy a SQLite database |
-| `-DbFile` | `openalex_works_filtered.sqlite` | Which DB to copy |
-| `-NoRestart` | off | Skip service restart |
-
-**Tip:** set once and forget:
-```powershell
-$env:OPENALEX_SERVER = "192.168.1.100"
-# Now just:
-.\deploy.ps1
-```
-
----
-
-## Local Development
-
-Run the dashboard on your laptop against the local database (no server needed).
-
-### 1 — Install deps
-
-```powershell
-cd "C:\Users\Liel\OneDrive\Desktop\part_0009\server\dashboard"
-python -m venv venv
-venv\Scripts\pip install flask gunicorn
-```
-
-### 2 — Run Flask in dev mode
-
-```powershell
-cd "C:\Users\Liel\OneDrive\Desktop\part_0009\server\dashboard"
-venv\Scripts\python app.py
-```
-
-Open `http://localhost:5000/` — no nginx needed.
-
-### 3 — Edit → refresh cycle
-
-- Edit `templates/index.html` or `static/app.js` → hard-refresh the browser (`Ctrl+Shift+R`)
-- Edit `app.py` / `job_manager.py` / `db_api.py` → Flask auto-reloads in debug mode
-- Edit `config.py` → restart Flask
-
-### 4 — Point to the local database
-
-`config.py` hardcodes `/root/data/openalex` as `BASE_DIR`.
-For local dev, either:
-
-**Option A** — override via environment variable (cleanest):
-```powershell
-$env:OPENALEX_BASE = "C:\Users\Liel\OneDrive\Desktop\part_0009\server"
-venv\Scripts\python app.py
-```
-Then add this to the top of `config.py`:
-```python
-BASE_DIR = Path(os.environ.get("OPENALEX_BASE", "/root/data/openalex"))
-```
-
-**Option B** — temporarily edit `config.py`:
-```python
-BASE_DIR = Path(r"C:\Users\Liel\OneDrive\Desktop\part_0009\server")
-```
-Remember to revert before deploying.
-
----
-
-## Access from Your Laptop
-
-### Direct (server has a reachable IP)
-
-```
-http://YOUR_SERVER_IP/
-```
-
-### SSH Tunnel (server behind NAT or for extra security)
-
-Run in PowerShell and keep the window open:
-
-```powershell
-ssh -L 8080:127.0.0.1:80 root@YOUR_SERVER_IP -N
-```
-
-Then open: `http://localhost:8080/`
-
-**Persistent tunnel config** — add to `~/.ssh/config`:
-```
-Host openalex
-    HostName YOUR_SERVER_IP
-    User root
-    LocalForward 8080 127.0.0.1:80
-```
-Then: `ssh openalex -N` and browse to `http://localhost:8080/`
-
----
-
-## Using the Dashboard
-
-### Dashboard tab
-
-Overview of the current state. Auto-refreshes every 8 seconds.
-
-| Card | Source |
-|---|---|
-| Records in DB | `SELECT COUNT(*) FROM filtered_records` |
-| LLM Processed | records where `llm_processed_at IS NOT NULL` |
-| DB Size | file size on disk |
-| Disk Free | `shutil.disk_usage(BASE_DIR)` |
-| Pipeline State | `pipeline_state.json` |
-| Batch State | `batch_runs/state.json` |
-| Active Jobs | in-memory job registry |
-
-### Scripts tab
-
-Launch any of the five pipeline scripts with configurable arguments.
-Output streams live in the terminal panel on the right.
-
-| Panel | Script | Notes |
-|---|---|---|
-| process_all_works.py | Parallel pipeline | Long-running (hours). `--no-color` is added automatically. |
-| Proccess_dataset.py | Single file | Provide full path to a `.gz` file. |
-| generate_report.py | HTML report | Fast (~seconds). |
-| batch_process_papers.py | OpenAI Batch API | Choose subcommand via radio buttons. |
-| postprocess_ml_check.py | Full-text ML scan | Requires Unpaywall email. |
-
-**Job controls**
-- **Launch** — starts the script; output appears immediately in the terminal
-- **Kill Process** — sends SIGTERM to the entire process group; escalates to SIGKILL after 5s
-- **Job pills** (below the terminal) — click any pill to switch to that job's output
-- **Scroll lock** — scroll up to pause auto-scroll; click ↓ to resume
-
-### Database tab
-
-Browse and query `filtered_records`.
-
-| Feature | How |
-|---|---|
-| Search | Type in the search box, press Enter or click Search |
-| Sort | Click any column header, or use the Sort dropdown |
-| Row detail | Click any row to open a modal with all 40+ columns |
-| SQL query | Type any `SELECT` statement and click Run |
-| Export CSV | After running a SQL query, click Export CSV |
-
-Default columns shown: `openalex_id`, `doi`, `title`, `publication_year`, `fwci`, journal, countries, fuel terms, impact terms, LLM classification, hydrocarbon flag, LLM confidence.
-
-For all other columns, use the SQL query:
 ```sql
-SELECT openalex_id, abstract_text, llm_justification
-FROM filtered_records
-WHERE llm_is_hydrocarbon = 0
-LIMIT 50
+CREATE TABLE users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE pipelines (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id),
+    forked_from_id   INTEGER REFERENCES pipelines(id),
+    name             TEXT NOT NULL,
+    description      TEXT DEFAULT '',
+    current_stage    TEXT NOT NULL DEFAULT 'keyword_selection',
+    config           TEXT NOT NULL DEFAULT '{}',  -- JSON
+    output_db_path   TEXT,
+    state_file_path  TEXT,
+    batch_state_path TEXT,
+    report_path      TEXT,
+    llm_report_path  TEXT,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE pipeline_jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id INTEGER NOT NULL REFERENCES pipelines(id),
+    job_id      TEXT NOT NULL,
+    stage       TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
-
-### Logs tab
-
-Tail `pipeline.log` or `postprocess.log`.
-Enable **Auto-refresh** to poll every 10 seconds while a job is running.
-
-### Report tab
-
-Embeds `report.html` in an iframe.
-Click **Regenerate Report** to run `generate_report.py` and refresh automatically.
 
 ---
 
-## Multiple Databases
+## API reference
 
-The DB selector in the top-right of the nav bar lists every `.sqlite` file found
-at the root of `BASE_DIR` and one level deep (e.g. `0/`, `1/`, `2/`).
+### Auth
 
-Switching the selector updates the Dashboard stats, Database browser, and SQL
-query — everything uses the selected database.
+| Method | Path | Body / Params | Description |
+|--------|------|---------------|-------------|
+| POST | `/api/auth/login` | `{username, password}` | Set session cookie |
+| POST | `/api/auth/logout` | — | Clear session |
+| GET | `/api/auth/me` | — | Current user info |
 
-**To copy additional databases to the server:**
+### Pipelines
 
-```powershell
-# Copy a specific DB from a subdirectory
-.\deploy.ps1 -CopyDb -DbFile "1\openalex_works_filtered.sqlite"
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/pipelines` | List all pipelines (all users visible) |
+| POST | `/api/pipelines` | Create pipeline `{name, description?, fuel_terms?, impact_terms?, workers?, min_free_gb?}` |
+| GET | `/api/pipelines/<id>` | Get single pipeline |
+| PATCH | `/api/pipelines/<id>` | Update `{name?, description?, config?}` — owner only |
+| DELETE | `/api/pipelines/<id>` | Delete — owner only |
+| POST | `/api/pipelines/<id>/advance` | Advance to next stage — owner only |
+| POST | `/api/pipelines/<id>/fork` | Fork to caller's account `{name}` |
+| GET | `/api/pipelines/<id>/status` | Stage-specific status (DB stats, job state, report existence) |
 
-# Or from the root
-.\deploy.ps1 -CopyDb -DbFile "my_other_run.sqlite"
-```
+### Jobs
 
-Or manually:
-```bash
-scp "path\to\my.sqlite" root@SERVER:/root/data/openalex/
-# The dashboard will detect it automatically on next page load
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/jobs?pipeline_id=<id>` | List jobs (optionally filtered) |
+| POST | `/api/jobs` | Launch `{script, pipeline_id, args: {flag: value}}` |
+| GET | `/api/jobs/<id>` | Get job summary |
+| DELETE | `/api/jobs/<id>` | Kill job |
+| GET | `/api/jobs/<id>/stream` | SSE stream of stdout/stderr |
 
-The API endpoint `GET /api/db/list` returns all available databases.
-Any API endpoint that queries the DB accepts a `?db=relative/path.sqlite`
-query parameter.
+### Data
 
----
+All data endpoints require `?pipeline_id=<id>`.
 
-## Configuration Reference
-
-All paths are set in `config.py`. Environment variables override at runtime.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `DASHBOARD_PASSWORD` | *(unset = open)* | Login password. Unset for private networks. |
-| `SECRET_KEY` | fallback string | Flask session signing key. **Always set in production.** |
-| `OPENALEX_BASE` | `/root/data/openalex` | Override `BASE_DIR` without editing `config.py` |
-
-**`config.py` constants**
-
-| Constant | Value | Description |
-|---|---|---|
-| `BASE_DIR` | `/root/data/openalex` | Root of all data files |
-| `DB_PATH` | `BASE_DIR/openalex_works_filtered.sqlite` | Default database |
-| `DB_PAGE_SIZE` | `100` | Rows per page in the browser |
-| `DB_QUERY_MAX_ROWS` | `5000` | Max rows returned by SQL query |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/db/schema` | Table schema |
+| GET | `/api/db/records` | Paginated records `?page=1&q=search&sort=col&dir=asc&page_size=100` |
+| GET | `/api/db/records/<id>` | Single record detail |
+| POST | `/api/db/query` | Run SQL `{sql, pipeline_id}` |
+| GET | `/api/report?llm=0|1` | Serve report HTML |
+| GET | `/api/log?lines=200` | Last N lines of pipeline.log |
 
 ---
 
 ## Troubleshooting
 
-### Service won't start
+See the [main README troubleshooting section](../README.md#troubleshooting) for common issues.
 
-```bash
-journalctl -u openalex-dashboard -n 50
-# Look for Python ImportError or missing venv
+### Local dev: PIPELINES_BASE_DIR doesn't exist
+
+The dashboard creates pipeline subdirectories automatically on pipeline creation, but the base directory must exist first:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\oa-pipeline\pipelines"
 ```
 
-Common fixes:
-```bash
-# Venv missing
-cd /root/data/openalex/dashboard
-python3 -m venv venv && venv/bin/pip install flask gunicorn
+### Import errors when running manage.py
 
-# start.sh not executable
-chmod +x /root/data/openalex/dashboard/start.sh
-```
+`manage.py` must be run from inside `code/dashboard/` so Python can find the `blueprints`, `models`, and `core` packages:
 
-### 502 Bad Gateway
-
-Flask isn't running. Check:
-```bash
-systemctl status openalex-dashboard
-curl http://127.0.0.1:5000/api/status   # test Flask directly
-```
-
-### SSE output doesn't stream (output arrives in chunks)
-
-`proxy_buffering off` must be in the nginx config. Verify:
-```bash
-grep "proxy_buffering" /etc/nginx/sites-enabled/openalex-dashboard
-# Should print:  proxy_buffering off;
-nginx -t && systemctl reload nginx
-```
-
-### Job output cuts off after 60 seconds
-
-Default nginx read timeout is 60s. Verify the custom timeout is applied:
-```bash
-grep "proxy_read_timeout" /etc/nginx/sites-enabled/openalex-dashboard
-# Should print:  proxy_read_timeout 3600s;
-```
-
-### "Database not found" after switching DBs
-
-The selector only shows databases that physically exist on the server.
-Copy the database first (see [Multiple Databases](#multiple-databases)), then
-reload the page to refresh the selector.
-
-### Script runs but produces no output
-
-The script might be heavily buffered. The dashboard automatically sets
-`PYTHONUNBUFFERED=1` and `TERM=dumb` for all subprocess launches.
-If output still doesn't appear, check that the script writes to stdout
-(not only to a log file).
-
-### Cannot kill a job
-
-The Kill button sends `SIGTERM` to the process group. If the process ignores
-`SIGTERM`, a `SIGKILL` is sent automatically after 5 seconds.
-If the button is greyed out, the job already finished.
-
-### Port 80 already in use
-
-```bash
-ss -tlnp | grep :80          # find what's using port 80
-nginx -t && systemctl reload nginx   # don't restart, just reload config
-```
-
-### Forgot the dashboard password
-
-Edit the service file and change `DASHBOARD_PASSWORD`, then restart:
-```bash
-nano /etc/systemd/system/openalex-dashboard.service
-systemctl daemon-reload && systemctl restart openalex-dashboard
+```powershell
+cd code\dashboard
+venv\Scripts\python manage.py list-users  # correct
+venv\Scripts\python dashboard\manage.py   # wrong — imports will fail
 ```

@@ -1,0 +1,32 @@
+# /etc/systemd/system/oa-pipeline.service
+# Installed automatically by deploy/setup.sh
+# To install manually:
+#   cp deploy/dashboard.service /etc/systemd/system/oa-pipeline.service
+#   systemctl daemon-reload && systemctl enable --now oa-pipeline
+
+[Unit]
+Description=OpenAlex Pipeline Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/oa-pipeline/dashboard
+ExecStart=/opt/oa-pipeline/venv/bin/python3 -m gunicorn \
+    -w 1 -k gthread --threads 16 \
+    -b 127.0.0.1:5000 --timeout 0 \
+    --log-level info \
+    "app:create_app()"
+Restart=on-failure
+RestartSec=5
+
+# Set these environment variables before installing:
+Environment=SECRET_KEY=CHANGE_ME_generate_with_python3_-c_import_secrets_print_secrets.token_hex_32
+Environment=PIPELINES_BASE_DIR=/opt/oa-pipeline/data/pipelines
+Environment=META_DB_PATH=/opt/oa-pipeline/data/dashboard.db
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

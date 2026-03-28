@@ -352,12 +352,36 @@ def find_all_matching_terms(
     return originals, stems
 
 
-# Compile indices and reverse maps at module load
-FUEL_INDEX, FUEL_REVERSE = compile_terms(FUEL_TERMS)
-IMPACT_INDEX, IMPACT_REVERSE = compile_terms(IMPACT_TERMS)
+# ---------------------------------------------------------------------------
+# Lazy term initialisation (allows per-pipeline keyword configs)
+# ---------------------------------------------------------------------------
+FUEL_INDEX: dict = {}
+FUEL_REVERSE: dict = {}
+IMPACT_INDEX: dict = {}
+IMPACT_REVERSE: dict = {}
+_FUEL_FIRST_TOKENS: frozenset = frozenset()
+_IMPACT_FIRST_TOKENS: frozenset = frozenset()
+_terms_initialized = False
 
-_FUEL_FIRST_TOKENS: frozenset[str] = frozenset(FUEL_INDEX.keys())
-_IMPACT_FIRST_TOKENS: frozenset[str] = frozenset(IMPACT_INDEX.keys())
+
+def _init_terms(
+    fuel_terms: list[str] | None = None,
+    impact_terms: list[str] | None = None,
+) -> None:
+    """Compile keyword indices. Call once before processing.
+
+    If fuel_terms / impact_terms are None the module-level defaults are used.
+    Can be called multiple times; subsequent calls rebuild the indices.
+    """
+    global FUEL_INDEX, FUEL_REVERSE, IMPACT_INDEX, IMPACT_REVERSE
+    global _FUEL_FIRST_TOKENS, _IMPACT_FIRST_TOKENS, _terms_initialized
+    ft = fuel_terms if fuel_terms is not None else FUEL_TERMS
+    it = impact_terms if impact_terms is not None else IMPACT_TERMS
+    FUEL_INDEX, FUEL_REVERSE = compile_terms(ft)
+    IMPACT_INDEX, IMPACT_REVERSE = compile_terms(it)
+    _FUEL_FIRST_TOKENS = frozenset(FUEL_INDEX.keys())
+    _IMPACT_FIRST_TOKENS = frozenset(IMPACT_INDEX.keys())
+    _terms_initialized = True
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +727,11 @@ def process_records_to_rows(
 
     Returns (total_seen, total_matched, rows, skip_stats, errors).
     errors is a list of human-readable error strings for logging.
+
     """
+    if not _terms_initialized:
+        _init_terms()
+
     matched = 0
     total = 0
     rows: list[tuple] = []
@@ -859,11 +887,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-db", type=Path, default=OUTPUT_DB_PATH)
     parser.add_argument("--max-records", type=int, default=None)
     parser.add_argument("--commit-interval", type=int, default=10_000)
+    parser.add_argument(
+        "--keyword-config",
+        type=Path,
+        default=None,
+        metavar="JSON",
+        help="JSON file with {fuel_terms: [...], impact_terms: [...]}. "
+             "Defaults to built-in term lists when omitted.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
+    import json as _json_main
     args = parse_args()
+    if args.keyword_config:
+        _cfg = _json_main.loads(args.keyword_config.read_text(encoding="utf-8"))
+        _init_terms(_cfg.get("fuel_terms"), _cfg.get("impact_terms"))
+    else:
+        _init_terms()
     process_records(
         input_gz_path=args.input,
         output_db_path=args.output_db,
