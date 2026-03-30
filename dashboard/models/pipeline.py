@@ -37,6 +37,14 @@ def get_next_stage(current: str) -> str | None:
         return None
 
 
+def get_prev_stage(current: str) -> str | None:
+    try:
+        idx = STAGES.index(current)
+        return STAGES[idx - 1] if idx > 0 else None
+    except ValueError:
+        return None
+
+
 def _row_to_dict(row, current_user_id: int | None = None) -> dict:
     d = dict(row)
     d["config"] = json.loads(d.get("config") or "{}")
@@ -175,6 +183,23 @@ def advance_pipeline_stage(pipeline_id: int, user_id: int) -> str | None:
     )
     db.commit()
     return next_stage
+
+
+def go_back_pipeline_stage(pipeline_id: int, user_id: int) -> str | None:
+    """Go back to previous stage. Returns new stage name or None if at first stage."""
+    p = get_pipeline(pipeline_id, user_id)
+    if not p or p["user_id"] != user_id:
+        return None
+    prev_stage = get_prev_stage(p["current_stage"])
+    if not prev_stage:
+        return None
+    db = get_meta_db()
+    db.execute(
+        "UPDATE pipelines SET current_stage = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (prev_stage, pipeline_id),
+    )
+    db.commit()
+    return prev_stage
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────

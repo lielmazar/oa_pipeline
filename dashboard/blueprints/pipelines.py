@@ -18,10 +18,12 @@ from models.pipeline import (
     update_pipeline_paths,
     delete_pipeline,
     advance_pipeline_stage,
+    go_back_pipeline_stage,
     fork_pipeline,
     record_pipeline_job,
     get_pipeline_jobs,
     get_next_stage,
+    get_prev_stage,
 )
 
 pipelines_bp = Blueprint("pipelines", __name__)
@@ -58,6 +60,8 @@ def _pipeline_response(pipeline: dict) -> dict:
     pipeline["stage_label"] = STAGE_LABELS.get(pipeline["current_stage"], pipeline["current_stage"])
     pipeline["next_stage"] = get_next_stage(pipeline["current_stage"])
     pipeline["next_stage_label"] = STAGE_LABELS.get(pipeline.get("next_stage") or "", "")
+    pipeline["prev_stage"] = get_prev_stage(pipeline["current_stage"])
+    pipeline["prev_stage_label"] = STAGE_LABELS.get(pipeline.get("prev_stage") or "", "")
     pipeline["stages"] = [{"id": s, "label": STAGE_LABELS[s]} for s in STAGES]
     return pipeline
 
@@ -185,6 +189,14 @@ def api_delete_pipeline(pipeline_id: int):
     if err:
         return err
     uid = get_current_user_id()
+
+    # Kill any running jobs for this pipeline before deleting it
+    jobs = current_app.config.get("JOBS")
+    if jobs:
+        for job in jobs.list_jobs():
+            if job.get("pipeline_id") == pipeline_id and job.get("status") == "running":
+                jobs.kill(job["id"])
+
     ok = delete_pipeline(pipeline_id, uid)
     if not ok:
         return jsonify({"error": "not found or not owner"}), 403
@@ -202,6 +214,21 @@ def api_advance_stage(pipeline_id: int):
     next_stage = advance_pipeline_stage(pipeline_id, uid)
     if next_stage is None:
         return jsonify({"error": "cannot advance: not owner, or already at last stage"}), 403
+    pipeline = get_pipeline(pipeline_id, uid)
+    return jsonify(_pipeline_response(pipeline))
+
+
+# ── Go back to previous stage (owner only) ───────────────────────────────────
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/go-back", methods=["POST"])
+def api_go_back_stage(pipeline_id: int):
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    prev_stage = go_back_pipeline_stage(pipeline_id, uid)
+    if prev_stage is None:
+        return jsonify({"error": "cannot go back: not owner, or already at first stage"}), 403
     pipeline = get_pipeline(pipeline_id, uid)
     return jsonify(_pipeline_response(pipeline))
 
@@ -242,6 +269,28 @@ def api_pipeline_status(pipeline_id: int):
 
     status = _build_stage_status(pipeline)
     return jsonify(status)
+
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/file-count", methods=["GET"])
+def api_file_count(pipeline_id: int):
+    """Return total .gz file count from pipeline state (if available)."""
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "not found"}), 404
+    state_path = pipeline.get("state_file_path")
+    total = None
+    if state_path and Path(state_path).exists():
+        try:
+            import json as _json
+            state = _json.loads(Path(state_path).read_text())
+            total = len(state.get("all_files", []))
+        except Exception:
+            pass
+    return jsonify({"total_files": total})
 
 
 def _build_stage_status(pipeline: dict) -> dict:

@@ -104,6 +104,12 @@ def api_launch_job():
         str(v) for v in raw_args.values() if v and v is not True
     )
 
+    # Extract worker count for display in the job monitor
+    try:
+        workers = int(raw_args.get("--workers", 1))
+    except (TypeError, ValueError):
+        workers = 1
+
     try:
         job_summary = _jobs().launch(
             script_key=script_key,
@@ -112,6 +118,7 @@ def api_launch_job():
             cwd=str(PIPELINE_SCRIPTS_DIR),
             label=label.strip(),
             pipeline_id=pipeline_id,
+            workers=workers,
         )
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 409

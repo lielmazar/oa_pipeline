@@ -30,20 +30,30 @@ class JobManager:
         cwd: str,
         label: str,
         pipeline_id: int | None = None,
+        workers: int = 1,
     ) -> dict:
         """Launch a script as a subprocess. Returns job summary dict."""
         with self._global_lock:
-            # Prevent duplicate concurrent runs of the same script for same pipeline
-            for job in self._jobs.values():
-                if (
-                    job["script"] == script_key
-                    and job["status"] == "running"
-                    and job.get("pipeline_id") == pipeline_id
-                ):
-                    raise ValueError(
-                        f"'{script_key}' is already running (job {job['id']}). "
-                        "Kill it first or wait for it to finish."
-                    )
+            # run_pipeline: app-level lock — only one search at a time across all pipelines
+            if script_key == "run_pipeline":
+                for job in self._jobs.values():
+                    if job["script"] == "run_pipeline" and job["status"] == "running":
+                        raise ValueError(
+                            f"A search is already running (job {job['id']}, "
+                            f"pipeline {job.get('pipeline_id')}). "
+                            "Only one OpenAlex search can run at a time."
+                        )
+            else:
+                for job in self._jobs.values():
+                    if (
+                        job["script"] == script_key
+                        and job["status"] == "running"
+                        and job.get("pipeline_id") == pipeline_id
+                    ):
+                        raise ValueError(
+                            f"'{script_key}' is already running (job {job['id']}). "
+                            "Kill it first or wait for it to finish."
+                        )
 
             job_id = uuid.uuid4().hex[:12]
             cmd = ["python3", "-u", str(script_path)] + [str(a) for a in args]
@@ -69,6 +79,7 @@ class JobManager:
                 "script": script_key,
                 "pipeline_id": pipeline_id,
                 "label": label,
+                "workers": workers,
                 "cmd": cmd,
                 "pid": proc.pid,
                 "status": "running",
@@ -157,6 +168,7 @@ class JobManager:
             "script": job["script"],
             "pipeline_id": job.get("pipeline_id"),
             "label": job["label"],
+            "workers": job.get("workers", 1),
             "pid": job["pid"],
             "status": job["status"],
             "started_at": job["started_at"],

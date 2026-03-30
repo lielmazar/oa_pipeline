@@ -1,5 +1,6 @@
 """Authentication blueprint — /api/auth/*"""
 from flask import Blueprint, jsonify, request, session
+from datetime import timedelta
 
 from models.user import get_user_by_username, verify_password
 
@@ -42,6 +43,7 @@ def api_login():
     user = get_user_by_username(username)
     if not user or not verify_password(user["password_hash"], password):
         return jsonify({"error": "Invalid username or password"}), 401
+    session.permanent = True   # Use a cookie with expiry, not a session cookie
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     return jsonify({"ok": True, "username": user["username"]})

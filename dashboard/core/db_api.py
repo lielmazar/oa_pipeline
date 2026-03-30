@@ -25,9 +25,13 @@ def get_db_stats(db_path: Path) -> dict:
             total = conn.execute(
                 "SELECT COUNT(*) FROM filtered_records"
             ).fetchone()[0]
-            llm_count = conn.execute(
-                "SELECT COUNT(*) FROM filtered_records WHERE llm_processed_at IS NOT NULL"
-            ).fetchone()[0]
+            cols = _available_cols(conn)
+            if "llm_is_hydrocarbon" in cols:
+                llm_count = conn.execute(
+                    "SELECT COUNT(*) FROM filtered_records WHERE llm_is_hydrocarbon IS NOT NULL"
+                ).fetchone()[0]
+            else:
+                llm_count = 0
         return {
             "exists": True,
             "size_mb": size_mb,
@@ -53,8 +57,9 @@ def get_schema(db_path: Path) -> list:
 
 # ── Paginated records ──────────────────────────────────────────────────────────
 
-# Columns shown in the default browse view
-_BROWSE_COLS = [
+# Columns shown in the default browse view.
+# LLM columns are optional — they only exist after llm_classify.py has run.
+_BROWSE_COLS_BASE = [
     "openalex_id",
     "doi",
     "title",
@@ -64,10 +69,17 @@ _BROWSE_COLS = [
     "authors_countries",
     "matched_fuel_terms",
     "matched_impact_terms",
-    "llm_fuel_classification",
+]
+_BROWSE_COLS_LLM = [
     "llm_is_hydrocarbon",
     "llm_confidence",
 ]
+
+
+def _available_cols(conn) -> set[str]:
+    """Return the set of columns that actually exist in filtered_records."""
+    rows = conn.execute("PRAGMA table_info(filtered_records)").fetchall()
+    return {r[1] for r in rows}
 
 _ALLOWED_SORT = {
     "publication_year", "title", "doi", "fwci", "openalex_id",
@@ -93,13 +105,17 @@ def get_records(
     where = ""
     params: list = []
     if search and search.strip():
-        where = "WHERE title LIKE ? OR doi LIKE ? OR abstract_text LIKE ?"
         s = f"%{search.strip()}%"
+        where = "WHERE title LIKE ? OR matched_fuel_terms LIKE ? OR matched_impact_terms LIKE ?"
         params = [s, s, s]
 
-    col_list = ", ".join(_BROWSE_COLS)
     try:
         with _connect_ro(db_path) as conn:
+            existing = _available_cols(conn)
+            col_list = ", ".join(
+                c for c in _BROWSE_COLS_BASE + _BROWSE_COLS_LLM if c in existing
+            )
+
             total = conn.execute(
                 f"SELECT COUNT(*) FROM filtered_records {where}", params
             ).fetchone()[0]

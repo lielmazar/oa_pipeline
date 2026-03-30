@@ -111,6 +111,7 @@ function showHome() {
   clearPollTimer();
   disconnectSSE();
   hide('view-pipeline');
+  hide('view-jobs');
   show('view-home');
   loadHome();
 }
@@ -120,6 +121,7 @@ function showPipeline(pipeline) {
   S.activePipeline = pipeline;
   S.pipelineStatus = null;
   hide('view-home');
+  hide('view-jobs');
   show('view-pipeline');
   renderPipelineHeader(pipeline);
   renderStageContent(pipeline);
@@ -163,10 +165,20 @@ el('form-new-pipeline').addEventListener('submit', async e => {
 
 async function loadHome() {
   try {
-    const res = await apiFetch('/api/pipelines');
-    const pipelines = await res.json();
+    const [pipRes, jobsRes] = await Promise.all([
+      apiFetch('/api/pipelines'),
+      apiFetch('/api/jobs'),
+    ]);
+    const pipelines = await pipRes.json();
+    const jobs = await jobsRes.json();
     S.pipelines = pipelines;
-    renderPipelinesGrid(pipelines);
+    const searchingPipelines = new Set(
+      jobs
+        .filter(j => j.script === 'run_pipeline' && j.status === 'running')
+        .map(j => j.pipeline_id)
+    );
+    renderPipelinesGrid(pipelines, searchingPipelines);
+    updateJobsBadge(jobs);
   } catch (err) {
     el('pipelines-grid').innerHTML = `<div class="col-span-full text-red-500 py-8 text-center">${escHtml(err.message)}</div>`;
   }
@@ -182,7 +194,7 @@ const STAGE_COLORS = {
   llm_report_generation:'bg-green-100 text-green-800',
 };
 
-function renderPipelinesGrid(pipelines) {
+function renderPipelinesGrid(pipelines, searchingPipelines = new Set()) {
   const grid = el('pipelines-grid');
   if (!pipelines.length) {
     grid.innerHTML = `<div class="col-span-full text-center text-gray-400 py-16">
@@ -205,9 +217,12 @@ function renderPipelinesGrid(pipelines) {
             <h3 class="font-bold text-base leading-tight">${escHtml(p.name)}${forkedBadge}</h3>
             <p class="text-xs text-gray-400 mt-0.5">by ${escHtml(ownerLabel)}</p>
           </div>
-          <span class="flex-shrink-0 text-xs font-medium px-2 py-1 rounded-full ${stageColor}">
-            ${escHtml(p.stage_label || p.current_stage)}
-          </span>
+          <div class="flex flex-col items-end gap-1 flex-shrink-0">
+            <span class="text-xs font-medium px-2 py-1 rounded-full ${stageColor}">
+              ${escHtml(p.stage_label || p.current_stage)}
+            </span>
+            ${searchingPipelines.has(p.id) ? `<span class="flex items-center gap-1 text-xs text-blue-700 font-medium"><span class="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>searching…</span>` : ''}
+          </div>
         </div>
         ${p.description ? `<p class="text-sm text-gray-500 line-clamp-2">${escHtml(p.description)}</p>` : ''}
         <div class="flex items-center justify-between mt-auto pt-2 border-t border-gray-100">
@@ -355,9 +370,9 @@ function renderPipelineHeader(pipeline) {
       </div>`;
   }).join('');
 
-  // Advance button
-  const advanceBar = el('advance-bar');
+  // Advance / Go Back buttons
   const nextLabel = pipeline.next_stage_label || pipeline.next_stage;
+  const prevLabel = pipeline.prev_stage_label || pipeline.prev_stage;
   if (pipeline.is_owner && pipeline.next_stage) {
     show('advance-bar');
     el('advance-stage-label').textContent = nextLabel;
@@ -373,6 +388,24 @@ function renderPipelineHeader(pipeline) {
     };
   } else {
     hide('advance-bar');
+  }
+
+  const goBackBtn = el('btn-go-back-stage');
+  if (pipeline.is_owner && pipeline.prev_stage) {
+    goBackBtn.classList.remove('hidden');
+    goBackBtn.textContent = `← Back to ${prevLabel}`;
+    goBackBtn.onclick = async () => {
+      if (!confirm(`Go back to "${prevLabel}"?`)) return;
+      const res = await apiFetch(`/api/pipelines/${pipeline.id}/go-back`, { method: 'POST' });
+      const updated = await res.json();
+      if (!res.ok) { alert(updated.error); return; }
+      S.activePipeline = updated;
+      renderPipelineHeader(updated);
+      renderStageContent(updated);
+      loadPipelineStatus(updated.id);
+    };
+  } else {
+    goBackBtn.classList.add('hidden');
   }
 }
 
@@ -506,29 +539,30 @@ function initKeywordStage(pipeline) {
 // ── Stage: OpenAlex Search ────────────────────────────────────────────────────
 
 function renderSearchStage(pipeline) {
-  const config = pipeline.config || {};
   return `
     <div class="space-y-4">
       <div class="bg-white rounded-xl border border-gray-200 p-6">
         <h3 class="font-semibold text-lg mb-1">Stage 2: OpenAlex Search</h3>
         <p class="text-sm text-gray-500 mb-4">Run the parallel pipeline to filter OpenAlex records using your keywords.</p>
+        <div id="cpu-info" class="text-xs text-gray-400 mb-3"></div>
         ${pipeline.is_owner ? `
         <div class="grid grid-cols-2 gap-4 mb-4">
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Workers</label>
-            <input id="search-workers" type="number" value="${config.workers || 4}" min="1" max="32"
+            <label class="block text-sm font-medium text-gray-700 mb-1">Max files <span id="search-max-hint" class="text-gray-400 font-normal text-xs"></span></label>
+            <input id="search-max-files" type="number" placeholder="blank = all files" min="1"
                    class="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
           </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Max files (blank = all)</label>
-            <input id="search-max-files" type="number" placeholder="e.g. 10 for smoke test" min="1"
-                   class="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+          <div class="flex items-end pb-0.5">
+            <span class="text-xs text-gray-400">Workers: <strong class="text-blue-700">16 cores</strong> (fixed)</span>
           </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Local snapshot dir</label>
-            <input id="search-local-dir" type="text" placeholder="/path/to/openalex/works"
-                   class="col-span-2 w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
+        </div>
+        <div class="mb-4">
+          <label class="block text-xs font-medium text-gray-500 mb-1">OpenAlex snapshot dir (saved locally) <button id="btn-toggle-dir" class="text-blue-500 hover:underline text-xs ml-1">edit</button></label>
+          <div id="dir-display" class="text-xs text-gray-600 font-mono bg-gray-50 px-3 py-1.5 rounded border">
+            <span id="local-dir-value">not set — click edit</span>
           </div>
+          <input id="search-local-dir" type="text" placeholder="/path/to/openalex/works" style="display:none"
+                 class="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 mt-1">
         </div>
         <div class="flex gap-3">
           <button id="btn-start-search" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">
@@ -559,18 +593,47 @@ function renderSearchStage(pipeline) {
 }
 
 function initSearchStage(pipeline) {
+  // Show total files count and populate local dir from localStorage
+  const savedDir = localStorage.getItem('oa_local_dir') || '';
+  if (el('local-dir-value')) el('local-dir-value').textContent = savedDir || 'not set — click edit';
+  if (el('search-local-dir')) el('search-local-dir').value = savedDir;
+
+  el('btn-toggle-dir')?.addEventListener('click', () => {
+    const inp = el('search-local-dir');
+    const disp = el('dir-display');
+    if (inp.style.display === 'none') {
+      inp.style.display = '';
+      disp.style.display = 'none';
+      inp.focus();
+    } else {
+      const val = inp.value.trim();
+      localStorage.setItem('oa_local_dir', val);
+      inp.style.display = 'none';
+      disp.style.display = '';
+      el('local-dir-value').textContent = val || 'not set — click edit';
+    }
+  });
+
+  apiFetch(`/api/pipelines/${pipeline.id}/file-count`).then(r => r.json()).then(info => {
+    const hint = el('search-max-hint');
+    if (hint && info.total_files) {
+      hint.textContent = `(${info.total_files.toLocaleString()} files total)`;
+    }
+    const cpuInfo = el('cpu-info');
+    if (cpuInfo) cpuInfo.textContent = `Server: 16 cores fixed for OpenAlex search`;
+  }).catch(() => {});
+
   if (!pipeline.is_owner) return;
 
   el('btn-start-search').addEventListener('click', async () => {
-    const workers = el('search-workers').value || '4';
     const maxFiles = el('search-max-files').value;
-    const localDir = el('search-local-dir').value.trim();
+    const localDir = localStorage.getItem('oa_local_dir') || '';
 
     const args = {
       '--output-db': pipeline.output_db_path,
       '--state-file': pipeline.state_file_path,
-      '--workers': workers,
-      '--keyword-config': null, // will be set by server from pipeline config
+      '--workers': 16,
+      '--keyword-config': null,
     };
     if (maxFiles) args['--max-files'] = maxFiles;
     if (localDir) args['--local-dir'] = localDir;
@@ -773,14 +836,53 @@ function renderSqlResult(result) {
 
 function showRecordModal(record) {
   el('modal-record-title').textContent = record.title || record.openalex_id || 'Record';
+  const oaId = record.openalex_id || '';
+  const oaLink = oaId
+    ? `<a href="https://openalex.org/${oaId}" target="_blank" class="text-blue-600 hover:underline text-xs ml-2">Open in OpenAlex ↗</a>`
+    : '';
+
+  // Try to parse JSON columns for nice display
+  const JSON_COLS = new Set(['matched_fuel_terms','matched_impact_terms','authors_countries',
+    'authors_institutions','llm_fuel_classification','llm_ml_paradigm','llm_ml_method',
+    'llm_ml_model_type','concepts','topics']);
+
   const body = el('modal-record-body');
-  body.innerHTML = Object.entries(record)
+  const rows = Object.entries(record)
     .filter(([k]) => !k.startsWith('_'))
-    .map(([k, v]) => `
-      <div class="flex gap-2">
-        <span class="text-gray-500 font-medium w-40 flex-shrink-0">${escHtml(k)}</span>
-        <span class="break-all">${escHtml(String(v ?? ''))}</span>
-      </div>`).join('');
+    .map(([k, v]) => {
+      let display;
+      if (v === null || v === undefined || v === '') {
+        display = `<span class="text-gray-300 italic">—</span>`;
+      } else if (JSON_COLS.has(k) && typeof v === 'string' && (v.startsWith('[') || v.startsWith('{'))) {
+        try {
+          const parsed = JSON.parse(v);
+          if (Array.isArray(parsed)) {
+            display = parsed.map(x => `<span class="inline-block bg-blue-50 text-blue-800 text-xs px-1.5 py-0.5 rounded mr-1 mb-1">${escHtml(String(x))}</span>`).join('');
+          } else {
+            display = `<pre class="text-xs bg-gray-50 p-2 rounded overflow-x-auto">${escHtml(JSON.stringify(parsed, null, 2))}</pre>`;
+          }
+        } catch {
+          display = `<span class="break-all">${escHtml(String(v))}</span>`;
+        }
+      } else if (typeof v === 'string' && v.length > 300) {
+        display = `<span class="break-all text-sm leading-relaxed">${escHtml(v)}</span>`;
+      } else {
+        display = `<span class="break-all">${escHtml(String(v))}</span>`;
+      }
+      return `
+        <div class="flex gap-2 py-1 border-b border-gray-50">
+          <span class="text-gray-500 font-medium w-44 flex-shrink-0 text-xs pt-0.5">${escHtml(k)}</span>
+          <div class="flex-1 min-w-0 text-sm">${display}</div>
+        </div>`;
+    }).join('');
+
+  body.innerHTML = `
+    <div class="flex items-center gap-2 mb-3 pb-2 border-b">
+      <span class="text-xs font-mono text-gray-400">${escHtml(oaId)}</span>
+      ${oaLink}
+      ${record.doi ? `<a href="https://doi.org/${escHtml(record.doi)}" target="_blank" class="text-blue-600 hover:underline text-xs">DOI ↗</a>` : ''}
+    </div>
+    ${rows}`;
   show('modal-record');
 }
 
@@ -922,6 +1024,10 @@ function startJobStream(prefix, jobId, pipeline, onDone) {
   S.activeJobId = jobId;
   S.outputLines = [];
 
+  // Poll pipeline status every 3s while job is running
+  clearPollTimer();
+  S.pollTimer = setInterval(() => loadPipelineStatus(pipeline.id), 3000);
+
   const termWrapId = `${prefix}-terminal-wrap`;
   const outputId = `${prefix}-output`;
   const labelId = `${prefix}-job-label`;
@@ -970,6 +1076,8 @@ function startJobStream(prefix, jobId, pipeline, onDone) {
         }
       } catch (_) {}
       if (el(killBtnId)) hide(killBtnId);
+      clearPollTimer();
+      if (pipeline?.id) loadPipelineStatus(pipeline.id);
       if (onDone) onDone();
     });
 
@@ -1039,6 +1147,186 @@ function updateStatusDisplay(status) {
     dbStats.innerHTML = `<span><strong>${(status.record_count || 0).toLocaleString()}</strong> records · ${status.db_size_mb || 0} MB</span>`;
   }
 }
+
+// ── Job Monitor ───────────────────────────────────────────────────────────────
+
+let _jobsRefreshTimer = null;
+
+el('nav-jobs').addEventListener('click', () => showJobsView());
+
+el('btn-refresh-jobs').addEventListener('click', () => loadJobs());
+
+function showJobsView() {
+  S.view = 'jobs';
+  clearPollTimer();
+  disconnectSSE();
+  hide('view-home');
+  hide('view-pipeline');
+  show('view-jobs');
+  loadJobs();
+  // Auto-refresh every 5s while on this view
+  if (_jobsRefreshTimer) clearInterval(_jobsRefreshTimer);
+  _jobsRefreshTimer = setInterval(() => {
+    if (S.view === 'jobs') loadJobs();
+    else { clearInterval(_jobsRefreshTimer); _jobsRefreshTimer = null; }
+  }, 5000);
+}
+
+async function loadJobs() {
+  try {
+    const [jobsRes, pipRes] = await Promise.all([
+      apiFetch('/api/jobs'),
+      apiFetch('/api/pipelines'),
+    ]);
+    const jobs = await jobsRes.json();
+    const pipelines = await pipRes.json();
+    renderJobsTable(jobs, pipelines);
+    updateJobsBadge(jobs);
+  } catch (err) {
+    el('jobs-table-wrap').innerHTML = `<div class="text-red-500 p-4">${escHtml(err.message)}</div>`;
+  }
+}
+
+function updateJobsBadge(jobs) {
+  const running = jobs.filter(j => j.status === 'running').length;
+  const badge = el('nav-jobs-badge');
+  if (running > 0) {
+    badge.textContent = running;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function renderJobsTable(jobs, pipelines) {
+  const wrap = el('jobs-table-wrap');
+  const pipelineMap = Object.fromEntries(pipelines.map(p => [p.id, p.name]));
+
+  if (!jobs.length) {
+    wrap.innerHTML = `<div class="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
+      <p class="text-lg mb-1">No jobs recorded</p>
+      <p class="text-sm">Jobs appear here when pipeline scripts are launched.</p>
+    </div>`;
+    return;
+  }
+
+  const STATUS_CLASSES = {
+    running: 'bg-yellow-100 text-yellow-800',
+    done:    'bg-green-100 text-green-800',
+    error:   'bg-red-100 text-red-800',
+    killed:  'bg-gray-100 text-gray-600',
+  };
+
+  const rows = jobs.slice().sort((a, b) => (b.started_at || 0) - (a.started_at || 0)).map(job => {
+    const pname = job.pipeline_id ? (pipelineMap[job.pipeline_id] || `#${job.pipeline_id}`) : '—';
+    const statusCls = STATUS_CLASSES[job.status] || 'bg-gray-100 text-gray-600';
+    const elapsed = job.ended_at
+      ? `${Math.round(job.ended_at - job.started_at)}s`
+      : job.started_at ? `${Math.round(Date.now() / 1000 - job.started_at)}s` : '—';
+    const started = job.started_at ? new Date(job.started_at * 1000).toLocaleTimeString() : '—';
+    const coresCell = (job.workers && job.workers > 1)
+      ? `<span class="text-xs font-medium text-blue-700">${job.workers} cores</span>`
+      : `<span class="text-xs text-gray-400">1</span>`;
+    const killBtn = job.status === 'running'
+      ? `<button class="btn-kill-job text-xs text-red-600 border border-red-200 px-2 py-1 rounded hover:bg-red-50 transition" data-id="${escHtml(job.id)}">Kill</button>`
+      : '';
+    return `<tr class="border-b border-gray-100 hover:bg-blue-50 cursor-pointer job-log-row" data-jobid="${escHtml(job.id)}">
+      <td class="px-4 py-3 text-sm font-mono text-gray-500">${escHtml(job.id)}</td>
+      <td class="px-4 py-3 text-sm">${escHtml(pname)}</td>
+      <td class="px-4 py-3 text-sm font-medium">${escHtml(job.label || job.script)}</td>
+      <td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded-full font-medium ${statusCls}">${escHtml(job.status)}</span></td>
+      <td class="px-4 py-3 text-sm text-center">${coresCell}</td>
+      <td class="px-4 py-3 text-sm text-gray-500">${escHtml(String(job.pid || '—'))}</td>
+      <td class="px-4 py-3 text-sm text-gray-500">${started}</td>
+      <td class="px-4 py-3 text-sm text-gray-500">${elapsed}</td>
+      <td class="px-4 py-3">${killBtn}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <table class="w-full text-left">
+        <thead class="bg-gray-50 border-b border-gray-200 text-xs font-medium text-gray-600 uppercase tracking-wide">
+          <tr>
+            <th class="px-4 py-3">Job ID</th>
+            <th class="px-4 py-3">Pipeline</th>
+            <th class="px-4 py-3">Script</th>
+            <th class="px-4 py-3">Status</th>
+            <th class="px-4 py-3 text-center">Cores</th>
+            <th class="px-4 py-3">PID</th>
+            <th class="px-4 py-3">Started</th>
+            <th class="px-4 py-3">Duration</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+
+  wrap.querySelectorAll('.btn-kill-job').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Kill this job?')) return;
+      const res = await apiFetch(`/api/jobs/${btn.dataset.id}`, { method: 'DELETE' });
+      if (!res.ok) { const d = await res.json(); alert(d.error); return; }
+      loadJobs();
+    });
+  });
+
+  // Job row click → show logs panel
+  wrap.querySelectorAll('.job-log-row').forEach(row => {
+    row.addEventListener('click', e => {
+      if (e.target.closest('button')) return;
+      const jobId = row.dataset.jobid;
+      showJobLogs(jobId);
+    });
+  });
+}
+
+// ── Job log viewer ────────────────────────────────────────────────────────────
+
+async function showJobLogs(jobId) {
+  const output = el('jobs-log-output');
+  const title = el('jobs-log-title');
+  const statusEl = el('jobs-log-status');
+  show('jobs-log-panel');
+  output.textContent = 'Loading...';
+
+  // Fetch current job info
+  const res = await apiFetch(`/api/jobs/${jobId}`);
+  const job = await res.json();
+  if (!res.ok) { output.textContent = job.error; return; }
+  title.textContent = `${job.label || job.script} (${jobId})`;
+  statusEl.textContent = job.status;
+  statusEl.className = `text-xs px-2 py-0.5 rounded ${job.status === 'running' ? 'bg-yellow-700 text-yellow-100' : job.status === 'done' ? 'bg-green-700 text-green-100' : 'bg-gray-700 text-gray-300'}`;
+
+  // Use SSE stream to get output
+  output.textContent = '';
+  if (S.sseSource) { S.sseSource.close(); S.sseSource = null; }
+  const es = new EventSource(`/api/jobs/${jobId}/stream?after=-1`);
+  S.sseSource = es;
+  es.addEventListener('line', e => {
+    try {
+      const d = JSON.parse(e.data.replace(/'/g, '"'));
+      output.textContent += stripAnsi(d.text) + '\n';
+      output.scrollTop = output.scrollHeight;
+    } catch { output.textContent += e.data + '\n'; }
+  });
+  es.addEventListener('done', e => {
+    es.close(); S.sseSource = null;
+    try {
+      const d = JSON.parse(e.data.replace(/'/g, '"'));
+      statusEl.textContent = d.status;
+      statusEl.className = `text-xs px-2 py-0.5 rounded ${d.status === 'done' ? 'bg-green-700 text-green-100' : 'bg-red-700 text-red-100'}`;
+    } catch {}
+    loadJobs(); // refresh table
+  });
+  es.onerror = () => { es.close(); S.sseSource = null; };
+}
+
+el('btn-close-log').addEventListener('click', () => {
+  hide('jobs-log-panel');
+  if (S.sseSource) { S.sseSource.close(); S.sseSource = null; }
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 

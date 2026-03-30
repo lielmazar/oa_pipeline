@@ -285,9 +285,8 @@ class Display:
             return
         self._last_render = now
 
-        lines = self._build_lines()
-
         if self.is_tty:
+            lines = self._build_lines()
             if self._lines_printed > 0:
                 sys.stdout.write(f"\033[{self._lines_printed}A")
             for line in lines:
@@ -682,16 +681,18 @@ def _worker_local(
     except OSError:
         size_mb = 0.0
 
-    worker_status[slot_id] = {
-        "state": "processing",
-        "key": key,
-        "size_mb": size_mb,
-    }
+    if worker_status is not None:
+        worker_status[slot_id] = {
+            "state": "processing",
+            "key": key,
+            "size_mb": size_mb,
+        }
 
     try:
         seen, matched, rows, skips, record_errors = process_records_to_rows(local)
 
-        worker_status[slot_id] = {"state": "done", "key": key}
+        if worker_status is not None:
+            worker_status[slot_id] = {"state": "done", "key": key}
         last_title = rows[-1][2] if rows else ""
 
         return {
@@ -707,7 +708,8 @@ def _worker_local(
         }
     except Exception as e:
         import traceback
-        worker_status[slot_id] = {"state": "error", "key": key}
+        if worker_status is not None:
+            worker_status[slot_id] = {"state": "error", "key": key}
         return {
             "s3_key": key,
             "seen": 0,
@@ -747,13 +749,14 @@ def _worker_s3(
         head = client.head_object(Bucket=S3_BUCKET, Key=s3_key)
         total_bytes: int = head.get("ContentLength", 0)
 
-        worker_status[slot_id] = {
-            "state": "downloading",
-            "key": s3_key,
-            "dl_bytes": 0,
-            "dl_total": total_bytes,
-            "dl_speed": 0.0,
-        }
+        if worker_status is not None:
+            worker_status[slot_id] = {
+                "state": "downloading",
+                "key": s3_key,
+                "dl_bytes": 0,
+                "dl_total": total_bytes,
+                "dl_speed": 0.0,
+            }
 
         downloaded = 0
         chunk_size = 8 * 1024 * 1024
@@ -772,20 +775,23 @@ def _worker_s3(
                 speed = (
                     (downloaded / (1024 ** 2)) / elapsed if elapsed > 0 else 0
                 )
-                worker_status[slot_id] = {
-                    "state": "downloading",
-                    "key": s3_key,
-                    "dl_bytes": downloaded,
-                    "dl_total": total_bytes,
-                    "dl_speed": speed,
-                }
+                if worker_status is not None:
+                    worker_status[slot_id] = {
+                        "state": "downloading",
+                        "key": s3_key,
+                        "dl_bytes": downloaded,
+                        "dl_total": total_bytes,
+                        "dl_speed": speed,
+                    }
 
         dl_mb = downloaded / (1024 ** 2)
 
-        worker_status[slot_id] = {"state": "processing", "key": s3_key}
+        if worker_status is not None:
+            worker_status[slot_id] = {"state": "processing", "key": s3_key}
         seen, matched, rows, skips, record_errors = process_records_to_rows(local_path)
 
-        worker_status[slot_id] = {"state": "done", "key": s3_key}
+        if worker_status is not None:
+            worker_status[slot_id] = {"state": "done", "key": s3_key}
         last_title = rows[-1][2] if rows else ""
 
         return {
@@ -801,7 +807,8 @@ def _worker_s3(
         }
     except Exception as e:
         import traceback
-        worker_status[slot_id] = {"state": "error", "key": s3_key}
+        if worker_status is not None:
+            worker_status[slot_id] = {"state": "error", "key": s3_key}
         return {
             "s3_key": s3_key,
             "seen": 0,
@@ -899,10 +906,14 @@ def run_pipeline(
         return
 
     # ---- Shared state for worker progress ----
-    manager = multiprocessing.Manager()
-    worker_status = manager.dict()
-    for slot in range(workers):
-        worker_status[slot] = {"state": "idle"}
+    if is_tty:
+        manager = multiprocessing.Manager()
+        worker_status: dict = manager.dict()
+        for slot in range(workers):
+            worker_status[slot] = {"state": "idle"}
+    else:
+        manager = None
+        worker_status = None   # workers skip status IPC; no sleep overhead
 
     # ---- Display ----
     display = Display(total_files, workers, worker_status, is_tty, mode)
@@ -965,13 +976,14 @@ def run_pipeline(
                             str(keyword_config) if keyword_config else None,
                         )
                     else:
-                        worker_status[slot] = {
-                            "state": "downloading",
-                            "key": key,
-                            "dl_bytes": 0,
-                            "dl_total": 0,
-                            "dl_speed": 0.0,
-                        }
+                        if worker_status is not None:
+                            worker_status[slot] = {
+                                "state": "downloading",
+                                "key": key,
+                                "dl_bytes": 0,
+                                "dl_total": 0,
+                                "dl_speed": 0.0,
+                            }
                         fut = pool.submit(
                             _worker_s3,
                             key,
@@ -996,7 +1008,8 @@ def run_pipeline(
                 for fut in done:
                     key, slot = submitted.pop(fut)
                     free_slots.append(slot)
-                    worker_status[slot] = {"state": "idle"}
+                    if worker_status is not None:
+                        worker_status[slot] = {"state": "idle"}
 
                     result = fut.result()
 

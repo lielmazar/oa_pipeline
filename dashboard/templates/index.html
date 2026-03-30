@@ -44,6 +44,15 @@
     OpenAlex Pipeline
   </button>
   <div class="flex items-center gap-3">
+    <button id="nav-jobs"
+            class="text-sm text-gray-500 hover:text-blue-700 transition px-3 py-1 rounded border border-gray-200 hover:border-blue-300 flex items-center gap-1.5">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+      </svg>
+      Jobs
+      <span id="nav-jobs-badge" class="hidden text-xs bg-yellow-400 text-yellow-900 font-bold rounded-full px-1.5"></span>
+    </button>
     <span id="nav-username" class="text-sm text-gray-500"></span>
     <button id="nav-logout"
             class="text-sm text-gray-500 hover:text-red-600 transition px-3 py-1 rounded border border-gray-200 hover:border-red-300">
@@ -66,6 +75,36 @@
   </div>
   <div id="pipelines-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
     <div class="col-span-full text-center text-gray-400 py-16">Loading...</div>
+  </div>
+</div>
+
+<!-- ── Jobs monitor view ──────────────────────────────────────────────────── -->
+<div id="view-jobs" class="max-w-5xl mx-auto px-6 py-8 hidden">
+  <div class="flex items-center justify-between mb-6">
+    <h2 class="text-2xl font-bold">Job Monitor</h2>
+    <button id="btn-refresh-jobs"
+            class="text-sm text-gray-500 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition flex items-center gap-1.5">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+  <div id="jobs-table-wrap">
+    <div class="text-gray-400 text-center py-16">Loading...</div>
+  </div>
+  <div id="jobs-log-panel" class="hidden mt-4">
+    <div class="bg-gray-900 rounded-xl overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2 bg-gray-800">
+        <span id="jobs-log-title" class="text-gray-300 text-sm font-mono"></span>
+        <div class="flex items-center gap-3">
+          <span id="jobs-log-status" class="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-300"></span>
+          <button id="btn-close-log" class="text-gray-400 hover:text-white text-sm">✕</button>
+        </div>
+      </div>
+      <div id="jobs-log-output" class="terminal text-green-400 p-4 h-96 overflow-y-auto whitespace-pre-wrap text-xs"></div>
+    </div>
   </div>
 </div>
 
@@ -101,12 +140,17 @@
   <!-- Stage content panel -->
   <div class="max-w-5xl mx-auto px-6 py-6">
     <div id="stage-content"></div>
-    <!-- Advance button (owner only, at bottom of stage) -->
-    <div id="advance-bar" class="hidden mt-6 flex justify-end">
-      <button id="btn-advance-stage"
-              class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700 transition">
-        Advance to <span id="advance-stage-label"></span> →
+    <!-- Stage navigation (owner only, at bottom of stage) -->
+    <div class="mt-6 flex justify-between items-center">
+      <button id="btn-go-back-stage"
+              class="hidden text-sm text-gray-500 hover:text-gray-800 border border-gray-300 px-4 py-2 rounded-lg hover:bg-gray-50 transition">
       </button>
+      <div id="advance-bar" class="hidden ml-auto">
+        <button id="btn-advance-stage"
+                class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700 transition">
+          Advance to <span id="advance-stage-label"></span> →
+        </button>
+      </div>
     </div>
   </div>
 </div>

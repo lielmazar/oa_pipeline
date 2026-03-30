@@ -417,55 +417,53 @@ On the server: `/opt/oa-pipeline/venv/bin/python3 manage.py create-user admin`
 
 ### Requirements
 
-- Ubuntu 22.04+ server with SSH access
-- Root or sudo access on the server
-- The repo cloned locally (deploy scripts use `rsync` + `ssh`)
+- Ubuntu 22.04+ server with root SSH access
+- Windows PowerShell with OpenSSH (`ssh` and `scp` — built into Windows 10/11)
 
-### First-time setup
+### One-time SSH key setup (required — password auth doesn't work with scp)
 
-Run **once** on the target server (copy the repo there first, or run the script via SSH):
+Run once in PowerShell:
 
-```bash
-# From the repo root on the server, or via ssh pipe:
-bash deploy/setup.sh
+```powershell
+# Generate a key (skip if you already have one at ~/.ssh/id_ed25519)
+ssh-keygen -t ed25519
+
+# Copy the public key to the server
+Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub" | ssh root@YOUR_SERVER_IP "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 ```
 
-The script:
-1. Installs `nginx`, `python3-venv`, `python3-full`, `rsync`, `git`
-2. Creates `/opt/oa-pipeline/{dashboard,pipeline,data/pipelines}/`
-3. Creates `/opt/oa-pipeline/venv` and installs Python dependencies
-4. Generates a random `SECRET_KEY` → `/opt/oa-pipeline/data/.secret_key` (chmod 600)
-5. Writes `/etc/systemd/system/oa-pipeline.service` with the generated key and correct paths
-6. Enables and starts the service
-7. Copies `deploy/nginx.conf` to `/etc/nginx/sites-available/oa-pipeline` and enables it
-8. Does an initial rsync of `dashboard/` and `pipeline/`
+After this, `ssh root@YOUR_SERVER_IP` should log in without a password prompt.
 
-After setup, **create the first user**:
+### Deploy (first time and every update)
 
-```bash
-cd /opt/oa-pipeline/dashboard
-/opt/oa-pipeline/venv/bin/python3 manage.py create-user admin
+From the `code/` directory in PowerShell:
+
+```powershell
+.\deploy\deploy.ps1 root@YOUR_SERVER_IP
 ```
 
-### Deploying code updates
+Same command for first-time setup and all future updates. The script:
 
-From your **local machine** (Windows or Linux), after making code changes:
+1. Copies `dashboard/`, `pipeline/`, and `deploy/` to `/opt/oa-pipeline/` on the server
+2. Installs nginx and python3-venv if missing (first-time only)
+3. Recreates the Python venv if missing and syncs packages from `requirements.txt`
+4. Writes the systemd service file (generates a `SECRET_KEY` once, never overwrites it)
+5. Configures nginx
+6. Restarts the `oa-pipeline` service
 
-```bash
-./deploy/deploy.sh user@your-server
+```powershell
+# Normal deploy (sync + restart)
+.\deploy\deploy.ps1 root@157.180.11.56
+
+# Restart only, no file sync
+.\deploy\deploy.ps1 root@157.180.11.56 -RestartOnly
 ```
 
-This rsyncs `dashboard/` and `pipeline/` to the server (skipping `venv/` and `__pycache__/`) then restarts the service:
+After the **first** deploy, create an admin user:
 
-```bash
-# Push code + restart (normal deploy)
-./deploy/deploy.sh user@your-server
-
-# Restart without pushing code (e.g. after a config change)
-./deploy/deploy.sh user@your-server --restart-only
+```powershell
+ssh root@157.180.11.56 '/opt/oa-pipeline/venv/bin/python3 /opt/oa-pipeline/dashboard/manage.py create-user admin'
 ```
-
-> **Windows note:** `deploy.sh` requires a bash shell. Run it from Git Bash, WSL, or any Linux-compatible terminal. Alternatively, run the two rsync commands manually.
 
 ### Server directory layout
 
