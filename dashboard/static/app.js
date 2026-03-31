@@ -1153,63 +1153,240 @@ function countryWikiUrl(code) {
   return `https://en.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, '_'))}`;
 }
 
-function RecordModal({ record, onClose }) {
+function RecordModal({ record, fuelSubgroups, onClose }) {
   if (!record) return null;
-  const oaId = record.openalex_id || '';
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  const oaId  = record.openalex_id || '';
+  const rawDoi = (record.doi || '').replace(/^https?:\/\/(dx\.)?doi\.org\//, '');
+  const doiUrl = rawDoi ? `https://doi.org/${rawDoi}` : null;
+  const oaUrl  = oaId ? `https://openalex.org/${oaId}` : null;
+
+  const parseJsonArr = v => {
+    if (!v) return [];
+    try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; }
+  };
+  const fuelTerms    = parseJsonArr(record.matched_fuel_terms);
+  const impactTerms  = parseJsonArr(record.matched_impact_terms);
+  const institutions = parseJsonArr(record.authors_institutions);
+  const countries    = parseJsonArr(record.authors_countries);
+  const llmScopes    = parseJsonArr(record.llm_fuel_classification).filter(v => v && v.toLowerCase() !== 'none');
+  const llmParadigms = parseJsonArr(record.llm_ml_paradigm).filter(v => v && v.toLowerCase() !== 'none');
+  const llmMethods   = parseJsonArr(record.llm_ml_method).filter(v => v && v.toLowerCase() !== 'none');
+  const llmModels    = parseJsonArr(record.llm_models);
+  const hasLLM       = record.llm_is_hydrocarbon !== undefined && record.llm_is_hydrocarbon !== null;
+
+  const fwci = record.fwci != null ? Number(record.fwci) : null;
+  const fwciColor = !fwci ? 'text-gray-400' : fwci >= 3 ? 'text-green-600 font-bold' : fwci >= 1 ? 'text-blue-600' : 'text-gray-500';
+
+  const recSubgroups = useMemo(
+    () => computeRowSubgroups(record.matched_fuel_terms, fuelSubgroups || []),
+    [record.matched_fuel_terms, fuelSubgroups]
+  );
+
+  const OA_STYLE = {
+    gold:     'bg-yellow-50 text-yellow-700 border-yellow-200',
+    green:    'bg-green-50 text-green-700 border-green-200',
+    hybrid:   'bg-purple-50 text-purple-700 border-purple-200',
+    bronze:   'bg-orange-50 text-orange-700 border-orange-200',
+    closed:   'bg-gray-50 text-gray-500 border-gray-200',
+  };
+  const oaStyle = OA_STYLE[record.open_access_oa_status] || OA_STYLE.closed;
+
+  const Chip = ({ children, cls = 'bg-gray-100 text-gray-600 border-gray-200' }) => (
+    <span className={`text-xs px-2 py-0.5 rounded-full border ${cls}`}>{children}</span>
+  );
+
+  const SectionHead = ({ children }) => (
+    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">{children}</h4>
+  );
+
   return (
-    <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
-        <div className="flex justify-between items-start p-6 border-b flex-shrink-0">
-          <h3 className="text-base font-bold pr-4 flex-1">{record.title || oaId || 'Record'}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 flex-shrink-0">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/>
-            </svg>
-          </button>
-        </div>
-        <div className="overflow-y-auto p-6 flex-1 text-sm">
-          <div className="flex items-center gap-3 mb-3 pb-2 border-b">
-            <span className="text-xs font-mono text-gray-400">{oaId}</span>
-            {oaId && <a href={`https://openalex.org/${oaId}`} target="_blank" className="text-blue-600 hover:underline text-xs">OpenAlex ↗</a>}
-            {record.doi && <a href={`https://doi.org/${record.doi}`} target="_blank" className="text-blue-600 hover:underline text-xs">DOI ↗</a>}
-          </div>
-          {Object.entries(record).filter(([k]) => !k.startsWith('_')).map(([k, v]) => {
-            let display;
-            if (v === null || v === undefined || v === '') {
-              display = <span className="text-gray-300 italic">—</span>;
-            } else if (JSON_DISPLAY_COLS.has(k) && typeof v === 'string' && (v.startsWith('[') || v.startsWith('{'))) {
-              try {
-                const parsed = JSON.parse(v);
-                if (Array.isArray(parsed)) {
-                  display = <span>{parsed.map((x, i) => {
-                    const str = String(x);
-                    if (k === 'authors_countries') {
-                      const name = countryDisplay(str);
-                      return (
-                        <a key={i} href={countryWikiUrl(str)} target="_blank" rel="noreferrer"
-                          className="inline-block bg-blue-50 text-blue-700 text-xs px-1.5 py-0.5 rounded mr-1 mb-1 hover:bg-blue-100 transition">
-                          {name}
-                        </a>
-                      );
-                    }
-                    return <span key={i} className="inline-block bg-blue-50 text-blue-800 text-xs px-1.5 py-0.5 rounded mr-1 mb-1">{str}</span>;
-                  })}</span>;
-                } else {
-                  display = <pre className="text-xs bg-gray-50 p-2 rounded overflow-x-auto">{JSON.stringify(parsed, null, 2)}</pre>;
-                }
-              } catch { display = <span className="break-all">{String(v)}</span>; }
-            } else if (typeof v === 'string' && v.length > 300) {
-              display = <span className="break-all leading-relaxed">{v}</span>;
-            } else {
-              display = <span className="break-all">{String(v)}</span>;
-            }
-            return (
-              <div key={k} className="flex gap-2 py-1.5 border-b border-gray-50">
-                <span className="text-gray-500 font-medium w-44 flex-shrink-0 text-xs pt-0.5">{k}</span>
-                <div className="flex-1 min-w-0">{display}</div>
+    <div className="fixed inset-0 bg-gray-900/70 flex items-start justify-center z-50 p-4 pt-10 overflow-y-auto"
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mb-10">
+
+        {/* ── Title + links ── */}
+        <div className="p-6 pb-4 border-b border-gray-100">
+          <div className="flex gap-3 items-start">
+            <div className="flex-1 min-w-0">
+              <h3 className="text-base font-bold text-gray-900 leading-snug mb-3">
+                {record.title || oaId || 'Record'}
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                {doiUrl && <a href={doiUrl} target="_blank" rel="noopener"
+                  className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition font-medium">
+                  DOI ↗
+                </a>}
+                {oaUrl && <a href={oaUrl} target="_blank" rel="noopener"
+                  className="text-xs px-2.5 py-1 bg-purple-100 text-purple-700 rounded-full hover:bg-purple-200 transition border border-purple-200">
+                  OpenAlex ↗
+                </a>}
+                {record.open_access_oa_status && (
+                  <Chip cls={oaStyle}>{record.open_access_oa_status} OA</Chip>
+                )}
+                {recSubgroups.map(sg => (
+                  <Chip key={sg} cls="bg-blue-50 text-blue-700 border-blue-200">{sg}</Chip>
+                ))}
               </div>
-            );
-          })}
+            </div>
+            <button onClick={onClose} title="Close (Esc)"
+              className="flex-shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {/* ── Stats bar ── */}
+        <div className="grid grid-cols-4 divide-x divide-gray-100 border-b border-gray-100 bg-gray-50/50">
+          {[
+            { label: 'Year',  value: record.publication_year || '—', cls: 'text-gray-800' },
+            { label: 'FWCI',  value: fwci != null ? fwci.toFixed(2) : '—', cls: fwciColor },
+            { label: 'Type',  value: record.type || '—', cls: 'text-gray-700' },
+            { label: 'Language', value: (record.language || '—').toUpperCase(), cls: 'text-gray-700' },
+          ].map(({ label, value, cls }) => (
+            <div key={label} className="px-4 py-3 text-center">
+              <div className="text-xs text-gray-400 mb-0.5 uppercase tracking-wide">{label}</div>
+              <div className={`text-sm ${cls}`}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Body ── */}
+        <div className="p-6 space-y-5 overflow-y-auto max-h-[55vh]">
+
+          {/* Abstract */}
+          {record.abstract_text && (
+            <div>
+              <SectionHead>Abstract</SectionHead>
+              <p className="text-sm text-gray-700 leading-relaxed">{record.abstract_text}</p>
+            </div>
+          )}
+
+          {/* Matched keywords */}
+          {(fuelTerms.length > 0 || impactTerms.length > 0) && (
+            <div>
+              <SectionHead>Matched Keywords</SectionHead>
+              <div className="space-y-2">
+                {fuelTerms.length > 0 && (
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <span className="text-xs text-gray-400 w-12 flex-shrink-0">Fuel</span>
+                    {fuelTerms.map(t => <Chip key={t} cls="bg-orange-50 text-orange-700 border-orange-200">{t}</Chip>)}
+                  </div>
+                )}
+                {impactTerms.length > 0 && (
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <span className="text-xs text-gray-400 w-12 flex-shrink-0">Impact</span>
+                    {impactTerms.map(t => <Chip key={t} cls="bg-teal-50 text-teal-700 border-teal-200">{t}</Chip>)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Affiliations */}
+          {(institutions.length > 0 || countries.length > 0) && (
+            <div>
+              <SectionHead>Affiliations</SectionHead>
+              <div className="space-y-2">
+                {institutions.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {institutions.map(inst => (
+                      <Chip key={inst} cls="bg-purple-50 text-purple-700 border-purple-200">{inst}</Chip>
+                    ))}
+                  </div>
+                )}
+                {countries.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {countries.map(c => (
+                      <a key={c} href={countryWikiUrl(c)} target="_blank" rel="noreferrer"
+                        className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full border border-gray-200 hover:bg-gray-200 transition">
+                        {countryDisplay(c)}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* LLM classification */}
+          {hasLLM && (
+            <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
+              <SectionHead>
+                <span className="text-indigo-500">AI / LLM Classification</span>
+              </SectionHead>
+              <div className="space-y-2.5">
+                <div className="flex flex-wrap gap-2">
+                  {record.llm_is_hydrocarbon != null && (
+                    <Chip cls={record.llm_is_hydrocarbon ? 'bg-green-100 text-green-700 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}>
+                      {record.llm_is_hydrocarbon ? '✓ Hydrocarbon' : '✗ Non-hydrocarbon'}
+                    </Chip>
+                  )}
+                  {record.llm_confidence && (
+                    <Chip cls={record.llm_confidence === 'High' ? 'bg-green-100 text-green-700 border-green-200' : record.llm_confidence === 'Medium' ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-red-100 text-red-600 border-red-200'}>
+                      {record.llm_confidence} confidence
+                    </Chip>
+                  )}
+                </div>
+                {llmScopes.length > 0 && (
+                  <div>
+                    <span className="text-xs text-gray-500 block mb-1">Research scope</span>
+                    <div className="flex flex-wrap gap-1">
+                      {llmScopes.map(s => <Chip key={s} cls="bg-indigo-100 text-indigo-700 border-indigo-200">{s}</Chip>)}
+                    </div>
+                  </div>
+                )}
+                {(llmParadigms.length > 0 || llmMethods.length > 0) && (
+                  <div className="flex gap-6">
+                    {llmParadigms.length > 0 && (
+                      <div>
+                        <span className="text-xs text-gray-500 block mb-1">ML paradigm</span>
+                        <div className="flex flex-wrap gap-1">
+                          {llmParadigms.map(p => <Chip key={p} cls="bg-blue-100 text-blue-700 border-blue-200">{p}</Chip>)}
+                        </div>
+                      </div>
+                    )}
+                    {llmMethods.length > 0 && (
+                      <div>
+                        <span className="text-xs text-gray-500 block mb-1">ML method</span>
+                        <div className="flex flex-wrap gap-1">
+                          {llmMethods.map(m => <Chip key={m} cls="bg-cyan-100 text-cyan-700 border-cyan-200">{m}</Chip>)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {llmModels.length > 0 && (
+                  <div>
+                    <span className="text-xs text-gray-500 block mb-1">Models mentioned</span>
+                    <div className="flex flex-wrap gap-1">
+                      {llmModels.map((m, i) => {
+                        const name = typeof m === 'object' ? (m.name || JSON.stringify(m)) : String(m);
+                        return <Chip key={i} cls="bg-gray-100 text-gray-600 border-gray-200">{name}</Chip>;
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Footer ── */}
+        <div className="px-6 py-3 border-t border-gray-100 bg-gray-50/50 rounded-b-2xl flex items-center justify-between">
+          <span className="text-xs text-gray-400 font-mono">{oaId}</span>
+          <button onClick={onClose}
+            className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+            Close
+          </button>
         </div>
       </div>
     </div>
@@ -1429,72 +1606,116 @@ function ReviewStage({ pipeline, isLLM }) {
           </div>
         )}
 
-        {/* Column visibility + export */}
+        {/* Export */}
         <div className="flex gap-3 mb-4 items-center flex-wrap">
-          {schema.length > 0 && (
-            <ColPickerDropdown label="Show columns" allCols={schema} selected={visibleCols} onChange={applyColChange} />
-          )}
           {records?.rows?.length > 0 && (
             <button onClick={exportTableCsv}
               className="border rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition">
               Export CSV (page)
             </button>
           )}
-          {visibleCols.length > 0 && (
-            <button onClick={() => applyColChange([])}
-              className="text-xs text-gray-400 hover:text-gray-600 underline">Reset columns</button>
-          )}
         </div>
 
-        <div className="min-h-[12rem] overflow-x-auto rounded-lg border border-gray-200">
+        <div className="min-h-[12rem] rounded-xl border border-gray-200 overflow-hidden">
           {!records ? (
-            <div className="text-gray-400 text-center py-8">Loading records...</div>
+            <div className="text-gray-400 text-center py-12">Loading records…</div>
           ) : !records.rows?.length ? (
-            <div className="text-gray-400 text-center py-8">No records found</div>
-          ) : (
-            <table className="w-full text-xs text-left">
-              <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>
-                  {fuelSubgroups.length > 1 && (
-                    <th className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap">Sub-group</th>
-                  )}
-                  {records.columns.map(c => (
-                    <th key={c} className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap cursor-pointer hover:bg-gray-100"
-                      onClick={() => doSort(c)}
-                      title={`Sort by ${c}`}>{c}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
+            <div className="text-gray-400 text-center py-12">No records found</div>
+          ) : (() => {
+            const cols = records.columns;
+            const ci = name => cols.indexOf(name);
+            const TITLE = ci('title'); const DOI = ci('doi'); const YEAR = ci('publication_year');
+            const FWCI  = ci('fwci'); const TYPE = ci('type'); const OA = ci('open_access_oa_status');
+            const ABS   = ci('abstract_text'); const MFUEL = ci('matched_fuel_terms');
+            const MIMP  = ci('matched_impact_terms'); const INST = ci('authors_institutions');
+            const SOURCE= ci('primary_location_source_display_name');
+            const parseArr = v => { if (!v) return []; try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } };
+            const OA_CHIP = { gold: 'bg-yellow-50 text-yellow-600', green: 'bg-green-50 text-green-600', hybrid: 'bg-purple-50 text-purple-600', bronze: 'bg-orange-50 text-orange-600' };
+
+            return (
+              <div className="divide-y divide-gray-100">
                 {records.rows.map((row, ri) => {
-                  const matchedFuelIdx = records.columns.indexOf('matched_fuel_terms');
-                  const matchedJson = matchedFuelIdx >= 0 ? row[matchedFuelIdx] : null;
+                  const matchedJson  = MFUEL >= 0 ? row[MFUEL] : null;
                   const rowSubgroups = computeRowSubgroups(matchedJson, fuelSubgroups);
-                  // Client-side sub-group filter
                   if (subgroupFilter && !rowSubgroups.includes(subgroupFilter)) return null;
-                  const rowId = row[records.columns.indexOf('openalex_id')] || ri;
+
+                  const rowId   = row[ci('openalex_id')] || ri;
+                  const title   = TITLE >= 0 ? (row[TITLE] || '') : '';
+                  const doi     = DOI  >= 0 ? (row[DOI]   || '') : '';
+                  const year    = YEAR >= 0 ? row[YEAR]   : null;
+                  const fwci    = FWCI >= 0 && row[FWCI] != null ? Number(row[FWCI]) : null;
+                  const oaStat  = OA   >= 0 ? (row[OA]    || '') : '';
+                  const abstr   = ABS  >= 0 ? (row[ABS]   || '') : '';
+                  const insts   = parseArr(INST >= 0 ? row[INST] : null).slice(0, 3);
+                  const source  = SOURCE >= 0 ? (row[SOURCE] || '') : '';
+                  const fuelArr = parseArr(matchedJson);
+                  const impArr  = parseArr(MIMP >= 0 ? row[MIMP] : null);
+                  const doiUrl  = doi ? `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//, '')}` : null;
+                  const fwciCls = !fwci ? 'bg-gray-100 text-gray-400' : fwci >= 3 ? 'bg-green-100 text-green-700 font-bold' : fwci >= 1 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500';
+
                   return (
-                    <tr key={ri} onClick={() => handleRowClick(rowId)}
-                      className="border-b border-gray-100 hover:bg-blue-50 cursor-pointer">
-                      {fuelSubgroups.length > 1 && (
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          {rowSubgroups.map(sg => (
-                            <span key={sg} className="inline-block text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full mr-1">{sg}</span>
-                          ))}
-                        </td>
+                    <div key={ri} onClick={() => handleRowClick(rowId)}
+                      className="px-5 py-4 hover:bg-blue-50 cursor-pointer transition-colors group">
+                      {/* Row 1: title */}
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm font-semibold text-gray-900 group-hover:text-blue-700 transition-colors leading-snug">
+                            {doiUrl ? (
+                              <a href={doiUrl} target="_blank" rel="noopener"
+                                onClick={e => e.stopPropagation()}
+                                className="hover:underline decoration-blue-400">{title || rowId}</a>
+                            ) : (title || rowId)}
+                          </span>
+                        </div>
+                        {/* FWCI badge */}
+                        {fwci != null && (
+                          <span className={`flex-shrink-0 text-xs px-2 py-0.5 rounded-full ${fwciCls}`} title="Field-Weighted Citation Impact">
+                            FWCI {fwci.toFixed(1)}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Row 2: meta chips */}
+                      <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                        {year && <span className="text-xs text-gray-500 font-medium">{year}</span>}
+                        {oaStat && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[oaStat] || 'bg-gray-100 text-gray-500'}`}>{oaStat}</span>}
+                        {source && <span className="text-xs text-gray-400 italic truncate max-w-[220px]">{source}</span>}
+                        {rowSubgroups.map(sg => (
+                          <span key={sg} className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">{sg}</span>
+                        ))}
+                        {fuelArr.length > 0 && (
+                          <span className="text-xs text-orange-500">
+                            {fuelArr.slice(0, 3).join(' · ')}{fuelArr.length > 3 ? ` +${fuelArr.length - 3}` : ''}
+                          </span>
+                        )}
+                        {impArr.length > 0 && (
+                          <span className="text-xs text-teal-500">
+                            {impArr.slice(0, 2).join(' · ')}{impArr.length > 2 ? ` +${impArr.length - 2}` : ''}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Row 3: abstract snippet + institutions */}
+                      {(abstr || insts.length > 0) && (
+                        <div className="flex gap-4 mt-1.5">
+                          {abstr && (
+                            <p className="text-xs text-gray-400 leading-relaxed flex-1 min-w-0 line-clamp-2">
+                              {abstr.slice(0, 220)}{abstr.length > 220 ? '…' : ''}
+                            </p>
+                          )}
+                          {insts.length > 0 && (
+                            <div className="flex-shrink-0 text-xs text-gray-400 max-w-[220px] text-right">
+                              {insts.map((inst, i) => <div key={i} className="truncate">{inst}</div>)}
+                            </div>
+                          )}
+                        </div>
                       )}
-                      {row.map((cell, ci) => (
-                        <td key={ci} className="px-3 py-2 max-w-[200px] truncate"
-                          title={String(cell ?? '')}>
-                          {String(cell ?? '')}
-                        </td>
-                      ))}
-                    </tr>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
-          )}
+              </div>
+            );
+          })()}
         </div>
 
         {totalPages > 0 && (
@@ -1552,7 +1773,7 @@ function ReviewStage({ pipeline, isLLM }) {
         )}
       </div>
 
-      {selectedRecord && <RecordModal record={selectedRecord} onClose={() => setSelectedRecord(null)} />}
+      {selectedRecord && <RecordModal record={selectedRecord} fuelSubgroups={fuelSubgroups} onClose={() => setSelectedRecord(null)} />}
     </div>
   );
 }

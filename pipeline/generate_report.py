@@ -74,6 +74,25 @@ plt.rcParams.update({
     "axes.spines.right": False,
 })
 
+# Shortened label maps shared across all chart functions
+_SHORT_SCOPE: dict[str, str] = {
+    "Engineering Design Optimization – Emissions Reduction":      "Design Opt.–Emissions",
+    "Engineering Design Optimization – Performance Enhancement":  "Design Opt.–Performance",
+    "Fuel Property Prediction from molecular composition derived data": "Fuel Prop. Prediction",
+    "Life Cycle Assessment (LCA) – Environmental Impact Analysis": "LCA",
+    "Techno-Economic Assessment (TEA) – Economic Feasibility Analysis": "TEA",
+    "Discovery of Novel Molecules for Green Energy Applications":  "Novel Molecules",
+    "fuel production from sustainable feedstocks":                "Sustainable Production",
+    "Fuel Blend and Additive Research":                           "Blend & Additives",
+    "Regulatory Research and Analysis":                           "Regulatory",
+}
+_SHORT_ML: dict[str, str] = {
+    "Classical Machine Learning (SVM, Random Forest, Gradient Boosting)": "Classical ML",
+    "Deep Learning (Neural Networks)":                                     "Deep Learning",
+    "Probabilistic Models (Bayesian Networks, HMM)":                      "Probabilistic",
+    "Evolutionary / Heuristic Methods (Genetic Algorithms)":              "Evolutionary",
+}
+
 
 def _fig_to_base64(fig: plt.Figure) -> str:
     buf = io.BytesIO()
@@ -361,6 +380,25 @@ def _group_by_subgroup(
     return {k: v for k, v in grouped.items() if v}
 
 
+def _charts_per_subgroup(
+    records: list[dict],
+    subgroups: list[dict],
+    matched_col: str,
+    chart_fn,        # callable(sg_name: str, sg_recs: list[dict]) -> str
+    min_n: int = 3,
+) -> list[tuple[str, str]]:
+    """Iterate subgroups, call chart_fn for each with enough records, collect (name, b64) pairs."""
+    grouped = _group_by_subgroup(records, subgroups, matched_col)
+    out = []
+    for sg_name, sg_recs in grouped.items():
+        if len(sg_recs) < min_n:
+            continue
+        img = chart_fn(sg_name, sg_recs)
+        if img:
+            out.append((sg_name, img))
+    return out
+
+
 def chart_fwci(records: list[dict]) -> tuple[str, list[dict]]:
     """Return (base64_img, outlier_records).
 
@@ -456,6 +494,304 @@ def chart_yearly_fuel_trends(records: list[dict], n: int = 6,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Chart generators — per-subgroup breakdowns
+# ═══════════════════════════════════════════════════════════════════════════
+
+def chart_publications_per_subgroup(
+    records: list[dict],
+    subgroups: list[dict],
+    matched_col: str,
+) -> list[tuple[str, str]]:
+    """Publication-by-year bar chart for each fuel sub-group (small multiples)."""
+    return _charts_per_subgroup(
+        records, subgroups, matched_col,
+        lambda sg_name, sg_recs: chart_publications_by_year(sg_recs),
+    )
+
+
+def chart_yearly_trends_per_subgroup(
+    records: list[dict],
+    subgroups: list[dict],
+    matched_col: str,
+    group1_label: str = "Fuel terms",
+) -> list[tuple[str, str]]:
+    """Stacked fuel-term trends for each sub-group (small multiples)."""
+    return _charts_per_subgroup(
+        records, subgroups, matched_col,
+        lambda sg_name, sg_recs: chart_yearly_fuel_trends(
+            sg_recs, n=5, group1_label=group1_label
+        ),
+    )
+
+
+def chart_impact_profile_per_subgroup(
+    records: list[dict],
+    fuel_subgroups: list[dict],
+    impact_subgroups: list[dict],
+    fuel_col: str = "matched_fuel_terms",
+    impact_col: str = "matched_impact_terms",
+) -> str:
+    """100%-stacked horizontal bar: which impact sub-groups dominate each fuel sub-group."""
+    if not fuel_subgroups or not impact_subgroups:
+        return ""
+    impact_t2sg = _build_term_to_subgroup(impact_subgroups)
+    impact_sg_names = [sg["name"] for sg in impact_subgroups]
+    fuel_grouped = _group_by_subgroup(records, fuel_subgroups, fuel_col)
+    if not fuel_grouped:
+        return ""
+
+    fuel_sg_names = list(fuel_grouped.keys())
+    matrix = np.zeros((len(fuel_sg_names), len(impact_sg_names)), dtype=float)
+    for fi, fsn in enumerate(fuel_sg_names):
+        for rec in fuel_grouped[fsn]:
+            for term in _json_col(rec, impact_col):
+                isgs = impact_t2sg.get(term.lower())
+                if isgs and isgs in impact_sg_names:
+                    matrix[fi, impact_sg_names.index(isgs)] += 1
+        total = matrix[fi].sum()
+        if total > 0:
+            matrix[fi] /= total
+
+    fig, ax = plt.subplots(figsize=(10, max(3.5, len(fuel_sg_names) * 0.55)))
+    colors = PALETTE[:len(impact_sg_names)]
+    lefts = np.zeros(len(fuel_sg_names))
+    ys = range(len(fuel_sg_names))
+    for ii, isgn in enumerate(impact_sg_names):
+        vals = matrix[:, ii]
+        ax.barh(ys, vals * 100, left=lefts * 100, color=colors[ii % len(colors)],
+                height=0.65, label=isgn, zorder=3)
+        lefts += vals
+    ax.set_yticks(ys)
+    ax.set_yticklabels(fuel_sg_names, fontsize=9)
+    ax.set_xlabel("Share of matched impact terms (%)")
+    ax.set_title("Impact term profile per fuel sub-group")
+    ax.set_xlim(0, 100)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax.legend(fontsize=8, loc="lower right", ncol=2)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def chart_impact_terms_per_subgroup(
+    records: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+    n: int = 10,
+) -> list[tuple[str, str]]:
+    """Top impact terms for each fuel sub-group (small multiples)."""
+    return _charts_per_subgroup(
+        records, fuel_subgroups, matched_col,
+        lambda sg_name, sg_recs: chart_top_terms(
+            _count_json_col(sg_recs, "matched_impact_terms"),
+            f"Top impact terms — {sg_name}", n=n, color=PALETTE[3],
+        ),
+    )
+
+
+def chart_countries_per_subgroup(
+    records: list[dict],
+    subgroups: list[dict],
+    matched_col: str,
+    n: int = 15,
+) -> list[tuple[str, str]]:
+    """Top countries for each fuel sub-group (small multiples)."""
+    return _charts_per_subgroup(
+        records, subgroups, matched_col,
+        lambda sg_name, sg_recs: chart_countries(sg_recs, n=n),
+    )
+
+
+def chart_journals_comparison(
+    records: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+    top_j: int = 5,
+) -> str:
+    """Grouped horizontal bar: top journals for each fuel sub-group side-by-side."""
+    grouped = _group_by_subgroup(records, fuel_subgroups, matched_col)
+    if not grouped:
+        return ""
+
+    sg_names = list(grouped.keys())
+    sg_top: dict[str, list[str]] = {}
+    for sgn, recs in grouped.items():
+        jc = Counter(r.get("primary_location_source_display_name")
+                     for r in recs if r.get("primary_location_source_display_name"))
+        sg_top[sgn] = [j for j, _ in jc.most_common(top_j)]
+
+    # Collect unique journals (respect top_j limit; fall back to 3 if too many)
+    seen: list[str] = []
+    for jlist in sg_top.values():
+        for j in jlist:
+            if j not in seen:
+                seen.append(j)
+    if len(seen) > 25:
+        top_j = 3
+        sg_top = {}
+        for sgn, recs in grouped.items():
+            jc = Counter(r.get("primary_location_source_display_name")
+                         for r in recs if r.get("primary_location_source_display_name"))
+            sg_top[sgn] = [j for j, _ in jc.most_common(top_j)]
+        seen = []
+        for jlist in sg_top.values():
+            for j in jlist:
+                if j not in seen:
+                    seen.append(j)
+    if not seen:
+        return ""
+
+    # Shorten journal names
+    def _shorten(name: str, max_len: int = 35) -> str:
+        return name if len(name) <= max_len else name[:max_len - 1] + "…"
+
+    short_names = [_shorten(j) for j in seen]
+    x = np.arange(len(seen))
+    width = 0.8 / len(sg_names)
+    fig, ax = plt.subplots(figsize=(max(10, len(seen) * 0.9), max(4, len(sg_names) * 0.6)))
+    for i, sgn in enumerate(sg_names):
+        jc = Counter(r.get("primary_location_source_display_name")
+                     for r in grouped[sgn] if r.get("primary_location_source_display_name"))
+        vals = [jc.get(j, 0) for j in seen]
+        ax.bar(x + i * width, vals, width=width * 0.9, label=sgn,
+               color=PALETTE[i % len(PALETTE)], zorder=3)
+    ax.set_xticks(x + width * (len(sg_names) - 1) / 2)
+    ax.set_xticklabels(short_names, rotation=40, ha="right", fontsize=8)
+    ax.set_ylabel("Papers")
+    ax.set_title("Top journals by fuel sub-group")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def chart_oa_per_subgroup_stacked(
+    records: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """100%-stacked horizontal bar: OA status distribution per fuel sub-group."""
+    grouped = _group_by_subgroup(records, fuel_subgroups, matched_col)
+    if not grouped:
+        return ""
+    oa_color = {
+        "gold": PALETTE[2], "green": PALETTE[1], "bronze": PALETTE[6],
+        "closed": PALETTE[3], "hybrid": PALETTE[4], "unknown": PALETTE[7],
+    }
+    all_statuses: list[str] = []
+    sg_names = list(grouped.keys())
+    counts: dict[str, Counter] = {}
+    for sgn, recs in grouped.items():
+        c = Counter((r.get("open_access_oa_status") or "unknown").lower() for r in recs)
+        counts[sgn] = c
+        for s in c:
+            if s not in all_statuses:
+                all_statuses.append(s)
+    ordered = [s for s in oa_color if s in all_statuses] + [
+        s for s in all_statuses if s not in oa_color]
+
+    fig, ax = plt.subplots(figsize=(9, max(3, len(sg_names) * 0.55)))
+    lefts = np.zeros(len(sg_names))
+    for status in ordered:
+        vals = np.array([counts[sg].get(status, 0) for sg in sg_names], dtype=float)
+        totals = np.array([sum(counts[sg].values()) for sg in sg_names], dtype=float)
+        pcts = np.where(totals > 0, vals / totals * 100, 0)
+        color = oa_color.get(status, PALETTE[8])
+        ax.barh(sg_names, pcts, left=lefts, color=color, height=0.65,
+                label=status.capitalize(), zorder=3)
+        lefts += pcts
+    ax.set_xlabel("Share (%)")
+    ax.set_title("Open access status by fuel sub-group")
+    ax.set_xlim(0, 100)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax.legend(fontsize=8, loc="lower right", ncol=3)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def chart_work_types_per_subgroup_stacked(
+    records: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """100%-stacked horizontal bar: work type distribution per fuel sub-group."""
+    grouped = _group_by_subgroup(records, fuel_subgroups, matched_col)
+    if not grouped:
+        return ""
+    sg_names = list(grouped.keys())
+    all_types: list[str] = []
+    counts: dict[str, Counter] = {}
+    for sgn, recs in grouped.items():
+        c = Counter((r.get("type") or "unknown") for r in recs)
+        counts[sgn] = c
+        for t in c:
+            if t not in all_types:
+                all_types.append(t)
+    # Sort by total occurrence descending
+    type_totals = Counter({t: sum(counts[sg].get(t, 0) for sg in sg_names) for t in all_types})
+    ordered = [t for t, _ in type_totals.most_common()]
+
+    fig, ax = plt.subplots(figsize=(9, max(3, len(sg_names) * 0.55)))
+    lefts = np.zeros(len(sg_names))
+    for i, wtype in enumerate(ordered):
+        vals = np.array([counts[sg].get(wtype, 0) for sg in sg_names], dtype=float)
+        totals = np.array([sum(counts[sg].values()) for sg in sg_names], dtype=float)
+        pcts = np.where(totals > 0, vals / totals * 100, 0)
+        ax.barh(sg_names, pcts, left=lefts, color=PALETTE[i % len(PALETTE)],
+                height=0.65, label=wtype, zorder=3)
+        lefts += pcts
+    ax.set_xlabel("Share (%)")
+    ax.set_title("Work type distribution by fuel sub-group")
+    ax.set_xlim(0, 100)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax.legend(fontsize=8, loc="lower right", ncol=2)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def chart_fwci_per_subgroup(
+    records: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """Horizontal box-plot comparing FWCI distributions across fuel sub-groups."""
+    grouped = _group_by_subgroup(records, fuel_subgroups, matched_col)
+    sg_data: list[tuple[str, list[float]]] = []
+    for sgn, recs in grouped.items():
+        vals_raw = [r["fwci"] for r in recs if r.get("fwci") is not None]
+        if len(vals_raw) < 5:
+            continue
+        # Clip at per-subgroup IQR fence
+        arr = np.array(vals_raw)
+        q25, q75 = float(np.percentile(arr, 25)), float(np.percentile(arr, 75))
+        fence = q75 + 1.5 * (q75 - q25)
+        clipped = [v for v in vals_raw if v <= fence]
+        if clipped:
+            sg_data.append((sgn, clipped))
+    if not sg_data:
+        return ""
+    # Sort by median descending
+    sg_data.sort(key=lambda x: -float(np.median(x[1])))
+    sg_names = [d[0] for d in sg_data]
+    values   = [d[1] for d in sg_data]
+
+    fig, ax = plt.subplots(figsize=(9, max(3.5, len(sg_data) * 0.65)))
+    bp = ax.boxplot(values, vert=False, patch_artist=True, showfliers=False,
+                    medianprops={"color": TEXT_COLOR, "linewidth": 2})
+    for patch, color in zip(bp["boxes"], [PALETTE[i % len(PALETTE)] for i in range(len(sg_data))]):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    ax.set_yticks(range(1, len(sg_names) + 1))
+    ax.set_yticklabels(sg_names, fontsize=9)
+    ax.axvline(1.0, color=PALETTE[3], linestyle="--", linewidth=1.2,
+               label="World avg (1.0)")
+    ax.set_xlabel("FWCI  (each sub-group clipped at its IQR fence)")
+    ax.set_title("Citation impact (FWCI) by fuel sub-group")
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Chart generators — LLM / ML-AI analysis (new)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -468,19 +804,7 @@ def chart_fuel_classification(llm_recs: list[dict]) -> str:
                 c[v] += 1
     if not c:
         return ""
-    # Shorten long labels
-    SHORT = {
-        "Engineering Design Optimization – Emissions Reduction":     "Design Opt. – Emissions",
-        "Engineering Design Optimization – Performance Enhancement":  "Design Opt. – Performance",
-        "Fuel Property Prediction from molecular composition derived data": "Fuel Property Prediction",
-        "Life Cycle Assessment (LCA) – Environmental Impact Analysis": "LCA – Environmental",
-        "Techno-Economic Assessment (TEA) – Economic Feasibility Analysis": "TEA – Economic",
-        "Discovery of Novel Molecules for Green Energy Applications":  "Novel Molecule Discovery",
-        "fuel production from sustainable feedstocks":                "Sustainable Production",
-        "Fuel Blend and Additive Research":                           "Blend & Additive Research",
-        "Regulatory Research and Analysis":                           "Regulatory",
-    }
-    renamed = Counter({SHORT.get(k, k): v for k, v in c.items()})
+    renamed = Counter({_SHORT_SCOPE.get(k, k): v for k, v in c.items()})
     return chart_top_terms(renamed, "Research scope (LLM classification)", n=20, color=PALETTE[0])
 
 
@@ -502,13 +826,7 @@ def chart_ml_method(llm_recs: list[dict]) -> str:
         for v in _json_col(r, "llm_ml_method"):
             if v and v.lower() not in ("none", "other"):
                 c[v] += 1
-    SHORT = {
-        "Classical Machine Learning (SVM, Random Forest, Gradient Boosting)": "Classical ML",
-        "Deep Learning (Neural Networks)":                                     "Deep Learning",
-        "Probabilistic Models (Bayesian Networks, HMM)":                      "Probabilistic",
-        "Evolutionary / Heuristic Methods (Genetic Algorithms)":              "Evolutionary / Heuristic",
-    }
-    renamed = Counter({SHORT.get(k, k): v for k, v in c.items()})
+    renamed = Counter({_SHORT_ML.get(k, k): v for k, v in c.items()})
     return chart_top_terms(renamed, "ML/AI model class / method", n=10, color=PALETTE[2])
 
 
@@ -585,31 +903,14 @@ def chart_ml_adoption_over_time(llm_recs: list[dict]) -> str:
 
 def chart_scope_x_ml(llm_recs: list[dict]) -> str:
     """Heatmap: research scope × ML paradigm."""
-    SHORT_SCOPE = {
-        "Engineering Design Optimization – Emissions Reduction":     "Design Opt. – Emissions",
-        "Engineering Design Optimization – Performance Enhancement":  "Design Opt. – Performance",
-        "Fuel Property Prediction from molecular composition derived data": "Fuel Property Pred.",
-        "Life Cycle Assessment (LCA) – Environmental Impact Analysis": "LCA",
-        "Techno-Economic Assessment (TEA) – Economic Feasibility Analysis": "TEA",
-        "Discovery of Novel Molecules for Green Energy Applications":  "Novel Molecule Discovery",
-        "fuel production from sustainable feedstocks":                "Sustainable Production",
-        "Fuel Blend and Additive Research":                           "Blend & Additive",
-        "Regulatory Research and Analysis":                           "Regulatory",
-    }
-    SHORT_ML = {
-        "Classical Machine Learning (SVM, Random Forest, Gradient Boosting)": "Classical ML",
-        "Deep Learning (Neural Networks)":                                     "Deep Learning",
-        "Probabilistic Models (Bayesian Networks, HMM)":                      "Probabilistic",
-        "Evolutionary / Heuristic Methods (Genetic Algorithms)":              "Evolutionary",
-    }
     ml_recs = [r for r in llm_recs if _uses_ml(r)]
     scope_c  = Counter()
     paradigm_c = Counter()
     pairs: Counter = Counter()
     for r in ml_recs:
-        scopes    = [SHORT_SCOPE.get(v, v) for v in _json_col(r, "llm_fuel_classification")
+        scopes    = [_SHORT_SCOPE.get(v, v) for v in _json_col(r, "llm_fuel_classification")
                      if v and v.lower() not in ("none", "other")]
-        paradigms = [SHORT_ML.get(v, v) for v in _json_col(r, "llm_ml_paradigm")
+        paradigms = [_SHORT_ML.get(v, v) for v in _json_col(r, "llm_ml_paradigm")
                      if v and v.lower() != "none"]
         for s in scopes:
             scope_c[s] += 1
@@ -801,17 +1102,32 @@ tr:hover td { background: var(--surface); }
 @media (max-width: 700px) {
   .two-col, .three-col { grid-template-columns: 1fr; }
 }
-details.outliers { margin: 12px 0 24px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-details.outliers summary {
-  padding: 10px 16px; background: var(--surface); cursor: pointer;
-  font-size: 14px; font-weight: 600; color: var(--amber); list-style: none;
+details.outliers, details.top-papers {
+  margin: 12px 0 24px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
 }
-details.outliers summary::before { content: "▶ "; font-size: 11px; }
-details.outliers[open] summary::before { content: "▼ "; }
-details.outliers table { margin: 0; font-size: 13px; }
-details.outliers td, details.outliers th { padding: 6px 12px; }
+details.outliers summary, details.top-papers summary {
+  padding: 10px 16px; background: var(--surface); cursor: pointer;
+  font-size: 14px; font-weight: 600; list-style: none; user-select: none;
+}
+details.outliers summary { color: var(--amber); }
+details.top-papers summary { color: var(--accent); }
+details.outliers summary::before, details.top-papers summary::before { content: "▶  "; font-size: 11px; }
+details.outliers[open] summary::before, details.top-papers[open] summary::before { content: "▼  "; }
+details.outliers table, details.top-papers table { margin: 0; font-size: 13px; }
+details.outliers td, details.outliers th,
+details.top-papers td, details.top-papers th { padding: 6px 12px; }
 details.outliers .fwci-val { font-weight: 700; color: var(--amber); }
 .subgroup-section { margin-top: 28px; }
+details.subgroup-breakdown {
+  margin: 16px 0 28px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+details.subgroup-breakdown > summary {
+  padding: 10px 16px; background: var(--surface); cursor: pointer;
+  font-size: 14px; font-weight: 600; list-style: none; user-select: none; color: var(--accent);
+}
+details.subgroup-breakdown > summary::before { content: "▶  "; font-size: 11px; }
+details.subgroup-breakdown[open] > summary::before { content: "▼  "; }
+details.subgroup-breakdown > .subgroup-inner { padding: 12px 16px; }
 """
 
 
@@ -876,19 +1192,269 @@ def _fwci_outlier_html(outlier_recs: list[dict]) -> str:
 """
 
 
-def _subgroup_inst_html(charts: list[tuple[str, str]]) -> str:
-    """Render per-subgroup institution charts as stacked sections."""
+def _per_subgroup_html(
+    charts: list[tuple[str, str]],
+    heading: str = "By fuel sub-group",
+    two_col: bool = False,
+) -> str:
+    """Render a list of (sg_name, b64_png) tuples as a collapsible <details> section."""
     if not charts:
         return ""
-    parts = []
+    inner = ""
     for sg_name, b64 in charts:
-        parts.append(
+        inner += (
             f'<div class="subgroup-section">'
             f'<h3>{sg_name}</h3>'
-            f'{_chart(b64, f"Top institutions — {sg_name}")}'
-            f"</div>"
+            f'{_chart(b64, sg_name)}'
+            f'</div>\n'
         )
-    return "\n".join(parts)
+    grid = f'<div class="two-col">{inner}</div>' if two_col else inner
+    return (
+        f'<details class="subgroup-breakdown" open>'
+        f'<summary>{heading}</summary>'
+        f'<div class="subgroup-inner">{grid}</div>'
+        f'</details>'
+    )
+
+
+def _top_papers_table(
+    records: list[dict],
+    summary_label: str = "Top papers by FWCI",
+    n: int = 10,
+) -> str:
+    """Collapsible table of top-N papers by FWCI with DOI links."""
+    scored = [(r.get("fwci") or 0, r) for r in records if r.get("fwci")]
+    scored.sort(key=lambda x: -x[0])
+    top = [r for _, r in scored[:n]]
+    if not top:
+        return ""
+    rows_html = ""
+    for i, r in enumerate(top):
+        fwci  = r.get("fwci") or 0
+        title = (r.get("title") or "").replace("<", "&lt;").replace(">", "&gt;")
+        doi   = (r.get("doi") or "").strip()
+        year  = r.get("publication_year") or "—"
+        insts = _json_col(r, "authors_institutions")
+        inst_str = "; ".join(insts[:2]) + ("…" if len(insts) > 2 else "")
+        linked = (
+            f'<a href="{doi}" target="_blank" rel="noopener" '
+            f'style="color:var(--accent);text-decoration:none;">{title}</a>'
+            if doi else title
+        )
+        rows_html += (
+            f"<tr><td style='text-align:center;color:var(--muted);font-size:12px'>{i+1}</td>"
+            f"<td>{linked}</td>"
+            f"<td style='text-align:center'>{year}</td>"
+            f'<td style="text-align:center"><span style="font-weight:700;color:{"var(--green)" if fwci >= 1 else "var(--muted)"}">{fwci:.2f}</span></td>'
+            f"<td style='font-size:12px;color:var(--muted)'>{inst_str}</td>"
+            f"</tr>"
+        )
+    total = len([r for r in records if r.get("fwci")])
+    return f"""
+<details class="top-papers">
+  <summary>&#128196; {summary_label} <span style="font-weight:normal;font-size:12px">({min(n, total)} of {total} with FWCI data)</span></summary>
+  <table>
+    <thead><tr>
+      <th style="text-align:center;width:32px">#</th>
+      <th>Title</th>
+      <th style="text-align:center;width:60px">Year</th>
+      <th style="text-align:center;width:70px">FWCI</th>
+      <th>Institutions</th>
+    </tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</details>
+"""
+
+
+def _ml_by_subgroup_table(
+    llm_recs: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """HTML table summarising ML/AI adoption and top scope per fuel sub-group."""
+    grouped = _group_by_subgroup(llm_recs, fuel_subgroups, matched_col)
+    if not grouped:
+        return ""
+
+    rows_html = ""
+    for sg_name, sg_recs in grouped.items():
+        n_total = len(sg_recs)
+        n_ml = sum(1 for r in sg_recs if _uses_ml(r))
+        rate = n_ml / n_total * 100 if n_total else 0
+        bar_w = max(4, int(rate * 0.9))
+        bar_html = (
+            f'<div style="display:flex;align-items:center;gap:6px;">'
+            f'<div style="width:90px;background:#E5E7EB;border-radius:4px;height:8px;">'
+            f'<div style="width:{bar_w}%;background:var(--accent);border-radius:4px;height:8px;"></div>'
+            f'</div><span style="font-size:12px">{rate:.0f}%</span></div>'
+        )
+        # Top scope
+        scope_c: Counter = Counter()
+        method_c: Counter = Counter()
+        for r in sg_recs:
+            for v in _json_col(r, "llm_fuel_classification"):
+                if v and v.lower() not in ("none", "other"):
+                    scope_c[_SHORT_SCOPE.get(v, v)] += 1
+            for v in _json_col(r, "llm_ml_method"):
+                if v and v.lower() not in ("none", "other"):
+                    method_c[_SHORT_ML.get(v, v)] += 1
+        top_scope = scope_c.most_common(1)[0][0] if scope_c else "—"
+        top_method = method_c.most_common(1)[0][0] if method_c else "—"
+        rows_html += (
+            f"<tr><td><strong>{sg_name}</strong></td>"
+            f"<td style='text-align:center'>{n_total:,}</td>"
+            f"<td style='text-align:center'>{n_ml:,}</td>"
+            f"<td>{bar_html}</td>"
+            f"<td style='font-size:12px'>{top_scope}</td>"
+            f"<td style='font-size:12px'>{top_method}</td></tr>"
+        )
+    return f"""
+<table>
+  <thead><tr>
+    <th>Sub-group</th>
+    <th style="text-align:center">Papers</th>
+    <th style="text-align:center">Uses ML</th>
+    <th>ML rate</th>
+    <th>Top scope</th>
+    <th>Top method</th>
+  </tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>
+"""
+
+
+def chart_ml_adoption_by_subgroup(
+    llm_recs: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """Horizontal bar chart comparing ML adoption rate per fuel sub-group."""
+    grouped = _group_by_subgroup(llm_recs, fuel_subgroups, matched_col)
+    sg_names, rates, counts = [], [], []
+    for sg_name, sg_recs in grouped.items():
+        if len(sg_recs) < 3:
+            continue
+        n_ml = sum(1 for r in sg_recs if _uses_ml(r))
+        sg_names.append(sg_name)
+        rates.append(n_ml / len(sg_recs) * 100)
+        counts.append(len(sg_recs))
+    if not sg_names:
+        return ""
+    fig, ax = plt.subplots(figsize=(9, max(3, len(sg_names) * 0.55)))
+    bars = ax.barh(sg_names, rates,
+                   color=[PALETTE[i % len(PALETTE)] for i in range(len(sg_names))],
+                   height=0.6, zorder=3)
+    ax.set_xlabel("% papers using ML/AI")
+    ax.set_title("ML/AI adoption rate by fuel sub-group")
+    ax.set_xlim(0, 105)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    for bar, rate, cnt in zip(bars, rates, counts):
+        ax.text(bar.get_width() + 1.5,
+                bar.get_y() + bar.get_height() / 2,
+                f"{rate:.0f}%  ({cnt:,} papers)", va="center", fontsize=9, color=MUTED_COLOR)
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def chart_scope_per_subgroup(
+    llm_recs: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """Heatmap: LLM research-scope categories × fuel sub-groups."""
+    grouped = _group_by_subgroup(llm_recs, fuel_subgroups, matched_col)
+    sg_names = [sg for sg, recs in grouped.items() if len(recs) >= 3]
+    if not sg_names:
+        return ""
+    scope_c_all: Counter = Counter()
+    for sg in sg_names:
+        for r in grouped[sg]:
+            for v in _json_col(r, "llm_fuel_classification"):
+                if v and v.lower() not in ("none", "other"):
+                    scope_c_all[_SHORT_SCOPE.get(v, v)] += 1
+    top_scopes = [s for s, _ in scope_c_all.most_common(10)]
+    if not top_scopes:
+        return ""
+    matrix = np.zeros((len(sg_names), len(top_scopes)), dtype=int)
+    for fi, sgn in enumerate(sg_names):
+        for r in grouped[sgn]:
+            for v in _json_col(r, "llm_fuel_classification"):
+                if v and v.lower() not in ("none", "other"):
+                    label = _SHORT_SCOPE.get(v, v)
+                    if label in top_scopes:
+                        matrix[fi, top_scopes.index(label)] += 1
+    fig, ax = plt.subplots(figsize=(max(8, len(top_scopes) * 1.3),
+                                    max(3.5, len(sg_names) * 0.65)))
+    im = ax.imshow(matrix, cmap="Blues", aspect="auto")
+    ax.set_xticks(range(len(top_scopes)))
+    ax.set_xticklabels(top_scopes, rotation=35, ha="right", fontsize=8)
+    ax.set_yticks(range(len(sg_names)))
+    ax.set_yticklabels(sg_names, fontsize=9)
+    ax.set_title("Research scope by fuel sub-group (LLM classified)")
+    fig.colorbar(im, ax=ax, label="Papers", shrink=0.8)
+    mx = matrix.max() or 1
+    for i in range(len(sg_names)):
+        for j in range(len(top_scopes)):
+            v = int(matrix[i, j])
+            if v > 0:
+                tc = "white" if v > mx * 0.6 else TEXT_COLOR
+                ax.text(j, i, str(v), ha="center", va="center", fontsize=8,
+                        color=tc, fontweight="bold")
+    fig.tight_layout()
+    return _fig_to_base64(fig)
+
+
+def chart_paradigm_per_subgroup(
+    llm_recs: list[dict],
+    fuel_subgroups: list[dict],
+    matched_col: str,
+) -> str:
+    """Heatmap: ML learning paradigms × fuel sub-groups (ML-using papers only)."""
+    grouped = _group_by_subgroup(llm_recs, fuel_subgroups, matched_col)
+    sg_ml: dict[str, list[dict]] = {
+        sg: [r for r in recs if _uses_ml(r)]
+        for sg, recs in grouped.items()
+    }
+    sg_names = [sg for sg, recs in sg_ml.items() if len(recs) >= 3]
+    if not sg_names:
+        return ""
+    par_c_all: Counter = Counter()
+    for sgn in sg_names:
+        for r in sg_ml[sgn]:
+            for v in _json_col(r, "llm_ml_paradigm"):
+                if v and v.lower() != "none":
+                    par_c_all[_SHORT_ML.get(v, v)] += 1
+    top_pars = [p for p, _ in par_c_all.most_common()]
+    if not top_pars:
+        return ""
+    matrix = np.zeros((len(sg_names), len(top_pars)), dtype=int)
+    for fi, sgn in enumerate(sg_names):
+        for r in sg_ml[sgn]:
+            for v in _json_col(r, "llm_ml_paradigm"):
+                if v and v.lower() != "none":
+                    label = _SHORT_ML.get(v, v)
+                    if label in top_pars:
+                        matrix[fi, top_pars.index(label)] += 1
+    fig, ax = plt.subplots(figsize=(max(7, len(top_pars) * 1.5),
+                                    max(3.5, len(sg_names) * 0.65)))
+    im = ax.imshow(matrix, cmap="Purples", aspect="auto")
+    ax.set_xticks(range(len(top_pars)))
+    ax.set_xticklabels(top_pars, rotation=30, ha="right", fontsize=9)
+    ax.set_yticks(range(len(sg_names)))
+    ax.set_yticklabels(sg_names, fontsize=9)
+    ax.set_title("ML/AI learning paradigm by fuel sub-group (ML-using papers only)")
+    fig.colorbar(im, ax=ax, label="Papers", shrink=0.8)
+    mx = matrix.max() or 1
+    for i in range(len(sg_names)):
+        for j in range(len(top_pars)):
+            v = int(matrix[i, j])
+            if v > 0:
+                tc = "white" if v > mx * 0.6 else TEXT_COLOR
+                ax.text(j, i, str(v), ha="center", va="center", fontsize=9,
+                        color=tc, fontweight="bold")
+    fig.tight_layout()
+    return _fig_to_base64(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -979,6 +1545,67 @@ def generate_report(db_path: Path, state_path: Path | None,
     c_model_types  = chart_model_types(llm_recs)          if has_llm else ""
     c_ml_fuel      = chart_ml_by_fuel_type(llm_recs)     if has_llm else ""
     c_confidence   = chart_confidence_distribution(llm_recs) if has_llm else ""
+    c_ml_by_sg     = (chart_ml_adoption_by_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
+                      if has_llm and fuel_subgroups else "")
+    ml_sg_table    = (_ml_by_subgroup_table(llm_recs, fuel_subgroups, "matched_fuel_terms")
+                      if has_llm and fuel_subgroups else "")
+
+    # ── Per-subgroup charts ───────────────────────────────────────────────
+    c_years_by_sg = (
+        chart_publications_per_subgroup(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else []
+    )
+    c_trends_by_sg = (
+        chart_yearly_trends_per_subgroup(records, fuel_subgroups, "matched_fuel_terms",
+                                         group1_label)
+        if fuel_subgroups else []
+    )
+    c_impact_profile = (
+        chart_impact_profile_per_subgroup(records, fuel_subgroups, impact_subgroups)
+        if fuel_subgroups and impact_subgroups else ""
+    )
+    c_impact_terms_by_sg = (
+        chart_impact_terms_per_subgroup(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else []
+    )
+    c_countries_by_sg = (
+        chart_countries_per_subgroup(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else []
+    )
+    c_journals_comparison = (
+        chart_journals_comparison(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else ""
+    )
+    c_oa_by_sg = (
+        chart_oa_per_subgroup_stacked(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else ""
+    )
+    c_types_by_sg = (
+        chart_work_types_per_subgroup_stacked(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else ""
+    )
+    c_fwci_by_sg = (
+        chart_fwci_per_subgroup(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else ""
+    )
+    c_scope_by_sg = (
+        chart_scope_per_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
+        if has_llm and fuel_subgroups else ""
+    )
+    c_paradigm_by_sg = (
+        chart_paradigm_per_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
+        if has_llm and fuel_subgroups else ""
+    )
+
+    # Top-papers tables (by FWCI) — precomputed per subgroup and globally
+    top_papers_global = _top_papers_table(records, "Top cited papers (global)", n=10)
+    top_papers_by_sg  = []
+    if fuel_subgroups:
+        sg_grouped = _group_by_subgroup(records, fuel_subgroups, "matched_fuel_terms")
+        for sg_name, sg_recs in sg_grouped.items():
+            tbl = _top_papers_table(sg_recs, f"Top cited — {sg_name}", n=8)
+            if tbl:
+                top_papers_by_sg.append((sg_name, tbl))
 
     print("Building HTML ...")
 
@@ -1006,17 +1633,7 @@ def generate_report(db_path: Path, state_path: Path | None,
 
         # Dominant scope
         scope_c   = _count_json_col(llm_recs, "llm_fuel_classification")
-        SHORT_SCOPE = {
-            "Engineering Design Optimization – Emissions Reduction":     "Design Opt.–Emissions",
-            "Engineering Design Optimization – Performance Enhancement":  "Design Opt.–Performance",
-            "Fuel Property Prediction from molecular composition derived data": "Fuel Prop. Prediction",
-            "Life Cycle Assessment (LCA) – Environmental Impact Analysis": "LCA",
-            "Techno-Economic Assessment (TEA) – Economic Feasibility Analysis": "TEA",
-            "Discovery of Novel Molecules for Green Energy Applications":  "Novel Molecules",
-            "fuel production from sustainable feedstocks":                "Sustainable Production",
-            "Fuel Blend and Additive Research":                           "Blend & Additives",
-        }
-        top_scope = SHORT_SCOPE.get(*scope_c.most_common(1)[0]) if scope_c else "N/A"
+        top_scope = _SHORT_SCOPE.get(*scope_c.most_common(1)[0]) if scope_c else "N/A"
 
         # Top paradigm (excl. None)
         par_c = Counter()
@@ -1072,7 +1689,7 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
         for r in llm_recs:
             for v in _json_col(r, "llm_fuel_classification"):
                 if v and v.lower() not in ("none", "other"):
-                    scope_c_named[SHORT_SCOPE.get(v, v)] += 1
+                    scope_c_named[_SHORT_SCOPE.get(v, v)] += 1
         top3_scopes = ", ".join(s for s, _ in scope_c_named.most_common(3))
 
         par_c2 = Counter()
@@ -1087,12 +1704,7 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
             for v in _json_col(r, "llm_ml_method"):
                 if v and v.lower() not in ("none", "other"):
                     method_c[v] += 1
-        SHORT_M = {
-            "Classical Machine Learning (SVM, Random Forest, Gradient Boosting)": "Classical ML",
-            "Deep Learning (Neural Networks)": "Deep Learning",
-            "Evolutionary / Heuristic Methods (Genetic Algorithms)": "Evolutionary methods",
-        }
-        top_method = SHORT_M.get(method_c.most_common(1)[0][0], method_c.most_common(1)[0][0]) \
+        top_method = _SHORT_ML.get(method_c.most_common(1)[0][0], method_c.most_common(1)[0][0]) \
                      if method_c else "Classical ML"
 
         llm_section = f"""
@@ -1166,6 +1778,29 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
   ML/AI adoption rate for that fuel type.
 </p>
 {_chart(c_ml_fuel, "ML by fuel type")}
+{"" if not c_ml_by_sg else f'''
+<h3>ML/AI adoption by fuel sub-group</h3>
+<p>Comparing ML/AI adoption rates across defined fuel sub-groups.
+Each bar represents the share of LLM-classified papers in that
+sub-group that employ at least one ML/AI method.</p>
+{_chart(c_ml_by_sg, "ML adoption by sub-group")}
+''' }
+{"" if not ml_sg_table else f'''
+<h3>ML/AI profile per fuel sub-group</h3>
+<p>Summary of classified papers, ML/AI adoption rate, dominant research scope,
+and most common ML method for each fuel sub-group.</p>
+{ml_sg_table}
+''' }
+{"" if not c_scope_by_sg else f'''
+<h3>Research scope by fuel sub-group</h3>
+<p>Which LLM-assigned scope categories are most prominent within each fuel sub-group?</p>
+{_chart(c_scope_by_sg, "Scope by sub-group")}
+'''}
+{"" if not c_paradigm_by_sg else f'''
+<h3>ML/AI learning paradigm by fuel sub-group</h3>
+<p>Among papers that employ ML/AI, the dominant learning paradigms per fuel sub-group.</p>
+{_chart(c_paradigm_by_sg, "Paradigm by sub-group")}
+'''}
 
 <h3>Computational and analytical model inventory</h3>
 <p>
@@ -1265,6 +1900,8 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
 <h3>{group1_label} trends over time</h3>
 <p>Stacked view showing the shifting research focus over time across {group1_label.lower()}.</p>
 {_chart(c_trends, f"{group1_label} trends")}
+{_per_subgroup_html(c_years_by_sg, "Annual publication volume by fuel sub-group", two_col=True)}
+{_per_subgroup_html(c_trends_by_sg, f"{group1_label} trends by fuel sub-group", two_col=True)}
 
 <h2>{s+1}. Keyword analysis</h2>
 
@@ -1285,6 +1922,13 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
 <h3>{group1_label} &times; {group2_label} co-occurrence heatmap</h3>
 <p>How often each {group1_label.lower()} term appears together with each {group2_label.lower()} term in the same paper.</p>
 {_chart(c_heatmap, "Co-occurrence")}
+{"" if not c_impact_profile else f'''
+<h3>Impact term profile by fuel sub-group</h3>
+<p>Share of papers in each fuel sub-group matched to each {group2_label} sub-group
+(papers may count in multiple categories).</p>
+{_chart(c_impact_profile, "Impact profile per fuel sub-group")}
+'''}
+{_per_subgroup_html(c_impact_terms_by_sg, f"Top {group2_label} per fuel sub-group", two_col=True)}
 
 {llm_section}
 
@@ -1294,12 +1938,18 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
   <div>{_chart(c_countries, "Top countries")}</div>
   <div>{top_countries_table}</div>
 </div>
+{_per_subgroup_html(c_countries_by_sg, "Geographic distribution by fuel sub-group", two_col=True)}
 
 <h2>{s + (4 if has_llm else 3)}. Journals and sources</h2>
 <div class="two-col">
   <div>{_chart(c_journals, "Top journals")}</div>
   <div>{top_journals_table}</div>
 </div>
+{"" if not c_journals_comparison else f'''
+<h3>Journal affinity by fuel sub-group</h3>
+<p>Top journals for each fuel sub-group compared in a single view.</p>
+{_chart(c_journals_comparison, "Journal affinity by sub-group")}
+'''}
 
 <h2>{s + (5 if has_llm else 4)}. Open access and work types</h2>
 <div class="two-col">
@@ -1312,15 +1962,31 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
     {_chart(c_types, "Work types")}
   </div>
 </div>
+{"" if not c_oa_by_sg else f'''
+<h3>Open access status by fuel sub-group</h3>
+{_chart(c_oa_by_sg, "OA by sub-group")}
+'''}
+{"" if not c_types_by_sg else f'''
+<h3>Document types by fuel sub-group</h3>
+{_chart(c_types_by_sg, "Work types by sub-group")}
+'''}
 
 <h2>{s + (6 if has_llm else 5)}. Citation impact</h2>
 <p>{fwci_note}</p>
 {_chart(c_fwci, "FWCI distribution")}
 {_fwci_outlier_html(fwci_outliers)}
+{"" if not c_fwci_by_sg else f'''
+<h3>FWCI distribution by fuel sub-group</h3>
+<p>Box-plot comparison across fuel sub-groups. Dashed line = world average (FWCI 1.0).
+Each distribution is independently clipped at its own IQR-based fence.</p>
+{_chart(c_fwci_by_sg, "FWCI comparison by sub-group")}
+'''}
+{top_papers_global}
+{"".join(f'<div class="subgroup-section"><h3>Top papers — {sg_name}</h3>{tbl}</div>' for sg_name, tbl in top_papers_by_sg)}
 
 <h2>{s + (7 if has_llm else 6)}. Top institutions</h2>
 {_chart(c_inst, "Top institutions")}
-{_subgroup_inst_html(c_inst_by_subgroup)}
+{_per_subgroup_html(c_inst_by_subgroup, "Institutions by fuel sub-group", two_col=True)}
 
 <h2>{s + (8 if has_llm else 7)}. Summary</h2>
 <p><strong>{n:,}</strong> open-access English papers, {yr_span} years
