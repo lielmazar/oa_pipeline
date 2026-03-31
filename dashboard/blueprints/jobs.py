@@ -100,7 +100,7 @@ def api_launch_job():
     script_path = script_cfg["path"]
 
     # For run_pipeline / filter_dataset, auto-inject --keyword-config path
-    if pipeline and script_key in ('run_pipeline', 'filter_dataset'):
+    if pipeline and script_key in ('run_pipeline', 'filter_dataset', 'generate_report'):
         db_path = pipeline.get("output_db_path")
         if db_path:
             keywords_path = str(Path(db_path).parent / "keywords.json")
