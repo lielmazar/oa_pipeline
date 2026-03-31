@@ -67,6 +67,7 @@ RestartSec=5
 Environment=SECRET_KEY=$SECRET_KEY
 Environment=PIPELINES_BASE_DIR=$INSTALL_DIR/data/pipelines
 Environment=META_DB_PATH=$INSTALL_DIR/data/dashboard.db
+EnvironmentFile=-$INSTALL_DIR/data/.env
 StandardOutput=journal
 StandardError=journal
 

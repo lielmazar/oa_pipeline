@@ -671,7 +671,10 @@ def _worker_local(
     if keyword_config_path:
         import json as _json_worker
         _cfg = _json_worker.loads(Path(keyword_config_path).read_text(encoding="utf-8"))
-        _init_terms(_cfg.get("fuel_terms"), _cfg.get("impact_terms"))
+        _grps = _cfg.get("groups", [])
+        _ft = _grps[0]["terms"] if len(_grps) > 0 else _cfg.get("fuel_terms")
+        _it = _grps[1]["terms"] if len(_grps) > 1 else _cfg.get("impact_terms")
+        _init_terms(_ft, _it)
     else:
         _init_terms()
 
@@ -737,7 +740,10 @@ def _worker_s3(
     if keyword_config_path:
         import json as _json_worker
         _cfg = _json_worker.loads(Path(keyword_config_path).read_text(encoding="utf-8"))
-        _init_terms(_cfg.get("fuel_terms"), _cfg.get("impact_terms"))
+        _grps = _cfg.get("groups", [])
+        _ft = _grps[0]["terms"] if len(_grps) > 0 else _cfg.get("fuel_terms")
+        _it = _grps[1]["terms"] if len(_grps) > 1 else _cfg.get("impact_terms")
+        _init_terms(_ft, _it)
     else:
         _init_terms()
 

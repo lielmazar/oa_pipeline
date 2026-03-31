@@ -66,10 +66,15 @@ def api_db_records():
     sort = request.args.get("sort", "publication_year")
     direction = request.args.get("dir", "desc")
     page_size = request.args.get("page_size", DB_PAGE_SIZE, type=int)
+    # Optional comma-separated lists for search fields and visible columns
+    search_cols_raw = request.args.get("search_cols", "").strip()
+    visible_cols_raw = request.args.get("visible_cols", "").strip()
+    search_cols = [c.strip() for c in search_cols_raw.split(",") if c.strip()] or None
+    visible_cols = [c.strip() for c in visible_cols_raw.split(",") if c.strip()] or None
 
     result = db_api.get_records(
         db_path, page=page, search=search, sort=sort, direction=direction,
-        per_page=page_size,
+        per_page=page_size, search_cols=search_cols, visible_cols=visible_cols,
     )
     return jsonify(result)
 

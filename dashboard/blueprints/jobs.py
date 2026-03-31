@@ -1,6 +1,7 @@
 """Jobs blueprint — /api/jobs/*"""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -19,33 +20,40 @@ def _jobs() -> object:
 
 def _build_args(script_key: str, raw_args: dict, pipeline: dict | None) -> list:
     """
-    Convert a flat dict of {flag: value} pairs into a CLI arg list.
+    Convert an ordered dict of {flag: value} pairs into a CLI arg list.
 
-    - Keys starting with '--' become named flags.
-    - Keys NOT starting with '--' and with value True become positional args
-      (e.g. subcommands like 'estimate', 'run').  They are placed first.
+    Ordering rules (preserving dict insertion order):
+      - Named flags (--foo) that appear BEFORE the first positional go before it.
+      - Positional / subcommand tokens (no leading '--', value True) go in the middle.
+      - Named flags that appear AFTER the first positional go after it.
+    This lets callers place subcommand-specific flags after the subcommand token
+    (e.g. argparse subparsers that own --interval, --limit, etc.).
+
     - Empty / False / None values are skipped.
     - Auto-appends --no-color when the script supports it.
     """
-    positional = []
-    named = []
+    pre = []      # --flags before the subcommand
+    pos = []      # subcommand tokens
+    post = []     # --flags after the subcommand
+
+    seen_positional = False
     for flag, value in raw_args.items():
         if value is None or value == "" or value is False:
             continue
         if not str(flag).startswith("--"):
-            # Positional / subcommand
             if value is True:
-                positional.append(str(flag))
-            # else skip (shouldn't happen)
+                pos.append(str(flag))
+                seen_positional = True
         else:
-            named.append(str(flag))
+            bucket = post if seen_positional else pre
+            bucket.append(str(flag))
             if value is not True:
-                named.append(str(value))
+                bucket.append(str(value))
 
     script_cfg = SCRIPTS.get(script_key, {})
     no_color = [script_cfg["no_color_flag"]] if script_cfg.get("no_color_flag") else []
 
-    return named + positional + no_color
+    return pre + pos + post + no_color
 
 
 # ── List jobs ─────────────────────────────────────────────────────────────────
@@ -100,9 +108,15 @@ def api_launch_job():
                 raw_args.setdefault("--keyword-config", keywords_path)
 
     args = _build_args(script_key, raw_args, pipeline)
-    label = f"{script_cfg['label']} " + " ".join(
-        str(v) for v in raw_args.values() if v and v is not True
-    )
+    # Build a readable label: prefer positional subcommands (e.g. "estimate", "run"),
+    # fall back to non-path non-True values.
+    phase_tokens = [str(k) for k, v in raw_args.items() if not str(k).startswith("--") and v is True]
+    if phase_tokens:
+        label = f"{script_cfg['label']} [{', '.join(phase_tokens)}]"
+    else:
+        label = f"{script_cfg['label']} " + " ".join(
+            str(v) for v in raw_args.values() if v and v is not True and not str(v).startswith("/")
+        )
 
     # Extract worker count for display in the job monitor
     try:
@@ -175,7 +189,7 @@ def api_stream_job(job_id: str):
 
     def _generate():
         for seq, line in _jobs().stream_output(job_id, after_seq):
-            yield f"event: line\ndata: {{'seq': {seq}, 'text': {repr(line)}}}\n\n"
+            yield f"event: line\ndata: {json.dumps({'seq': seq, 'text': line})}\n\n"
 
         final = _jobs().get_job(job_id)
         if final:
@@ -185,11 +199,7 @@ def api_stream_job(job_id: str):
                 if summary.get("ended_at")
                 else None
             )
-            yield (
-                f"event: done\ndata: {{'status': '{summary['status']}', "
-                f"'returncode': {summary['returncode']}, "
-                f"'elapsed': {elapsed}}}\n\n"
-            )
+            yield f"event: done\ndata: {json.dumps({'status': summary['status'], 'returncode': summary['returncode'], 'elapsed': elapsed})}\n\n"
 
     return Response(
         _generate(),
@@ -199,3 +209,27 @@ def api_stream_job(job_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Buffered output (for completed jobs) ─────────────────────────────────────
+
+@jobs_bp.route("/api/jobs/<job_id>/output")
+def api_job_output(job_id: str):
+    """Return all buffered output lines as JSON. Used by the frontend for
+    completed jobs where SSE streaming may not be reliable."""
+    err = require_auth()
+    if err:
+        return err
+    job = _jobs().get_job(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    summary = _jobs()._summary(job)
+    snapshot = list(job["output"])
+    lines = [line for _, line in snapshot]
+    last_seq = snapshot[-1][0] if snapshot else -1
+    return jsonify({
+        "lines": lines,
+        "last_seq": last_seq,
+        "status": summary["status"],
+        "returncode": summary["returncode"],
+    })

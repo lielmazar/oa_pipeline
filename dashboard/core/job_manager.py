@@ -170,6 +170,7 @@ class JobManager:
             "pipeline_id": job.get("pipeline_id"),
             "label": job["label"],
             "workers": job.get("workers", 1),
+            "cmd": job.get("cmd", []),
             "pid": job["pid"],
             "status": job["status"],
             "started_at": job["started_at"],

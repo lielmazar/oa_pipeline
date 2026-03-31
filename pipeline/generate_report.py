@@ -131,6 +131,37 @@ def _count_json_col(records: list[dict], col: str) -> Counter:
 
 PRE2000_LABEL = "Unknown / ≤ 2000"
 
+# ISO-3166 alpha-2 → full name for common research countries
+_ISO2_NAMES = {
+    "CN":"China","US":"United States","GB":"United Kingdom","DE":"Germany",
+    "JP":"Japan","IN":"India","KR":"South Korea","AU":"Australia","CA":"Canada",
+    "FR":"France","IT":"Italy","BR":"Brazil","ES":"Spain","NL":"Netherlands",
+    "SE":"Sweden","CH":"Switzerland","PL":"Poland","RU":"Russia","IR":"Iran",
+    "SA":"Saudi Arabia","NG":"Nigeria","ZA":"South Africa","MX":"Mexico",
+    "PT":"Portugal","BE":"Belgium","AT":"Austria","DK":"Denmark","NO":"Norway",
+    "FI":"Finland","TR":"Turkey","EG":"Egypt","PK":"Pakistan","MY":"Malaysia",
+    "TH":"Thailand","ID":"Indonesia","PH":"Philippines","TW":"Taiwan",
+    "SG":"Singapore","HK":"Hong Kong","NZ":"New Zealand","CL":"Chile",
+    "AR":"Argentina","CO":"Colombia","PE":"Peru","CZ":"Czech Republic",
+    "HU":"Hungary","RO":"Romania","UA":"Ukraine","GR":"Greece","IL":"Israel",
+    "AE":"United Arab Emirates","QA":"Qatar","KW":"Kuwait","IQ":"Iraq",
+    "BD":"Bangladesh","LK":"Sri Lanka","NP":"Nepal","ET":"Ethiopia",
+    "KE":"Kenya","GH":"Ghana","CM":"Cameroon","VN":"Vietnam","TN":"Tunisia",
+    "MA":"Morocco","DZ":"Algeria","RS":"Serbia","HR":"Croatia","BG":"Bulgaria",
+    "SK":"Slovakia","SI":"Slovenia","LT":"Lithuania","LV":"Latvia","EE":"Estonia",
+    "IS":"Iceland","IE":"Ireland","LU":"Luxembourg","CY":"Cyprus","MT":"Malta",
+    "BA":"Bosnia and Herzegovina","MK":"North Macedonia","AL":"Albania",
+    "BY":"Belarus","MD":"Moldova","GE":"Georgia","AM":"Armenia","AZ":"Azerbaijan",
+    "KZ":"Kazakhstan","UZ":"Uzbekistan","TM":"Turkmenistan","TJ":"Tajikistan",
+    "KG":"Kyrgyzstan","MN":"Mongolia","MM":"Myanmar","KH":"Cambodia","LA":"Laos",
+    "NE":"Niger","CI":"Ivory Coast","SN":"Senegal","TZ":"Tanzania","UG":"Uganda",
+}
+
+
+def _country_display(code: str) -> str:
+    """Return full name for an ISO-3166 alpha-2 code, falling back to the code itself."""
+    return _ISO2_NAMES.get((code or "").upper().strip(), code)
+
 
 def _year_range(records: list[dict]) -> tuple[int, int]:
     years = [r["publication_year"] for r in records
@@ -196,7 +227,8 @@ def chart_top_terms(counter: Counter, title: str, n: int = 15,
 
 
 def chart_cooccurrence_heatmap(records: list[dict],
-                                n_fuel: int = 12, n_impact: int = 12) -> str:
+                                n_fuel: int = 12, n_impact: int = 12,
+                                group1_label: str = "Fuel", group2_label: str = "Impact") -> str:
     fuel_c   = _count_json_col(records, "matched_fuel_terms")
     impact_c = _count_json_col(records, "matched_impact_terms")
     top_fuel   = [t for t, _ in fuel_c.most_common(n_fuel)]
@@ -218,7 +250,7 @@ def chart_cooccurrence_heatmap(records: list[dict],
     ax.set_xticklabels(top_impact, rotation=45, ha="right", fontsize=9)
     ax.set_yticks(range(len(top_fuel)))
     ax.set_yticklabels(top_fuel, fontsize=9)
-    ax.set_title("Fuel × Impact term co-occurrence")
+    ax.set_title(f"{group1_label} \u00d7 {group2_label} term co-occurrence")
     fig.colorbar(im, ax=ax, label="Papers", shrink=0.8)
     mx = max(max(row) for row in matrix) if any(matrix) else 1
     for fi in range(len(top_fuel)):
@@ -233,8 +265,9 @@ def chart_cooccurrence_heatmap(records: list[dict],
 
 
 def chart_countries(records: list[dict], n: int = 20) -> str:
-    return chart_top_terms(_count_json_col(records, "authors_countries"),
-                           "Top contributing countries", n=n, color=PALETTE[1])
+    raw = _count_json_col(records, "authors_countries")
+    named = Counter({_country_display(c): v for c, v in raw.items()})
+    return chart_top_terms(named, "Top contributing countries", n=n, color=PALETTE[1])
 
 
 def chart_journals(records: list[dict], n: int = 15) -> str:
@@ -288,7 +321,8 @@ def chart_institutions(records: list[dict], n: int = 20) -> str:
                            "Top institutions", n=n, color=PALETTE[5])
 
 
-def chart_yearly_fuel_trends(records: list[dict], n: int = 6) -> str:
+def chart_yearly_fuel_trends(records: list[dict], n: int = 6,
+                              group1_label: str = "Fuel terms") -> str:
     fuel_c   = _count_json_col(records, "matched_fuel_terms")
     top_fuels = [t for t, _ in fuel_c.most_common(n)]
     if not top_fuels:
@@ -313,7 +347,7 @@ def chart_yearly_fuel_trends(records: list[dict], n: int = 6) -> str:
     ax.set_xticks(range(len(keys)))
     ax.set_xticklabels([str(k) for k in keys], rotation=45, ha="right", fontsize=9)
     ax.set_xlabel("Year"); ax.set_ylabel("Papers")
-    ax.set_title("Fuel term trends over time")
+    ax.set_title(f"{group1_label} trends over time")
     ax.legend(fontsize=9, loc="upper left", ncol=2)
     ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
     return _fig_to_base64(fig)
@@ -702,7 +736,20 @@ def _table(headers: list[str], rows: list[list],
 # Main report builder
 # ═══════════════════════════════════════════════════════════════════════════
 def generate_report(db_path: Path, state_path: Path | None,
-                    output_path: Path) -> None:
+                    output_path: Path,
+                    keyword_config: dict | None = None,
+                    top_n: int = 20,
+                    include_group1: list | None = None,
+                    include_group2: list | None = None) -> None:
+    # Resolve group labels from keyword config (fall back to defaults)
+    if keyword_config:
+        grps = keyword_config.get("groups", [])
+        group1_label = grps[0]["name"] if len(grps) > 0 else keyword_config.get("group1_label", "Fuel terms")
+        group2_label = grps[1]["name"] if len(grps) > 1 else keyword_config.get("group2_label", "Impact terms")
+    else:
+        group1_label = "Fuel terms"
+        group2_label = "Impact terms"
+
     print(f"Loading data from {db_path} ...")
     records = load_data(db_path)
     n = len(records)
@@ -735,17 +782,25 @@ def generate_report(db_path: Path, state_path: Path | None,
     fwci_median     = sorted(fwci_vals)[len(fwci_vals)//2] if fwci_vals else None
     fwci_mean       = sum(fwci_vals)/len(fwci_vals) if fwci_vals else None
 
+    # Apply per-graph term filters (subset the counters if include lists provided)
+    if include_group1:
+        inc1_set = {t.lower() for t in include_group1}
+        fuel_counts = Counter({t: c for t, c in fuel_counts.items() if t.lower() in inc1_set})
+    if include_group2:
+        inc2_set = {t.lower() for t in include_group2}
+        impact_counts = Counter({t: c for t, c in impact_counts.items() if t.lower() in inc2_set})
+
     c_years    = chart_publications_by_year(records)
-    c_fuel     = chart_top_terms(fuel_counts, "Top fuel terms", 15, PALETTE[0])
-    c_impact   = chart_top_terms(impact_counts, "Top impact terms", 15, PALETTE[3])
-    c_heatmap  = chart_cooccurrence_heatmap(records)
+    c_fuel     = chart_top_terms(fuel_counts, f"Top {group1_label}", top_n, PALETTE[0])
+    c_impact   = chart_top_terms(impact_counts, f"Top {group2_label}", top_n, PALETTE[3])
+    c_heatmap  = chart_cooccurrence_heatmap(records, group1_label=group1_label, group2_label=group2_label)
     c_countries= chart_countries(records)
     c_journals = chart_journals(records)
     c_oa       = chart_oa_status(records)
     c_types    = chart_work_types(records)
     c_fwci     = chart_fwci(records)
     c_inst     = chart_institutions(records)
-    c_trends   = chart_yearly_fuel_trends(records)
+    c_trends   = chart_yearly_fuel_trends(records, group1_label=group1_label)
 
     # ── LLM / ML charts ───────────────────────────────────────────────────
     c_scope        = chart_fuel_classification(llm_recs) if has_llm else ""
@@ -763,13 +818,14 @@ def generate_report(db_path: Path, state_path: Path | None,
     # ── KPIs ──────────────────────────────────────────────────────────────
     top5_fuel   = ", ".join(t for t, _ in fuel_counts.most_common(5))
     top5_impact = ", ".join(t for t, _ in impact_counts.most_common(5))
-    top3_geo    = ", ".join(c for c, _ in country_counts.most_common(3))
+    # Update KPI labels to use custom group names
+    top3_geo    = ", ".join(_country_display(c) for c, _ in country_counts.most_common(3))
     yr_span     = yr_max - yr_min + 1 if yr_max > yr_min else 1
 
     kpis = (
         _kpi("Total papers", f"{n:,}", f"{yr_min}–{yr_max}")
-      + _kpi("Fuel terms", str(len(fuel_counts)))
-      + _kpi("Impact terms", str(len(impact_counts)))
+      + _kpi(group1_label, str(len(fuel_counts)))
+      + _kpi(group2_label, str(len(impact_counts)))
       + _kpi("Countries", str(len(country_counts)))
       + _kpi("Journals", str(len(journal_counts)))
       + (_kpi("Median FWCI", f"{fwci_median:.2f}", f"mean {fwci_mean:.2f}")
@@ -955,13 +1011,13 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
 
     # ── Tables ─────────────────────────────────────────────────────────────
     top_fuel_table = _table(
-        ["Rank", "Fuel term", "Papers", "% corpus"],
+        ["Rank", f"{group1_label} term", "Papers", "% corpus"],
         [[str(i+1), t, f"{c:,}", f"{c/n*100:.1f}%"]
          for i, (t, c) in enumerate(fuel_counts.most_common(15))],
         ["center", "left", "right", "right"],
     )
     top_impact_table = _table(
-        ["Rank", "Impact term", "Papers", "% corpus"],
+        ["Rank", f"{group2_label} term", "Papers", "% corpus"],
         [[str(i+1), t, f"{c:,}", f"{c/n*100:.1f}%"]
          for i, (t, c) in enumerate(impact_counts.most_common(15))],
         ["center", "left", "right", "right"],
@@ -974,7 +1030,11 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
     )
     top_countries_table = _table(
         ["Rank", "Country", "Papers", "% corpus"],
-        [[str(i+1), c, f"{cnt:,}", f"{cnt/n*100:.1f}%"]
+        [[str(i+1),
+          f'<a href="https://en.wikipedia.org/wiki/{_country_display(c).replace(" ", "_")}" '
+          f'target="_blank" style="color:var(--accent);text-decoration:none;">'
+          f'{_country_display(c)}</a>',
+          f"{cnt:,}", f"{cnt/n*100:.1f}%"]
          for i, (c, cnt) in enumerate(country_counts.most_common(15))],
         ["center", "left", "right", "right"],
     )
@@ -1035,30 +1095,28 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
 <p>Annual volume of matching publications across the {yr_span}-year span.</p>
 {_chart(c_years, "Publications by year")}
 
-<h3>Fuel term trends over time</h3>
-<p>Stacked view showing the shifting research focus from conventional fuels
-toward bio-renewable alternatives.</p>
-{_chart(c_trends, "Fuel term trends")}
+<h3>{group1_label} trends over time</h3>
+<p>Stacked view showing the shifting research focus over time across {group1_label.lower()}.</p>
+{_chart(c_trends, f"{group1_label} trends")}
 
 <h2>{s+1}. Keyword analysis</h2>
 
-<h3>Fuel terms</h3>
-<p>{len(fuel_counts)} distinct fuel terms.  A paper may match multiple terms.</p>
+<h3>{group1_label}</h3>
+<p>{len(fuel_counts)} distinct {group1_label.lower()}.  A paper may match multiple terms.</p>
 <div class="two-col">
-  <div>{_chart(c_fuel, "Top fuel terms")}</div>
+  <div>{_chart(c_fuel, f"Top {group1_label}")}</div>
   <div>{top_fuel_table}</div>
 </div>
 
-<h3>Impact / property terms</h3>
-<p>{len(impact_counts)} distinct impact terms.  Emissions and GHG dominate,
-followed by combustion properties and efficiency metrics.</p>
+<h3>{group2_label}</h3>
+<p>{len(impact_counts)} distinct {group2_label.lower()}.  A paper may match multiple terms.</p>
 <div class="two-col">
-  <div>{_chart(c_impact, "Top impact terms")}</div>
+  <div>{_chart(c_impact, f"Top {group2_label}")}</div>
   <div>{top_impact_table}</div>
 </div>
 
-<h3>Fuel &times; Impact co-occurrence heatmap</h3>
-<p>How often each fuel term appears together with each impact term in the same paper.</p>
+<h3>{group1_label} &times; {group2_label} co-occurrence heatmap</h3>
+<p>How often each {group1_label.lower()} term appears together with each {group2_label.lower()} term in the same paper.</p>
 {_chart(c_heatmap, "Co-occurrence")}
 
 {llm_section}
@@ -1099,8 +1157,8 @@ followed by combustion properties and efficiency metrics.</p>
 <p><strong>{n:,}</strong> open-access English papers, {yr_span} years
 ({yr_min}–{yr_max}), {len(journal_counts)} journals.</p>
 <ul>
-  <li><strong>Top fuels:</strong> {top5_fuel}</li>
-  <li><strong>Top impacts:</strong> {top5_impact}</li>
+  <li><strong>Top {group1_label.lower()}:</strong> {top5_fuel}</li>
+  <li><strong>Top {group2_label.lower()}:</strong> {top5_impact}</li>
   <li><strong>Geography:</strong> led by {top3_geo}</li>
   {fwci_li}
   {ml_summary_li}
@@ -1139,13 +1197,31 @@ def parse_args() -> argparse.Namespace:
                    default=Path("openalex_works_filtered.sqlite"))
     p.add_argument("--state", type=Path, default=Path("pipeline_state.json"))
     p.add_argument("--output", type=Path, default=Path("report.html"))
+    p.add_argument("--keyword-config", type=Path, default=None,
+                   help="keywords.json with group labels and term lists")
+    p.add_argument("--top-n", type=int, default=20,
+                   help="Number of top terms to show in keyword charts (default: 20)")
+    p.add_argument("--include-group1", type=str, default=None,
+                   help="Comma-separated list of group-1 terms to include in charts (default: all)")
+    p.add_argument("--include-group2", type=str, default=None,
+                   help="Comma-separated list of group-2 terms to include in charts (default: all)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    kw_cfg = None
+    if args.keyword_config and args.keyword_config.exists():
+        import json as _json_main
+        kw_cfg = _json_main.loads(args.keyword_config.read_text(encoding="utf-8"))
+    include1 = [t.strip() for t in args.include_group1.split(",")] if args.include_group1 else None
+    include2 = [t.strip() for t in args.include_group2.split(",")] if args.include_group2 else None
     generate_report(
         db_path=args.db,
         state_path=args.state if args.state.exists() else None,
         output_path=args.output,
+        keyword_config=kw_cfg,
+        top_n=args.top_n,
+        include_group1=include1,
+        include_group2=include2,
     )

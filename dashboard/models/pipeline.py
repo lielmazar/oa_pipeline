@@ -255,6 +255,18 @@ def fork_pipeline(
         if src_db.exists():
             shutil.copy2(src_db, fork_db)
 
+    # Copy keywords.json so the forked pipeline can run search
+    if source.get("output_db_path"):
+        src_keywords = Path(source["output_db_path"]).parent / "keywords.json"
+        if src_keywords.exists():
+            shutil.copy2(src_keywords, fork_base / "keywords.json")
+
+    # Copy pipeline state so the fork can resume from where the source left off
+    if source.get("state_file_path"):
+        src_state = Path(source["state_file_path"])
+        if src_state.exists():
+            shutil.copy2(src_state, fork_base / "pipeline_state.json")
+
     # Record paths
     db.execute(
         """UPDATE pipelines

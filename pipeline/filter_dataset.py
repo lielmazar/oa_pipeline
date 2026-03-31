@@ -903,7 +903,10 @@ if __name__ == "__main__":
     args = parse_args()
     if args.keyword_config:
         _cfg = _json_main.loads(args.keyword_config.read_text(encoding="utf-8"))
-        _init_terms(_cfg.get("fuel_terms"), _cfg.get("impact_terms"))
+        _grps = _cfg.get("groups", [])
+        _ft = _grps[0]["terms"] if len(_grps) > 0 else _cfg.get("fuel_terms")
+        _it = _grps[1]["terms"] if len(_grps) > 1 else _cfg.get("impact_terms")
+        _init_terms(_ft, _it)
     else:
         _init_terms()
     process_records(

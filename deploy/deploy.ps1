@@ -5,7 +5,7 @@
 .DESCRIPTION
     Syncs code and bootstraps the server (venv, systemd, nginx).
     Safe to run for both first-time setup and routine updates.
-    Requires SSH key auth — see README for one-time setup.
+    Requires SSH key auth -- see README for one-time setup.
 
 .PARAMETER Target
     SSH target in user@host format, e.g. root@157.180.11.56
@@ -47,7 +47,7 @@ if (-not $RestartOnly) {
     Write-Host "[1/5] Preparing remote directories..." -ForegroundColor Green
     Run-SSH "mkdir -p ${INSTALL_DIR}/data/pipelines"
 
-    # scp nests src inside dest when dest already exists — remove first to get a clean copy
+    # scp nests src inside dest when dest already exists -- remove first to get a clean copy
     Write-Host "[2/5] Syncing dashboard..." -ForegroundColor Green
     Run-SSH "rm -rf ${INSTALL_DIR}/dashboard"
     Run-SCP "$REPO_ROOT\dashboard" "${INSTALL_DIR}/"
@@ -60,8 +60,18 @@ if (-not $RestartOnly) {
     Run-SSH "rm -rf ${INSTALL_DIR}/deploy"
     Run-SCP "$REPO_ROOT\deploy" "${INSTALL_DIR}/"
 
+    # Copy .env to persistent data dir (never wiped by future deploys)
+    $EnvFile = Join-Path $REPO_ROOT ".env"
+    if (Test-Path $EnvFile) {
+        Write-Host "[4b] Copying .env to server..." -ForegroundColor Green
+        Run-SCP $EnvFile "${INSTALL_DIR}/data/.env"
+        Run-SSH "chmod 600 ${INSTALL_DIR}/data/.env"
+    } else {
+        Write-Host "[4b] No .env file found - skipping." -ForegroundColor Yellow
+    }
+
     Write-Host "[5/5] Bootstrapping server (packages, venv, systemd, nginx)..." -ForegroundColor Green
-    # Strip Windows line endings (\r) before running the bash script
+    # Strip Windows line endings before running the bash script
     Run-SSH "sed -i 's/\r//' ${INSTALL_DIR}/deploy/server_bootstrap.sh && bash ${INSTALL_DIR}/deploy/server_bootstrap.sh ${INSTALL_DIR}"
 }
 

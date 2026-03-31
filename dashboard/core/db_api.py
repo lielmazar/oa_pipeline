@@ -70,6 +70,8 @@ def get_records(
     sort: str = "publication_year",
     direction: str = "desc",
     search: str = "",
+    search_cols: list | None = None,
+    visible_cols: list | None = None,
 ) -> dict:
     if not db_path.exists():
         return {"error": "Database not found"}
@@ -85,25 +87,36 @@ def get_records(
             if sort not in existing:
                 sort = "publication_year"
 
-            # Search across text columns that exist
+            # Search across specified columns (or default text columns)
             where = ""
             params: list = []
             if search and search.strip():
                 s = f"%{search.strip()}%"
-                search_cols = [c for c in (
-                    "title", "abstract_text", "matched_fuel_terms", "matched_impact_terms"
-                ) if c in existing]
                 if search_cols:
-                    where = "WHERE " + " OR ".join(f"{c} LIKE ?" for c in search_cols)
-                    params = [s] * len(search_cols)
+                    # Use caller-specified columns, filtered to those that exist
+                    cols_to_search = [c for c in search_cols if c in existing]
+                else:
+                    cols_to_search = [c for c in (
+                        "title", "abstract_text", "matched_fuel_terms", "matched_impact_terms"
+                    ) if c in existing]
+                if cols_to_search:
+                    where = "WHERE " + " OR ".join(f"{c} LIKE ?" for c in cols_to_search)
+                    params = [s] * len(cols_to_search)
 
             total = conn.execute(
                 f"SELECT COUNT(*) FROM filtered_records {where}", params
             ).fetchone()[0]
 
-            # Return all columns
+            # Build column select list
+            if visible_cols:
+                select_cols = ", ".join(c for c in visible_cols if c in existing)
+                if not select_cols:
+                    select_cols = "*"
+            else:
+                select_cols = "*"
+
             cur = conn.execute(
-                f"SELECT * FROM filtered_records {where} "
+                f"SELECT {select_cols} FROM filtered_records {where} "
                 f"ORDER BY {sort} {direction} LIMIT ? OFFSET ?",
                 params + [per_page, offset],
             )

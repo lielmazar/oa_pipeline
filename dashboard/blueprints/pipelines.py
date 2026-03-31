@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, current_app
@@ -109,11 +110,11 @@ def api_create_pipeline():
 
     # Write keywords.json for use by pipeline scripts
     keywords_path = Path(paths["keywords_path"])
-    keywords_path.write_text(
-        json.dumps({"fuel_terms": config["fuel_terms"], "impact_terms": config["impact_terms"]},
-                   indent=2),
-        encoding="utf-8",
-    )
+    if "groups" in config:
+        kw_data = {"groups": config["groups"]}
+    else:
+        kw_data = {"fuel_terms": config.get("fuel_terms", []), "impact_terms": config.get("impact_terms", [])}
+    keywords_path.write_text(json.dumps(kw_data, indent=2), encoding="utf-8")
 
     update_pipeline_paths(
         pipeline_id,
@@ -168,13 +169,17 @@ def api_update_pipeline(pipeline_id: int):
         paths = _pipeline_paths(pipeline_id)
         keywords_path = Path(paths["keywords_path"])
         keywords_path.parent.mkdir(parents=True, exist_ok=True)
-        if "fuel_terms" in cfg or "impact_terms" in cfg:
+        if "groups" in cfg or "fuel_terms" in cfg or "impact_terms" in cfg:
             existing = {}
             if keywords_path.exists():
-                existing = json.loads(keywords_path.read_text(encoding="utf-8"))
-            existing.update({
-                k: cfg[k] for k in ("fuel_terms", "impact_terms") if k in cfg
-            })
+                try:
+                    existing = json.loads(keywords_path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {}
+            if "groups" in cfg:
+                existing = {"groups": cfg["groups"]}
+            else:
+                existing.update({k: cfg[k] for k in ("fuel_terms", "impact_terms") if k in cfg})
             keywords_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
     pipeline = get_pipeline(pipeline_id, uid)
@@ -369,3 +374,100 @@ def _build_stage_status(pipeline: dict) -> dict:
     )
 
     return status
+
+
+# ── Live batch status from OpenAI ─────────────────────────────────────────────
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/batch-status", methods=["GET"])
+def api_batch_status(pipeline_id: int):
+    """Query OpenAI directly for the current batch status and persist it."""
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "not found"}), 404
+
+    batch_path = pipeline.get("batch_state_path")
+    if not batch_path or not Path(batch_path).exists():
+        return jsonify({"error": "no batch state"}), 404
+
+    try:
+        state = json.loads(Path(batch_path).read_text())
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    batch_id = state.get("batch_id")
+    if not batch_id:
+        return jsonify({"error": "no batch_id in state"}), 404
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"error": "OPENAI_API_KEY not set"}), 500
+
+    try:
+        from openai import OpenAI
+        client = OpenAI()
+        batch = client.batches.retrieve(batch_id)
+        counts = batch.request_counts
+        state["status"] = batch.status
+        state["request_counts"] = {
+            "completed": counts.completed if counts else 0,
+            "failed": counts.failed if counts else 0,
+            "total": counts.total if counts else 0,
+        }
+        terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
+        if terminal:
+            import datetime as _dt
+            state["completed_at"] = _dt.datetime.now().isoformat()
+            if batch.output_file_id:
+                state["output_file_id"] = batch.output_file_id
+            if batch.error_file_id:
+                state["error_file_id"] = batch.error_file_id
+        # Persist updated state
+        Path(batch_path).write_text(json.dumps(state, indent=2))
+        return jsonify(state)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Cancel batch on OpenAI ────────────────────────────────────────────────────
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/batch-cancel", methods=["POST"])
+def api_batch_cancel(pipeline_id: int):
+    """Send a cancellation request to OpenAI for the active batch."""
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "not found"}), 404
+    if pipeline["user_id"] != uid:
+        return jsonify({"error": "not owner"}), 403
+
+    batch_path = pipeline.get("batch_state_path")
+    if not batch_path or not Path(batch_path).exists():
+        return jsonify({"error": "no batch state"}), 404
+
+    try:
+        state = json.loads(Path(batch_path).read_text())
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    batch_id = state.get("batch_id")
+    if not batch_id:
+        return jsonify({"error": "no batch_id in state"}), 404
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"error": "OPENAI_API_KEY not set"}), 500
+
+    try:
+        from openai import OpenAI
+        client = OpenAI()
+        batch = client.batches.cancel(batch_id)
+        state["status"] = batch.status
+        Path(batch_path).write_text(json.dumps(state, indent=2))
+        return jsonify({"ok": True, "status": batch.status})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

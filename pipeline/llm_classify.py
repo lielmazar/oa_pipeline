@@ -393,8 +393,16 @@ def phase_poll(interval: int = 60) -> None:
             f"failed={counts.failed}"
         )
 
+        # Save current progress on every poll so the dashboard can read it
+        state["status"] = batch.status
+        state["request_counts"] = {
+            "completed": counts.completed,
+            "failed": counts.failed,
+            "total": counts.total,
+        }
+        save_state(state)
+
         if batch.status in terminal_statuses:
-            state["status"]         = batch.status
             state["completed_at"]   = datetime.now().isoformat()
             state["output_file_id"] = batch.output_file_id
             state["error_file_id"]  = batch.error_file_id
