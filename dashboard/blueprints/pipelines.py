@@ -67,6 +67,16 @@ def _pipeline_response(pipeline: dict) -> dict:
     return pipeline
 
 
+# ── Default keywords ──────────────────────────────────────────────────────────
+
+@pipelines_bp.route("/api/default-keywords", methods=["GET"])
+def api_default_keywords():
+    err = require_auth()
+    if err:
+        return err
+    return jsonify(_load_default_keywords())
+
+
 # ── List all pipelines ────────────────────────────────────────────────────────
 
 @pipelines_bp.route("/api/pipelines", methods=["GET"])
@@ -93,11 +103,17 @@ def api_create_pipeline():
         return jsonify({"error": "name is required"}), 400
     description = data.get("description", "")
 
-    # Merge provided keywords with defaults (empty lists = use defaults)
+    # Load defaults (always uses the new subgroup format)
     default_config = _load_default_keywords()
+    provided = data.get("groups") or data.get("fuel_terms") or data.get("impact_terms")
+    if provided and "groups" in data:
+        groups = data["groups"]
+    else:
+        # Use defaults (subgroup format from default_keywords.json)
+        groups = default_config.get("groups", [])
+
     config = {
-        "fuel_terms": data.get("fuel_terms") or default_config.get("fuel_terms", []),
-        "impact_terms": data.get("impact_terms") or default_config.get("impact_terms", []),
+        "groups": groups,
         "workers": int(data.get("workers", 4)),
         "min_free_gb": float(data.get("min_free_gb", 2.0)),
     }
@@ -110,10 +126,7 @@ def api_create_pipeline():
 
     # Write keywords.json for use by pipeline scripts
     keywords_path = Path(paths["keywords_path"])
-    if "groups" in config:
-        kw_data = {"groups": config["groups"]}
-    else:
-        kw_data = {"fuel_terms": config.get("fuel_terms", []), "impact_terms": config.get("impact_terms", [])}
+    kw_data = {"groups": config["groups"]}
     keywords_path.write_text(json.dumps(kw_data, indent=2), encoding="utf-8")
 
     update_pipeline_paths(

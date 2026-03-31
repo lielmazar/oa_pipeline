@@ -904,8 +904,14 @@ if __name__ == "__main__":
     if args.keyword_config:
         _cfg = _json_main.loads(args.keyword_config.read_text(encoding="utf-8"))
         _grps = _cfg.get("groups", [])
-        _ft = _grps[0]["terms"] if len(_grps) > 0 else _cfg.get("fuel_terms")
-        _it = _grps[1]["terms"] if len(_grps) > 1 else _cfg.get("impact_terms")
+
+        def _flatten_grp(g):
+            if "subgroups" in g:
+                return [t for sg in g["subgroups"] for t in sg.get("terms", [])]
+            return g.get("terms", [])
+
+        _ft = _flatten_grp(_grps[0]) if len(_grps) > 0 else _cfg.get("fuel_terms")
+        _it = _flatten_grp(_grps[1]) if len(_grps) > 1 else _cfg.get("impact_terms")
         _init_terms(_ft, _it)
     else:
         _init_terms()

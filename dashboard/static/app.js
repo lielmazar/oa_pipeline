@@ -2,7 +2,7 @@
  * OpenAlex Pipeline Dashboard — React SPA
  */
 
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -621,40 +621,142 @@ function PipelineHeader({ pipeline, onUpdated }) {
 
 // ── Stage: Keywords ───────────────────────────────────────────────────────────
 
+// Migrate any config format → canonical {name, subgroups:[{name,terms,is_others?}]}
+function _migrateGroups(config) {
+  const raw = config.groups && config.groups.length > 0 ? config.groups : [
+    { name: 'Fuel Terms',   terms: [...(config.fuel_terms   || [])] },
+    { name: 'Impact Terms', terms: [...(config.impact_terms || [])] },
+  ];
+  return raw.map(g => {
+    if (g.subgroups && g.subgroups.length > 0) {
+      return { name: g.name, subgroups: g.subgroups.map(sg => ({ ...sg, terms: [...(sg.terms || [])] })) };
+    }
+    // Flat terms → wrap in one "Others" catch-all subgroup
+    return {
+      name: g.name,
+      subgroups: [{ name: 'Others', is_others: true, terms: [...(g.terms || [])] }],
+    };
+  });
+}
+
+// Count total terms across all subgroups of a group
+function _totalTerms(group) {
+  return (group.subgroups || []).reduce((s, sg) => s + (sg.terms || []).length, 0);
+}
+
+// Get/ensure the "Others" subgroup index within a group's subgroups
+function _othersIdx(subgroups) {
+  const idx = subgroups.findIndex(sg => sg.is_others);
+  return idx >= 0 ? idx : subgroups.length - 1;
+}
+
 function KeywordStage({ pipeline, onUpdate }) {
   const config = pipeline.config || {};
 
-  // Initialise groups from either new groups[] format or legacy fuel_terms/impact_terms
-  function initGroups() {
-    if (config.groups && config.groups.length > 0) {
-      return config.groups.map(g => ({ name: g.name || '', terms: [...(g.terms || [])] }));
-    }
-    return [
-      { name: 'Fuel Terms', terms: [...(config.fuel_terms || [])] },
-      { name: 'Impact Terms', terms: [...(config.impact_terms || [])] },
-    ];
-  }
-
-  const [groups, setGroups] = useState(initGroups);
-  const [inputs, setInputs] = useState(() => groups.map(() => ''));
-  const [editingName, setEditingName] = useState(null); // index of group being renamed
+  const [groups, setGroups] = useState(() => _migrateGroups(config));
+  // newTermInput[gi][si] = current text for the add-term input in group gi, subgroup si
+  const [newTermInput, setNewTermInput] = useState(
+    () => _migrateGroups(config).map(g => g.subgroups.map(() => ''))
+  );
+  // newSgName[gi] = text in the "add subgroup" input for group gi
+  const [newSgName, setNewSgName] = useState(() => _migrateGroups(config).map(() => ''));
+  const [editingSg, setEditingSg] = useState(null); // {gi, si}
+  const [dragSrc, setDragSrc] = useState(null);     // {gi, si, term}
+  const [dropTarget, setDropTarget] = useState(null);// {gi, si}
   const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const updateGroup = (idx, patch) =>
-    setGroups(prev => prev.map((g, i) => i === idx ? { ...g, ...patch } : g));
+  // ── Helpers ──────────────────────────────────────────────────────────────
 
-  const addTerm = idx => {
-    const t = inputs[idx].trim();
-    if (!t || groups[idx].terms.includes(t)) {
-      setInputs(prev => prev.map((v, i) => i === idx ? '' : v));
+  const setSubgroups = (gi, fn) =>
+    setGroups(prev => prev.map((g, i) => i !== gi ? g : { ...g, subgroups: fn(g.subgroups) }));
+
+  const addTerm = (gi, si) => {
+    const val = (newTermInput[gi]?.[si] || '').trim();
+    if (!val) return;
+    const alreadyExists = groups[gi].subgroups.some(sg => (sg.terms || []).includes(val));
+    if (alreadyExists) {
+      setNewTermInput(prev => prev.map((row, i) => i !== gi ? row : row.map((v, j) => j === si ? '' : v)));
       return;
     }
-    updateGroup(idx, { terms: [...groups[idx].terms, t] });
-    setInputs(prev => prev.map((v, i) => i === idx ? '' : v));
+    setSubgroups(gi, sgs => sgs.map((sg, j) =>
+      j !== si ? sg : { ...sg, terms: [...(sg.terms || []), val] }
+    ));
+    setNewTermInput(prev => prev.map((row, i) => i !== gi ? row : row.map((v, j) => j === si ? '' : v)));
   };
 
-  const removeTerm = (idx, term) =>
-    updateGroup(idx, { terms: groups[idx].terms.filter(t => t !== term) });
+  const removeTerm = (gi, si, term) =>
+    setSubgroups(gi, sgs => sgs.map((sg, j) =>
+      j !== si ? sg : { ...sg, terms: (sg.terms || []).filter(t => t !== term) }
+    ));
+
+  const moveTerm = (fromGi, fromSi, toGi, toSi, term) => {
+    if (fromGi === toGi && fromSi === toSi) return;
+    setGroups(prev => prev.map((g, gi) => {
+      if (gi !== fromGi && gi !== toGi) return g;
+      return {
+        ...g,
+        subgroups: g.subgroups.map((sg, si) => {
+          if (gi === fromGi && si === fromSi)
+            return { ...sg, terms: (sg.terms || []).filter(t => t !== term) };
+          if (gi === toGi && si === toSi && !(sg.terms || []).includes(term))
+            return { ...sg, terms: [...(sg.terms || []), term] };
+          return sg;
+        }),
+      };
+    }));
+  };
+
+  const addSubgroup = gi => {
+    const name = (newSgName[gi] || '').trim();
+    if (!name) return;
+    const othersI = _othersIdx(groups[gi].subgroups);
+    setSubgroups(gi, sgs => [
+      ...sgs.slice(0, othersI),
+      { name, terms: [] },
+      ...sgs.slice(othersI),
+    ]);
+    setNewSgName(prev => prev.map((v, i) => i === gi ? '' : v));
+    // Expand inputs array
+    setNewTermInput(prev => prev.map((row, i) =>
+      i !== gi ? row : [...row.slice(0, othersI), '', ...row.slice(othersI)]
+    ));
+  };
+
+  const removeSubgroup = (gi, si) => {
+    const sg = groups[gi].subgroups[si];
+    if (sg.is_others) return;
+    const termsToMove = sg.terms || [];
+    setSubgroups(gi, sgs => {
+      const othersI = _othersIdx(sgs.filter((_, j) => j !== si));
+      const remaining = sgs.filter((_, j) => j !== si);
+      if (termsToMove.length > 0 && remaining[othersI]) {
+        remaining[othersI] = {
+          ...remaining[othersI],
+          terms: [...(remaining[othersI].terms || []), ...termsToMove],
+        };
+      }
+      return remaining;
+    });
+    setNewTermInput(prev => prev.map((row, i) => i !== gi ? row : row.filter((_, j) => j !== si)));
+  };
+
+  const renameSg = (gi, si, name) =>
+    setSubgroups(gi, sgs => sgs.map((sg, j) => j !== si ? sg : { ...sg, name }));
+
+  const loadDefaults = async () => {
+    setLoading(true);
+    try {
+      const res = await apiFetch('/api/default-keywords');
+      if (!res.ok) throw new Error('fetch failed');
+      const data = await res.json();
+      const migrated = _migrateGroups(data);
+      setGroups(migrated);
+      setNewTermInput(migrated.map(g => g.subgroups.map(() => '')));
+      setNewSgName(migrated.map(() => ''));
+    } catch { alert('Could not load defaults.'); }
+    finally { setLoading(false); }
+  };
 
   const save = async () => {
     const res = await apiFetch(`/api/pipelines/${pipeline.id}`, {
@@ -667,80 +769,183 @@ function KeywordStage({ pipeline, onUpdate }) {
     if (onUpdate) onUpdate(updated);
   };
 
-  const TagList = ({ terms, onRemove }) => (
-    <div className="flex flex-wrap gap-1.5 p-2 border rounded-lg min-h-[2.5rem] bg-gray-50">
-      {terms.length === 0
-        ? <span className="text-gray-400 text-xs">No terms yet — add below</span>
-        : terms.map(t => (
-          <span key={t} className="tag-pill">
-            {t}
-            {onRemove && <button onClick={() => onRemove(t)}>✕</button>}
-          </span>
-        ))}
-    </div>
-  );
+  // ── Drag helpers ─────────────────────────────────────────────────────────
+
+  const onDragStart = (e, gi, si, term) => {
+    setDragSrc({ gi, si, term });
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify({ gi, si, term }));
+  };
+  const onDragEnd = () => { setDragSrc(null); setDropTarget(null); };
+  const onDragOver = (e, gi, si) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropTarget({ gi, si });
+  };
+  const onDragLeave = () => setDropTarget(null);
+  const onDrop = (e, gi, si) => {
+    e.preventDefault();
+    try {
+      const src = JSON.parse(e.dataTransfer.getData('text/plain'));
+      moveTerm(src.gi, src.si, gi, si, src.term);
+    } catch {}
+    setDragSrc(null); setDropTarget(null);
+  };
+
+  // ── Sub-group colors (cycle) ──────────────────────────────────────────────
+  const SG_COLORS = [
+    'bg-blue-50 border-blue-200',  'bg-green-50 border-green-200',
+    'bg-amber-50 border-amber-200','bg-purple-50 border-purple-200',
+    'bg-cyan-50 border-cyan-200',  'bg-rose-50 border-rose-200',
+  ];
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h3 className="font-semibold text-lg mb-1">Stage 1: Keyword Selection</h3>
+        <div className="flex items-start justify-between mb-1">
+          <h3 className="font-semibold text-lg">Stage 1: Keyword Selection</h3>
+          {pipeline.is_owner && (
+            <button onClick={loadDefaults} disabled={loading}
+              className="text-xs px-3 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 transition">
+              {loading ? 'Loading…' : '⟳ Load defaults'}
+            </button>
+          )}
+        </div>
         <p className="text-sm text-gray-500 mb-4">
-          Configure keyword groups for filtering OpenAlex records. Each record must match at least one term from each group.
-          Click a group name to rename it.
+          Each record must match ≥ 1 term from <em>each</em> top-level group.
+          Within a group, sub-groups categorise terms for report analysis.
+          <strong className="ml-1">Drag terms</strong> between sub-groups to reassign them.
         </p>
-        <div className="space-y-6">
-          {groups.map((group, idx) => (
-            <div key={idx} className="border border-gray-100 rounded-lg p-4 bg-gray-50/50">
-              <div className="flex items-center gap-2 mb-3">
-                {editingName === idx ? (
-                  <input
-                    autoFocus
-                    type="text"
-                    value={group.name}
-                    onChange={e => updateGroup(idx, { name: e.target.value })}
-                    onBlur={() => setEditingName(null)}
-                    onKeyDown={e => e.key === 'Enter' && setEditingName(null)}
-                    className="font-semibold text-sm border-b border-blue-400 bg-transparent focus:outline-none w-48"
-                  />
-                ) : (
-                  <button
-                    className="font-semibold text-sm text-gray-800 hover:text-blue-600 flex items-center gap-1"
-                    onClick={() => pipeline.is_owner && setEditingName(idx)}
-                    title={pipeline.is_owner ? 'Click to rename' : ''}
-                  >
-                    {group.name || `Group ${idx + 1}`}
-                    {pipeline.is_owner && <span className="text-gray-400 text-xs ml-1">✎</span>}
-                  </button>
-                )}
-                <span className="text-xs text-gray-400 ml-1">({group.terms.length} terms)</span>
+
+        <div className="space-y-8">
+          {groups.map((group, gi) => (
+            <div key={gi} className="border border-gray-200 rounded-xl overflow-hidden">
+              {/* Group header */}
+              <div className="bg-gray-800 text-white px-5 py-3 flex items-center gap-3">
+                <span className="font-semibold text-sm">{group.name || `Group ${gi + 1}`}</span>
+                <span className="text-gray-400 text-xs">{_totalTerms(group)} terms</span>
+                <span className="text-gray-500 text-xs ml-auto">{(group.subgroups || []).filter(sg => !sg.is_others).length} sub-groups + Others</span>
               </div>
-              <TagList
-                terms={group.terms}
-                onRemove={pipeline.is_owner ? t => removeTerm(idx, t) : null}
-              />
+
+              {/* Sub-groups */}
+              <div className="divide-y divide-gray-100">
+                {(group.subgroups || []).map((sg, si) => {
+                  const colorCls = sg.is_others
+                    ? 'bg-gray-50 border-gray-200'
+                    : SG_COLORS[si % SG_COLORS.length];
+                  const isDropTarget = dropTarget && dropTarget.gi === gi && dropTarget.si === si;
+
+                  return (
+                    <div key={si}
+                      className={`p-4 transition-colors ${isDropTarget ? 'ring-2 ring-inset ring-blue-400 bg-blue-50' : ''}`}
+                      onDragOver={e => onDragOver(e, gi, si)}
+                      onDragLeave={onDragLeave}
+                      onDrop={e => onDrop(e, gi, si)}
+                    >
+                      {/* Sub-group header */}
+                      <div className="flex items-center gap-2 mb-2">
+                        {/* Name (editable) */}
+                        {editingSg && editingSg.gi === gi && editingSg.si === si ? (
+                          <input autoFocus type="text" value={sg.name}
+                            onChange={e => renameSg(gi, si, e.target.value)}
+                            onBlur={() => setEditingSg(null)}
+                            onKeyDown={e => e.key === 'Enter' && setEditingSg(null)}
+                            className="font-medium text-xs border-b border-blue-400 bg-transparent focus:outline-none w-36"
+                          />
+                        ) : (
+                          <button
+                            disabled={!pipeline.is_owner || sg.is_others}
+                            onClick={() => pipeline.is_owner && !sg.is_others && setEditingSg({ gi, si })}
+                            className={`font-medium text-xs flex items-center gap-1 ${sg.is_others ? 'text-gray-400 italic cursor-default' : 'text-gray-700 hover:text-blue-600'}`}
+                            title={sg.is_others ? 'Catch-all for unassigned terms' : 'Click to rename'}
+                          >
+                            <span className={`inline-block w-2 h-2 rounded-full mr-1 ${colorCls.split(' ')[0].replace('bg-', 'bg-').replace('-50', '-400')}`} />
+                            {sg.name || `Sub-group ${si + 1}`}
+                            {pipeline.is_owner && !sg.is_others && <span className="text-gray-400 text-xs">✎</span>}
+                          </button>
+                        )}
+                        <span className="text-xs text-gray-400">({(sg.terms || []).length} terms)</span>
+                        {/* Delete sub-group */}
+                        {pipeline.is_owner && !sg.is_others && (
+                          <button onClick={() => removeSubgroup(gi, si)}
+                            className="ml-auto text-xs text-red-400 hover:text-red-600 transition px-1"
+                            title="Delete sub-group (terms move to Others)">✕</button>
+                        )}
+                      </div>
+
+                      {/* Terms drop zone */}
+                      <div className={`flex flex-wrap gap-1.5 p-2 min-h-[2.5rem] rounded-lg border transition-colors ${colorCls} ${isDropTarget ? 'border-blue-400' : ''}`}>
+                        {(sg.terms || []).length === 0
+                          ? <span className="text-gray-400 text-xs italic">Drop terms here or add below</span>
+                          : (sg.terms || []).map(term => {
+                            const isDragging = dragSrc && dragSrc.gi === gi && dragSrc.si === si && dragSrc.term === term;
+                            return (
+                              <span key={term}
+                                draggable={pipeline.is_owner}
+                                onDragStart={e => onDragStart(e, gi, si, term)}
+                                onDragEnd={onDragEnd}
+                                className={`tag-pill cursor-grab active:cursor-grabbing select-none ${isDragging ? 'opacity-40' : ''}`}
+                                title="Drag to move to another sub-group"
+                              >
+                                {term}
+                                {pipeline.is_owner && (
+                                  <button onClick={() => removeTerm(gi, si, term)}>✕</button>
+                                )}
+                              </span>
+                            );
+                          })}
+                      </div>
+
+                      {/* Add term input */}
+                      {pipeline.is_owner && (
+                        <div className="flex gap-2 mt-2">
+                          <input type="text"
+                            placeholder={`Add to ${sg.name || 'sub-group'}…`}
+                            value={newTermInput[gi]?.[si] || ''}
+                            onChange={e => setNewTermInput(prev =>
+                              prev.map((row, i) => i !== gi ? row : row.map((v, j) => j === si ? e.target.value : v))
+                            )}
+                            onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addTerm(gi, si))}
+                            className="flex-1 border rounded px-3 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"
+                          />
+                          <button onClick={() => addTerm(gi, si)}
+                            className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition">
+                            Add
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Add new sub-group */}
               {pipeline.is_owner && (
-                <div className="flex gap-2 mt-2">
-                  <input
-                    type="text"
-                    placeholder={`Add ${group.name || 'term'}...`}
-                    value={inputs[idx]}
-                    onChange={e => setInputs(prev => prev.map((v, i) => i === idx ? e.target.value : v))}
-                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addTerm(idx))}
+                <div className="bg-gray-50 border-t border-gray-200 px-4 py-3 flex gap-2">
+                  <input type="text"
+                    placeholder="New sub-group name…"
+                    value={newSgName[gi] || ''}
+                    onChange={e => setNewSgName(prev => prev.map((v, i) => i === gi ? e.target.value : v))}
+                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addSubgroup(gi))}
                     className="flex-1 border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
                   />
-                  <button
-                    onClick={() => addTerm(idx)}
-                    className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition"
-                  >Add</button>
+                  <button onClick={() => addSubgroup(gi)}
+                    className="px-3 py-1.5 text-sm bg-gray-700 text-white rounded hover:bg-gray-900 transition">
+                    + Sub-group
+                  </button>
                 </div>
               )}
             </div>
           ))}
+        </div>
 
-          {saved && <p className="text-sm text-green-600">Keywords saved.</p>}
+        <div className="mt-6 flex items-center gap-4">
+          {saved && <span className="text-sm text-green-600 font-medium">✓ Keywords saved</span>}
           {pipeline.is_owner && (
             <button onClick={save}
-              className="w-full py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">
+              className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition">
               Save Keywords
             </button>
           )}
@@ -1051,6 +1256,27 @@ function ColPickerDropdown({ label, allCols, selected, onChange }) {
   );
 }
 
+// Compute which fuel sub-groups a record belongs to, given its matched_fuel_terms JSON string
+function computeRowSubgroups(matchedJson, subgroupDefs) {
+  if (!matchedJson || !subgroupDefs || !subgroupDefs.length) return [];
+  let terms;
+  try { terms = JSON.parse(matchedJson); } catch { return []; }
+  if (!Array.isArray(terms)) return [];
+  const termSet = new Set(terms.map(t => (t || '').toLowerCase()));
+  const termToSg = {};
+  for (const sg of subgroupDefs) {
+    if (sg.is_others) continue;
+    for (const t of (sg.terms || [])) termToSg[t.toLowerCase()] = sg.name;
+  }
+  const matched = new Set();
+  for (const t of termSet) { if (termToSg[t]) matched.add(termToSg[t]); }
+  if (matched.size === 0) {
+    const othersName = (subgroupDefs.find(sg => sg.is_others) || {}).name || 'Others';
+    return [othersName];
+  }
+  return [...matched];
+}
+
 function ReviewStage({ pipeline, isLLM }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState('publication_year');
@@ -1062,7 +1288,15 @@ function ReviewStage({ pipeline, isLLM }) {
   const [sqlText, setSqlText] = useState('');
   const [sqlResult, setSqlResult] = useState(null);
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [subgroupFilter, setSubgroupFilter] = useState('');  // '' = all
   const searchInputRef = useRef(null);
+
+  // Subgroup definitions from pipeline config (group 0 = fuel terms)
+  const fuelSubgroups = useMemo(() => {
+    const config = pipeline.config || {};
+    const groups = _migrateGroups(config);
+    return groups[0]?.subgroups || [];
+  }, [pipeline.config]);
 
   // Load schema once to populate column pickers
   useEffect(() => {
@@ -1176,6 +1410,25 @@ function ReviewStage({ pipeline, isLLM }) {
             className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition">Search</button>
         </div>
 
+        {/* Sub-group filter (only shown when subgroups are configured) */}
+        {fuelSubgroups.length > 1 && (
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xs font-medium text-gray-600">Fuel sub-group:</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button onClick={() => setSubgroupFilter('')}
+                className={`text-xs px-2.5 py-1 rounded-full border transition ${!subgroupFilter ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+                All
+              </button>
+              {fuelSubgroups.map(sg => (
+                <button key={sg.name} onClick={() => setSubgroupFilter(sg.name === subgroupFilter ? '' : sg.name)}
+                  className={`text-xs px-2.5 py-1 rounded-full border transition ${subgroupFilter === sg.name ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+                  {sg.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Column visibility + export */}
         <div className="flex gap-3 mb-4 items-center flex-wrap">
           {schema.length > 0 && (
@@ -1201,18 +1454,35 @@ function ReviewStage({ pipeline, isLLM }) {
           ) : (
             <table className="w-full text-xs text-left">
               <thead className="bg-gray-50 border-b border-gray-200">
-                <tr>{records.columns.map(c => (
-                  <th key={c} className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap cursor-pointer hover:bg-gray-100"
-                    onClick={() => doSort(c)}
-                    title={`Sort by ${c}`}>{c}</th>
-                ))}</tr>
+                <tr>
+                  {fuelSubgroups.length > 1 && (
+                    <th className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap">Sub-group</th>
+                  )}
+                  {records.columns.map(c => (
+                    <th key={c} className="px-3 py-2 font-medium text-gray-600 whitespace-nowrap cursor-pointer hover:bg-gray-100"
+                      onClick={() => doSort(c)}
+                      title={`Sort by ${c}`}>{c}</th>
+                  ))}
+                </tr>
               </thead>
               <tbody>
                 {records.rows.map((row, ri) => {
+                  const matchedFuelIdx = records.columns.indexOf('matched_fuel_terms');
+                  const matchedJson = matchedFuelIdx >= 0 ? row[matchedFuelIdx] : null;
+                  const rowSubgroups = computeRowSubgroups(matchedJson, fuelSubgroups);
+                  // Client-side sub-group filter
+                  if (subgroupFilter && !rowSubgroups.includes(subgroupFilter)) return null;
                   const rowId = row[records.columns.indexOf('openalex_id')] || ri;
                   return (
                     <tr key={ri} onClick={() => handleRowClick(rowId)}
                       className="border-b border-gray-100 hover:bg-blue-50 cursor-pointer">
+                      {fuelSubgroups.length > 1 && (
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {rowSubgroups.map(sg => (
+                            <span key={sg} className="inline-block text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full mr-1">{sg}</span>
+                          ))}
+                        </td>
+                      )}
                       {row.map((cell, ci) => (
                         <td key={ci} className="px-3 py-2 max-w-[200px] truncate"
                           title={String(cell ?? '')}>
@@ -1296,13 +1566,16 @@ function ReportStage({ pipeline, isLLM }) {
   const reportKey = isLLM ? 'llm_report_path' : 'report_path';
 
   // Parse keyword groups from pipeline config for term selection
+  // Flatten subgroups → flat terms per group for backward-compat term filter UI
   const config = pipeline.config || {};
-  const groups = config.groups && config.groups.length > 0
-    ? config.groups
-    : [
-        { name: 'Fuel Terms', terms: config.fuel_terms || [] },
-        { name: 'Impact Terms', terms: config.impact_terms || [] },
-      ];
+  const groups = useMemo(() => {
+    const migrated = _migrateGroups(config);
+    return migrated.map(g => ({
+      name: g.name,
+      // Flatten all subgroup terms into one list for the term-toggle UI
+      terms: (g.subgroups || []).flatMap(sg => sg.terms || []),
+    }));
+  }, [pipeline.id]);
 
   // Which terms are selected for each group (all selected by default)
   const [selected, setSelected] = useState(() => groups.map(g => new Set(g.terms)));

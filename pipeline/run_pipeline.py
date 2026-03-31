@@ -672,8 +672,14 @@ def _worker_local(
         import json as _json_worker
         _cfg = _json_worker.loads(Path(keyword_config_path).read_text(encoding="utf-8"))
         _grps = _cfg.get("groups", [])
-        _ft = _grps[0]["terms"] if len(_grps) > 0 else _cfg.get("fuel_terms")
-        _it = _grps[1]["terms"] if len(_grps) > 1 else _cfg.get("impact_terms")
+
+        def _flatten_grp(g):
+            if "subgroups" in g:
+                return [t for sg in g["subgroups"] for t in sg.get("terms", [])]
+            return g.get("terms", [])
+
+        _ft = _flatten_grp(_grps[0]) if len(_grps) > 0 else _cfg.get("fuel_terms")
+        _it = _flatten_grp(_grps[1]) if len(_grps) > 1 else _cfg.get("impact_terms")
         _init_terms(_ft, _it)
     else:
         _init_terms()
@@ -741,8 +747,14 @@ def _worker_s3(
         import json as _json_worker
         _cfg = _json_worker.loads(Path(keyword_config_path).read_text(encoding="utf-8"))
         _grps = _cfg.get("groups", [])
-        _ft = _grps[0]["terms"] if len(_grps) > 0 else _cfg.get("fuel_terms")
-        _it = _grps[1]["terms"] if len(_grps) > 1 else _cfg.get("impact_terms")
+
+        def _flatten_grp(g):
+            if "subgroups" in g:
+                return [t for sg in g["subgroups"] for t in sg.get("terms", [])]
+            return g.get("terms", [])
+
+        _ft = _flatten_grp(_grps[0]) if len(_grps) > 0 else _cfg.get("fuel_terms")
+        _it = _flatten_grp(_grps[1]) if len(_grps) > 1 else _cfg.get("impact_terms")
         _init_terms(_ft, _it)
     else:
         _init_terms()

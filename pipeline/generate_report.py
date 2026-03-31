@@ -301,24 +301,126 @@ def chart_work_types(records: list[dict]) -> str:
     return chart_top_terms(c, "Work types", n=10, color=PALETTE[4])
 
 
-def chart_fwci(records: list[dict]) -> str:
-    vals = [r["fwci"] for r in records if r.get("fwci") is not None]
-    if len(vals) < 5:
-        return ""
-    med = sorted(vals)[len(vals)//2]
+# ═══════════════════════════════════════════════════════════════════════════
+# Subgroup helpers
+# ═══════════════════════════════════════════════════════════════════════════
+def _get_subgroups(keyword_config: dict | None, group_idx: int) -> list[dict]:
+    """Return the subgroup list for group at group_idx, or empty list."""
+    if not keyword_config:
+        return []
+    grps = keyword_config.get("groups", [])
+    if group_idx >= len(grps):
+        return []
+    return grps[group_idx].get("subgroups", [])
+
+
+def _build_term_to_subgroup(subgroups: list[dict]) -> dict[str, str]:
+    """Map each term (lowercased) → subgroup name, skipping the 'others' catch-all."""
+    mapping: dict[str, str] = {}
+    for sg in subgroups:
+        if sg.get("is_others"):
+            continue
+        for t in sg.get("terms", []):
+            mapping[t.lower()] = sg["name"]
+    return mapping
+
+
+def _others_name(subgroups: list[dict]) -> str:
+    for sg in subgroups:
+        if sg.get("is_others"):
+            return sg["name"]
+    return "Others"
+
+
+def _group_by_subgroup(
+    records: list[dict],
+    subgroups: list[dict],
+    matched_col: str,
+) -> dict[str, list[dict]]:
+    """Partition records by subgroup — a record may appear in multiple subgroups."""
+    if not subgroups:
+        return {}
+    term_to_sg = _build_term_to_subgroup(subgroups)
+    others = _others_name(subgroups)
+    grouped: dict[str, list[dict]] = {sg["name"]: [] for sg in subgroups}
+    if others not in grouped:
+        grouped[others] = []
+
+    for rec in records:
+        matched = {t.lower() for t in _json_col(rec, matched_col)}
+        matched_sgs: set[str] = set()
+        for t in matched:
+            if t in term_to_sg:
+                matched_sgs.add(term_to_sg[t])
+        if not matched_sgs:
+            matched_sgs.add(others)
+        for sg_name in matched_sgs:
+            if sg_name in grouped:
+                grouped[sg_name].append(rec)
+
+    return {k: v for k, v in grouped.items() if v}
+
+
+def chart_fwci(records: list[dict]) -> tuple[str, list[dict]]:
+    """Return (base64_img, outlier_records).
+
+    The histogram is clipped at the IQR-based upper fence so that a handful
+    of extreme papers do not compress the bulk of the distribution into
+    an unreadable sliver.  Outlier records are returned separately so the
+    caller can render a drill-down table.
+    """
+    vals_recs = [(r["fwci"], r) for r in records if r.get("fwci") is not None]
+    if len(vals_recs) < 5:
+        return "", []
+    vals = [v for v, _ in vals_recs]
+    q25, q75 = float(np.percentile(vals, 25)), float(np.percentile(vals, 75))
+    iqr = q75 - q25
+    fence = q75 + 1.5 * iqr
+    med = float(np.median(vals))
+
+    normal_vals = [v for v in vals if v <= fence]
+    outlier_recs = [r for v, r in vals_recs if v > fence]
+
     fig, ax = plt.subplots(figsize=(9, 4))
-    ax.hist(vals, bins=40, color=PALETTE[0], edgecolor="white", linewidth=0.5, zorder=3)
+    bins = min(40, max(10, len(set(round(v, 1) for v in normal_vals))))
+    ax.hist(normal_vals, bins=bins, color=PALETTE[0], edgecolor="white", linewidth=0.5, zorder=3)
     ax.axvline(1.0, color=PALETTE[3], linestyle="--", linewidth=1.2, label="World average (1.0)")
     ax.axvline(med, color=PALETTE[1], linestyle="--", linewidth=1.2, label=f"Median ({med:.2f})")
-    ax.set_xlabel("FWCI"); ax.set_ylabel("Papers")
+    xlabel = "FWCI"
+    if outlier_recs:
+        xlabel += f"  (axis clipped at {fence:.1f} — {len(outlier_recs)} outlier{'s' if len(outlier_recs) != 1 else ''} not shown)"
+    ax.set_xlabel(xlabel); ax.set_ylabel("Papers")
     ax.set_title("Citation impact distribution")
     ax.legend(fontsize=9)
-    return _fig_to_base64(fig)
+    return _fig_to_base64(fig), outlier_recs
 
 
 def chart_institutions(records: list[dict], n: int = 20) -> str:
     return chart_top_terms(_count_json_col(records, "authors_institutions"),
                            "Top institutions", n=n, color=PALETTE[5])
+
+
+def chart_institutions_per_subgroup(
+    records: list[dict],
+    subgroups: list[dict],
+    matched_col: str,
+    n: int = 15,
+) -> list[tuple[str, str]]:
+    """Return [(sg_name, base64_img), ...] — one chart per non-empty subgroup."""
+    grouped = _group_by_subgroup(records, subgroups, matched_col)
+    charts = []
+    for sg_name, sg_recs in grouped.items():
+        if len(sg_recs) < 3:
+            continue
+        img = chart_top_terms(
+            _count_json_col(sg_recs, "authors_institutions"),
+            f"Top institutions — {sg_name}",
+            n=n,
+            color=PALETTE[5],
+        )
+        if img:
+            charts.append((sg_name, img))
+    return charts
 
 
 def chart_yearly_fuel_trends(records: list[dict], n: int = 6,
@@ -699,6 +801,17 @@ tr:hover td { background: var(--surface); }
 @media (max-width: 700px) {
   .two-col, .three-col { grid-template-columns: 1fr; }
 }
+details.outliers { margin: 12px 0 24px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+details.outliers summary {
+  padding: 10px 16px; background: var(--surface); cursor: pointer;
+  font-size: 14px; font-weight: 600; color: var(--amber); list-style: none;
+}
+details.outliers summary::before { content: "▶ "; font-size: 11px; }
+details.outliers[open] summary::before { content: "▼ "; }
+details.outliers table { margin: 0; font-size: 13px; }
+details.outliers td, details.outliers th { padding: 6px 12px; }
+details.outliers .fwci-val { font-weight: 700; color: var(--amber); }
+.subgroup-section { margin-top: 28px; }
 """
 
 
@@ -730,6 +843,52 @@ def _table(headers: list[str], rows: list[list],
         html += "</tr>"
     html += "</tbody></table>"
     return html
+
+
+def _fwci_outlier_html(outlier_recs: list[dict]) -> str:
+    """Collapsible <details> block listing papers with FWCI above the IQR fence."""
+    if not outlier_recs:
+        return ""
+    rows_html = ""
+    for r in sorted(outlier_recs, key=lambda x: -(x.get("fwci") or 0)):
+        fwci_val = r.get("fwci") or 0
+        title    = (r.get("title") or "").replace("<", "&lt;").replace(">", "&gt;")
+        doi      = (r.get("doi") or "").strip()
+        year     = r.get("publication_year") or "—"
+        link     = (
+            f'<a href="{doi}" target="_blank" rel="noopener" '
+            f'style="color:var(--accent);text-decoration:none;">{title}</a>'
+            if doi else title
+        )
+        rows_html += (
+            f"<tr><td>{link}</td>"
+            f'<td class="fwci-val">{fwci_val:.2f}</td>'
+            f"<td>{year}</td></tr>"
+        )
+    return f"""
+<details class="outliers">
+  <summary>&#9888; {len(outlier_recs)} high-impact outlier paper{'s' if len(outlier_recs) != 1 else ''} (FWCI above IQR fence)</summary>
+  <table>
+    <thead><tr><th>Title</th><th>FWCI</th><th>Year</th></tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</details>
+"""
+
+
+def _subgroup_inst_html(charts: list[tuple[str, str]]) -> str:
+    """Render per-subgroup institution charts as stacked sections."""
+    if not charts:
+        return ""
+    parts = []
+    for sg_name, b64 in charts:
+        parts.append(
+            f'<div class="subgroup-section">'
+            f'<h3>{sg_name}</h3>'
+            f'{_chart(b64, f"Top institutions — {sg_name}")}'
+            f"</div>"
+        )
+    return "\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -790,6 +949,10 @@ def generate_report(db_path: Path, state_path: Path | None,
         inc2_set = {t.lower() for t in include_group2}
         impact_counts = Counter({t: c for t, c in impact_counts.items() if t.lower() in inc2_set})
 
+    # Subgroup definitions from keyword config
+    fuel_subgroups   = _get_subgroups(keyword_config, 0)
+    impact_subgroups = _get_subgroups(keyword_config, 1)
+
     c_years    = chart_publications_by_year(records)
     c_fuel     = chart_top_terms(fuel_counts, f"Top {group1_label}", top_n, PALETTE[0])
     c_impact   = chart_top_terms(impact_counts, f"Top {group2_label}", top_n, PALETTE[3])
@@ -798,8 +961,12 @@ def generate_report(db_path: Path, state_path: Path | None,
     c_journals = chart_journals(records)
     c_oa       = chart_oa_status(records)
     c_types    = chart_work_types(records)
-    c_fwci     = chart_fwci(records)
+    c_fwci, fwci_outliers = chart_fwci(records)
     c_inst     = chart_institutions(records)
+    c_inst_by_subgroup = (
+        chart_institutions_per_subgroup(records, fuel_subgroups, "matched_fuel_terms")
+        if fuel_subgroups else []
+    )
     c_trends   = chart_yearly_fuel_trends(records, group1_label=group1_label)
 
     # ── LLM / ML charts ───────────────────────────────────────────────────
@@ -1149,9 +1316,11 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
 <h2>{s + (6 if has_llm else 5)}. Citation impact</h2>
 <p>{fwci_note}</p>
 {_chart(c_fwci, "FWCI distribution")}
+{_fwci_outlier_html(fwci_outliers)}
 
 <h2>{s + (7 if has_llm else 6)}. Top institutions</h2>
 {_chart(c_inst, "Top institutions")}
+{_subgroup_inst_html(c_inst_by_subgroup)}
 
 <h2>{s + (8 if has_llm else 7)}. Summary</h2>
 <p><strong>{n:,}</strong> open-access English papers, {yr_span} years
