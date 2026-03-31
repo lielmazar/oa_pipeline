@@ -45,7 +45,7 @@ def _build_args(script_key: str, raw_args: dict, pipeline: dict | None) -> list:
     script_cfg = SCRIPTS.get(script_key, {})
     no_color = [script_cfg["no_color_flag"]] if script_cfg.get("no_color_flag") else []
 
-    return positional + named + no_color
+    return named + positional + no_color
 
 
 # ── List jobs ─────────────────────────────────────────────────────────────────

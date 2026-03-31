@@ -307,14 +307,19 @@ def _build_stage_status(pipeline: dict) -> dict:
     if db_path and Path(db_path).exists():
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-            row = conn.execute(
-                "SELECT COUNT(*) as total, "
-                "SUM(CASE WHEN llm_is_hydrocarbon IS NOT NULL THEN 1 ELSE 0 END) as llm_done "
-                "FROM filtered_records"
-            ).fetchone()
-            conn.close()
+            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
+            if "llm_is_hydrocarbon" in existing_cols:
+                row = conn.execute(
+                    "SELECT COUNT(*) as total, "
+                    "SUM(CASE WHEN llm_is_hydrocarbon IS NOT NULL THEN 1 ELSE 0 END) as llm_done "
+                    "FROM filtered_records"
+                ).fetchone()
+                status["llm_done"] = row[1] if row else 0
+            else:
+                row = conn.execute("SELECT COUNT(*) FROM filtered_records").fetchone()
+                status["llm_done"] = 0
             status["record_count"] = row[0] if row else 0
-            status["llm_done"] = row[1] if row else 0
+            conn.close()
         except Exception:
             status["record_count"] = 0
             status["llm_done"] = 0

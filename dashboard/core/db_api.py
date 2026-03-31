@@ -57,34 +57,10 @@ def get_schema(db_path: Path) -> list:
 
 # ── Paginated records ──────────────────────────────────────────────────────────
 
-# Columns shown in the default browse view.
-# LLM columns are optional — they only exist after llm_classify.py has run.
-_BROWSE_COLS_BASE = [
-    "openalex_id",
-    "doi",
-    "title",
-    "publication_year",
-    "fwci",
-    "primary_location_source_display_name",
-    "authors_countries",
-    "matched_fuel_terms",
-    "matched_impact_terms",
-]
-_BROWSE_COLS_LLM = [
-    "llm_is_hydrocarbon",
-    "llm_confidence",
-]
-
-
 def _available_cols(conn) -> set[str]:
     """Return the set of columns that actually exist in filtered_records."""
     rows = conn.execute("PRAGMA table_info(filtered_records)").fetchall()
     return {r[1] for r in rows}
-
-_ALLOWED_SORT = {
-    "publication_year", "title", "doi", "fwci", "openalex_id",
-    "primary_location_source_display_name", "llm_is_hydrocarbon", "llm_confidence",
-}
 
 
 def get_records(
@@ -98,30 +74,36 @@ def get_records(
     if not db_path.exists():
         return {"error": "Database not found"}
 
-    sort = sort if sort in _ALLOWED_SORT else "publication_year"
     direction = "DESC" if direction.lower() == "desc" else "ASC"
     offset = (page - 1) * per_page
-
-    where = ""
-    params: list = []
-    if search and search.strip():
-        s = f"%{search.strip()}%"
-        where = "WHERE title LIKE ? OR matched_fuel_terms LIKE ? OR matched_impact_terms LIKE ?"
-        params = [s, s, s]
 
     try:
         with _connect_ro(db_path) as conn:
             existing = _available_cols(conn)
-            col_list = ", ".join(
-                c for c in _BROWSE_COLS_BASE + _BROWSE_COLS_LLM if c in existing
-            )
+
+            # Validate sort column against actual schema
+            if sort not in existing:
+                sort = "publication_year"
+
+            # Search across text columns that exist
+            where = ""
+            params: list = []
+            if search and search.strip():
+                s = f"%{search.strip()}%"
+                search_cols = [c for c in (
+                    "title", "abstract_text", "matched_fuel_terms", "matched_impact_terms"
+                ) if c in existing]
+                if search_cols:
+                    where = "WHERE " + " OR ".join(f"{c} LIKE ?" for c in search_cols)
+                    params = [s] * len(search_cols)
 
             total = conn.execute(
                 f"SELECT COUNT(*) FROM filtered_records {where}", params
             ).fetchone()[0]
 
+            # Return all columns
             cur = conn.execute(
-                f"SELECT {col_list} FROM filtered_records {where} "
+                f"SELECT * FROM filtered_records {where} "
                 f"ORDER BY {sort} {direction} LIMIT ? OFFSET ?",
                 params + [per_page, offset],
             )

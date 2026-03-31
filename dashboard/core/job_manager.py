@@ -8,6 +8,7 @@ to the SSE endpoint using a Condition variable for efficient blocking.
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -56,7 +57,7 @@ class JobManager:
                         )
 
             job_id = uuid.uuid4().hex[:12]
-            cmd = ["python3", "-u", str(script_path)] + [str(a) for a in args]
+            cmd = [sys.executable, "-u", str(script_path)] + [str(a) for a in args]
             env = {**os.environ, "PYTHONUNBUFFERED": "1", "TERM": "dumb"}
 
             try:
