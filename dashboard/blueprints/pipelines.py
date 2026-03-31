@@ -20,6 +20,7 @@ from models.pipeline import (
     delete_pipeline,
     advance_pipeline_stage,
     go_back_pipeline_stage,
+    set_pipeline_stage,
     fork_pipeline,
     record_pipeline_job,
     get_pipeline_jobs,
@@ -247,6 +248,23 @@ def api_go_back_stage(pipeline_id: int):
     prev_stage = go_back_pipeline_stage(pipeline_id, uid)
     if prev_stage is None:
         return jsonify({"error": "cannot go back: not owner, or already at first stage"}), 403
+    pipeline = get_pipeline(pipeline_id, uid)
+    return jsonify(_pipeline_response(pipeline))
+
+
+# ── Jump to any stage (owner only) ───────────────────────────────────────────
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/set-stage", methods=["POST"])
+def api_set_stage(pipeline_id: int):
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    data = request.get_json(silent=True) or {}
+    stage = (data.get("stage") or "").strip()
+    result = set_pipeline_stage(pipeline_id, uid, stage)
+    if result is None:
+        return jsonify({"error": "invalid stage or not owner"}), 400
     pipeline = get_pipeline(pipeline_id, uid)
     return jsonify(_pipeline_response(pipeline))
 

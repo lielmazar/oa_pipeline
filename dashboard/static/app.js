@@ -518,21 +518,34 @@ function HomeView({ onOpenPipeline, runningJobs }) {
 
 // ── Pipeline header ───────────────────────────────────────────────────────────
 
-function StageStepper({ currentStage }) {
+function StageStepper({ currentStage, onNavigate, isOwner, navigating }) {
   const currentIdx = STAGE_IDS.indexOf(currentStage);
   return (
     <div className="flex items-center w-full overflow-x-auto pb-1">
       {STAGE_IDS.map((sid, i) => {
-        let dotCls = 'w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 ';
-        if (i < currentIdx)        dotCls += 'bg-green-500 border-green-500 text-white';
-        else if (i === currentIdx) dotCls += 'bg-blue-600 border-blue-600 text-white';
-        else                       dotCls += 'bg-white border-gray-300 text-gray-400';
+        const isCompleted = i < currentIdx;
+        const isCurrent = i === currentIdx;
+        const isClickable = isOwner && !isCurrent && !navigating;
+        let dotCls = 'w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold flex-shrink-0 transition-all duration-150 ';
+        if (isCompleted)      dotCls += 'bg-green-500 border-green-500 text-white';
+        else if (isCurrent)   dotCls += 'bg-blue-600 border-blue-600 text-white';
+        else                  dotCls += 'bg-white border-gray-300 text-gray-400';
+        if (isClickable)      dotCls += ' cursor-pointer hover:scale-110 hover:shadow-md';
+        else if (!isCurrent)  dotCls += ' cursor-default';
         return (
           <div key={sid} className={`flex items-center ${i < STAGE_IDS.length - 1 ? 'flex-1' : ''}`}>
             <div className="flex flex-col items-center">
-              <div className={dotCls}>{i + 1}</div>
-              <span className={`mt-1 whitespace-nowrap ${i === currentIdx ? 'text-blue-700 font-semibold' : 'text-gray-400'}`}
-                style={{ fontSize: '0.65rem' }}>
+              <div className={dotCls}
+                onClick={isClickable ? () => onNavigate(sid) : undefined}
+                title={isClickable ? `Jump to ${STAGE_LABELS_MAP[sid]}` : undefined}>
+                {navigating && isCurrent
+                  ? <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block" />
+                  : i + 1}
+              </div>
+              <span
+                className={`mt-1 whitespace-nowrap ${isCurrent ? 'text-blue-700 font-semibold' : isClickable ? 'text-gray-500 hover:text-gray-700 cursor-pointer' : 'text-gray-400'}`}
+                style={{ fontSize: '0.65rem' }}
+                onClick={isClickable ? () => onNavigate(sid) : undefined}>
                 {STAGE_LABELS_MAP[sid]}
               </span>
             </div>
@@ -548,27 +561,30 @@ function StageStepper({ currentStage }) {
 
 function PipelineHeader({ pipeline, onUpdated }) {
   const [showFork, setShowFork] = useState(false);
+  const [navigating, setNavigating] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const handleAdvance = async () => {
-    const label = pipeline.next_stage_label || pipeline.next_stage;
-    if (!confirm(`Advance to "${label}"?`)) return;
-    const res = await apiFetch(`/api/pipelines/${pipeline.id}/advance`, { method: 'POST' });
-    const updated = await res.json();
-    if (!res.ok) { alert(updated.error); return; }
-    onUpdated(updated);
+  const navigate = async (stageId) => {
+    if (navigating) return;
+    setNavigating(true);
+    try {
+      const res = await apiFetch(`/api/pipelines/${pipeline.id}/set-stage`, {
+        method: 'POST',
+        body: JSON.stringify({ stage: stageId }),
+      });
+      const updated = await res.json();
+      if (!res.ok) { alert(updated.error); return; }
+      onUpdated(updated);
+    } finally {
+      setNavigating(false);
+    }
   };
 
-  const handleGoBack = async () => {
-    const label = pipeline.prev_stage_label || pipeline.prev_stage;
-    if (!confirm(`Go back to "${label}"?`)) return;
-    const res = await apiFetch(`/api/pipelines/${pipeline.id}/go-back`, { method: 'POST' });
-    const updated = await res.json();
-    if (!res.ok) { alert(updated.error); return; }
-    onUpdated(updated);
-  };
+  const handleAdvance = () => navigate(pipeline.next_stage);
+  const handleGoBack = () => navigate(pipeline.prev_stage);
 
   const handleDelete = async () => {
-    if (!confirm(`Delete pipeline "${pipeline.name}"?`)) return;
+    if (!confirmDelete) { setConfirmDelete(true); return; }
     await apiFetch(`/api/pipelines/${pipeline.id}`, { method: 'DELETE' });
     onUpdated(null);
   };
@@ -581,10 +597,10 @@ function PipelineHeader({ pipeline, onUpdated }) {
           <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">
             {pipeline.is_owner ? 'owner' : `by ${pipeline.owner_username || '?'}`}
           </span>
-          <div className="ml-auto flex gap-2 flex-wrap">
+          <div className="ml-auto flex gap-2 flex-wrap items-center">
             {pipeline.is_owner && pipeline.prev_stage && (
-              <button onClick={handleGoBack}
-                className="text-sm text-gray-600 border border-gray-200 px-3 py-1 rounded-lg hover:bg-gray-50 transition">
+              <button onClick={handleGoBack} disabled={navigating}
+                className="text-sm text-gray-600 border border-gray-200 px-3 py-1 rounded-lg hover:bg-gray-50 transition disabled:opacity-40">
                 ← {pipeline.prev_stage_label}
               </button>
             )}
@@ -593,20 +609,38 @@ function PipelineHeader({ pipeline, onUpdated }) {
               Fork
             </button>
             {pipeline.is_owner && (
-              <button onClick={handleDelete}
-                className="text-sm text-red-600 border border-red-300 px-3 py-1 rounded-lg hover:bg-red-50 transition">
-                Delete
-              </button>
+              confirmDelete
+                ? <span className="flex items-center gap-1">
+                    <span className="text-xs text-red-600">Sure?</span>
+                    <button onClick={handleDelete}
+                      className="text-xs text-white bg-red-600 border border-red-600 px-2 py-1 rounded-lg hover:bg-red-700 transition">
+                      Yes, delete
+                    </button>
+                    <button onClick={() => setConfirmDelete(false)}
+                      className="text-xs text-gray-600 border border-gray-200 px-2 py-1 rounded-lg hover:bg-gray-50 transition">
+                      Cancel
+                    </button>
+                  </span>
+                : <button onClick={handleDelete}
+                    className="text-sm text-red-600 border border-red-300 px-3 py-1 rounded-lg hover:bg-red-50 transition">
+                    Delete
+                  </button>
             )}
             {pipeline.is_owner && pipeline.next_stage && (
-              <button onClick={handleAdvance}
-                className="text-sm bg-green-600 text-white px-4 py-1 rounded-lg hover:bg-green-700 transition font-medium">
-                Advance to {pipeline.next_stage_label} →
+              <button onClick={handleAdvance} disabled={navigating}
+                className="text-sm bg-green-600 text-white px-4 py-1 rounded-lg hover:bg-green-700 transition font-medium disabled:opacity-40 flex items-center gap-1.5">
+                {navigating && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                {pipeline.next_stage_label} →
               </button>
             )}
           </div>
         </div>
-        <StageStepper currentStage={pipeline.current_stage} />
+        <StageStepper
+          currentStage={pipeline.current_stage}
+          onNavigate={navigate}
+          isOwner={pipeline.is_owner}
+          navigating={navigating}
+        />
       </div>
       {showFork && (
         <ForkPipelineModal
@@ -1783,22 +1817,20 @@ function ReviewStage({ pipeline, isLLM }) {
 function ReportStage({ pipeline, isLLM }) {
   const [activeJobId, setActiveJobId] = useState(null);
   const [hasReport, setHasReport] = useState(false);
-  const [topN, setTopN] = useState('20');
+  const [topN, setTopN] = useState(20);
+  const [tab, setTab] = useState('configure'); // 'configure' | 'preview'
+  const [fullscreen, setFullscreen] = useState(false);
   const reportKey = isLLM ? 'llm_report_path' : 'report_path';
 
-  // Parse keyword groups from pipeline config for term selection
-  // Flatten subgroups → flat terms per group for backward-compat term filter UI
   const config = pipeline.config || {};
   const groups = useMemo(() => {
     const migrated = _migrateGroups(config);
     return migrated.map(g => ({
       name: g.name,
-      // Flatten all subgroup terms into one list for the term-toggle UI
       terms: (g.subgroups || []).flatMap(sg => sg.terms || []),
     }));
   }, [pipeline.id]);
 
-  // Which terms are selected for each group (all selected by default)
   const [selected, setSelected] = useState(() => groups.map(g => new Set(g.terms)));
 
   const toggleTerm = (gi, term) => setSelected(prev =>
@@ -1812,11 +1844,14 @@ function ReportStage({ pipeline, isLLM }) {
   const selectAll = gi => setSelected(prev => prev.map((s, i) => i === gi ? new Set(groups[i].terms) : s));
   const selectNone = gi => setSelected(prev => prev.map((s, i) => i === gi ? new Set() : s));
 
-  const { lines, status: jobStatus } = useJobStream(activeJobId, () => setHasReport(true));
+  const { lines, status: jobStatus } = useJobStream(activeJobId, () => {
+    setHasReport(true);
+    setTab('preview');
+  });
   const reportUrl = `/api/report?pipeline_id=${pipeline.id}${isLLM ? '&llm=1' : ''}`;
 
   useEffect(() => {
-    if (pipeline[reportKey]) setHasReport(true);
+    if (pipeline[reportKey]) { setHasReport(true); }
   }, [pipeline, reportKey]);
 
   const genReport = async () => {
@@ -1824,15 +1859,12 @@ function ReportStage({ pipeline, isLLM }) {
       '--db': pipeline.output_db_path,
       '--output': isLLM ? pipeline.llm_report_path : pipeline.report_path,
       '--state': pipeline.state_file_path,
-      '--top-n': topN || '20',
+      '--top-n': String(topN),
     };
-    // Pass include lists only if user has deselected some terms
-    if (groups[0]?.terms.length > 0 && selected[0]?.size < groups[0].terms.length && selected[0]?.size > 0) {
+    if (groups[0]?.terms.length > 0 && selected[0]?.size < groups[0].terms.length && selected[0]?.size > 0)
       args['--include-group1'] = [...selected[0]].join(',');
-    }
-    if (groups[1]?.terms.length > 0 && selected[1]?.size < groups[1].terms.length && selected[1]?.size > 0) {
+    if (groups[1]?.terms.length > 0 && selected[1]?.size < groups[1].terms.length && selected[1]?.size > 0)
       args['--include-group2'] = [...selected[1]].join(',');
-    }
     const res = await apiFetch('/api/jobs', {
       method: 'POST',
       body: JSON.stringify({ script: 'generate_report', pipeline_id: pipeline.id, args }),
@@ -1844,83 +1876,181 @@ function ReportStage({ pipeline, isLLM }) {
 
   const hasTerms = groups.some(g => g.terms.length > 0);
 
+  // Fullscreen overlay
+  if (fullscreen) {
+    return (
+      <div className="fixed inset-0 z-50 bg-white flex flex-col">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50">
+          <h4 className="font-semibold text-sm">{isLLM ? 'Final Report' : 'Report'} — {pipeline.name}</h4>
+          <div className="flex items-center gap-2">
+            <a href={reportUrl} target="_blank" className="text-xs text-blue-600 hover:underline px-2 py-1 border border-blue-200 rounded">
+              Open in new tab ↗
+            </a>
+            <button onClick={() => setFullscreen(false)}
+              className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 border border-gray-200 rounded hover:bg-gray-100 transition">
+              ✕ Exit fullscreen
+            </button>
+          </div>
+        </div>
+        <iframe src={reportUrl} className="flex-1 w-full border-0" />
+      </div>
+    );
+  }
+
+  const TABS = [
+    { id: 'configure', label: 'Configure' },
+    { id: 'preview',   label: hasReport ? 'Preview ✓' : 'Preview' },
+  ];
+
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h3 className="font-semibold text-lg mb-1">Stage {isLLM ? 7 : 4}: {isLLM ? 'Final Report' : 'Report Generation'}</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          {isLLM ? 'Generate the final enriched report with LLM classification results.' : 'Generate an HTML report with charts and statistics.'}
-        </p>
-
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Top N terms per chart</label>
-            <input type="number" min="5" max="50" value={topN} onChange={e => setTopN(e.target.value)}
-              className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400" />
-          </div>
-        </div>
-
-        {hasTerms && (
-          <details className="mb-4 border border-gray-100 rounded-lg">
-            <summary className="px-4 py-2 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50 select-none flex items-center justify-between">
-              <span>Term filter (select which terms appear in charts)</span>
-              <span className="text-xs text-gray-400 font-normal">
-                {groups.map((g, i) => `${selected[i]?.size ?? g.terms.length}/${g.terms.length} ${g.name}`).join(' · ')}
-              </span>
-            </summary>
-            <div className="p-4 grid grid-cols-1 gap-4 border-t border-gray-100">
-              {groups.map((group, gi) => group.terms.length === 0 ? null : (
-                <div key={gi}>
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="text-xs font-semibold text-gray-700">{group.name}</span>
-                    <button onClick={() => selectAll(gi)} className="text-xs text-blue-500 hover:underline">All</button>
-                    <button onClick={() => selectNone(gi)} className="text-xs text-gray-400 hover:underline">None</button>
-                    <span className="text-xs text-gray-400 ml-auto">{selected[gi]?.size ?? group.terms.length} selected</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {group.terms.map(term => {
-                      const on = selected[gi]?.has(term);
-                      return (
-                        <button key={term} onClick={() => toggleTerm(gi, term)}
-                          className={`text-xs px-2 py-0.5 rounded-full border transition ${on
-                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
-                            : 'bg-gray-50 border-gray-200 text-gray-400 line-through'}`}>
-                          {term}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-
-        {pipeline.is_owner && (
-          <button onClick={genReport}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition">
-            ▶ Generate {isLLM ? 'Final Report' : 'Report'}
+      {/* Tab bar */}
+      <div className="flex border-b border-gray-200">
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`px-5 py-2.5 text-sm font-medium transition border-b-2 -mb-px ${
+              tab === t.id
+                ? 'border-emerald-500 text-emerald-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {t.label}
           </button>
+        ))}
+        {hasReport && (
+          <div className="ml-auto flex items-center pr-1">
+            <a href={reportUrl} target="_blank"
+              className="text-xs text-blue-600 hover:underline px-3 py-1">
+              Open in new tab ↗
+            </a>
+          </div>
         )}
       </div>
-      {activeJobId && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="bg-gray-800 px-4 py-2 flex justify-between items-center">
-            <span className="text-gray-300 text-sm font-mono">job {activeJobId}</span>
-            <span className={`text-xs px-2 py-0.5 rounded ${jobStatus === 'done' ? 'bg-green-700 text-green-100' : 'bg-gray-700 text-gray-300'}`}>
-              {jobStatus || 'running'}
-            </span>
+
+      {/* Configure tab */}
+      {tab === 'configure' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h3 className="font-semibold text-lg mb-1">
+              Stage {isLLM ? 7 : 4}: {isLLM ? 'Final Report' : 'Report Generation'}
+            </h3>
+            <p className="text-sm text-gray-500 mb-5">
+              {isLLM
+                ? 'Generate the final enriched report with LLM classification results.'
+                : 'Generate an HTML report with charts and statistics.'}
+            </p>
+
+            {/* Top N slider */}
+            <div className="mb-5">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium text-gray-600">Top N terms per chart</label>
+                <span className="text-sm font-semibold text-emerald-700 w-8 text-right">{topN}</span>
+              </div>
+              <input type="range" min="5" max="50" step="5" value={topN}
+                onChange={e => setTopN(Number(e.target.value))}
+                className="w-full accent-emerald-600" />
+              <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+                <span>5</span><span>50</span>
+              </div>
+            </div>
+
+            {/* Term filter */}
+            {hasTerms && (
+              <details className="mb-5 border border-gray-100 rounded-lg">
+                <summary className="px-4 py-2.5 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50 select-none flex items-center justify-between">
+                  <span>Term filter</span>
+                  <span className="text-xs text-gray-400 font-normal">
+                    {groups.map((g, i) => `${selected[i]?.size ?? g.terms.length}/${g.terms.length} ${g.name}`).join(' · ')}
+                  </span>
+                </summary>
+                <div className="p-4 grid grid-cols-1 gap-4 border-t border-gray-100">
+                  {groups.map((group, gi) => group.terms.length === 0 ? null : (
+                    <div key={gi}>
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-xs font-semibold text-gray-700">{group.name}</span>
+                        <button onClick={() => selectAll(gi)} className="text-xs text-blue-500 hover:underline">All</button>
+                        <button onClick={() => selectNone(gi)} className="text-xs text-gray-400 hover:underline">None</button>
+                        <span className="text-xs text-gray-400 ml-auto">{selected[gi]?.size ?? group.terms.length} selected</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.terms.map(term => {
+                          const on = selected[gi]?.has(term);
+                          return (
+                            <button key={term} onClick={() => toggleTerm(gi, term)}
+                              className={`text-xs px-2 py-0.5 rounded-full border transition ${on
+                                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                                : 'bg-gray-50 border-gray-200 text-gray-400 line-through'}`}>
+                              {term}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+
+            {pipeline.is_owner && (
+              <button onClick={genReport}
+                className="px-5 py-2 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition flex items-center gap-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                Generate {isLLM ? 'Final Report' : 'Report'}
+              </button>
+            )}
           </div>
-          <Terminal lines={lines} className="h-40" />
+
+          {/* Job terminal */}
+          {activeJobId && (
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="bg-gray-800 px-4 py-2 flex justify-between items-center">
+                <span className="text-gray-300 text-sm font-mono">job {activeJobId}</span>
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  jobStatus === 'done'  ? 'bg-green-700 text-green-100' :
+                  jobStatus === 'error' ? 'bg-red-700 text-red-100' :
+                  'bg-gray-700 text-gray-300'}`}>
+                  {jobStatus || 'running'}
+                </span>
+              </div>
+              <Terminal lines={lines} className="h-40" />
+            </div>
+          )}
         </div>
       )}
-      {hasReport && (
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <div className="flex justify-between items-center mb-3">
-            <h4 className="font-semibold">Report Preview</h4>
-            <a href={reportUrl} target="_blank" className="text-sm text-blue-600 hover:underline">Open in new tab ↗</a>
-          </div>
-          <iframe src={reportUrl} className="w-full h-96 rounded border border-gray-200" />
+
+      {/* Preview tab */}
+      {tab === 'preview' && (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          {hasReport ? (
+            <>
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50">
+                <span className="text-sm font-medium text-gray-700">Report Preview</span>
+                <button onClick={() => setFullscreen(true)}
+                  className="text-xs text-gray-500 hover:text-gray-800 px-2 py-1 border border-gray-200 rounded hover:bg-white transition flex items-center gap-1">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
+                      d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+                  </svg>
+                  Fullscreen
+                </button>
+              </div>
+              <iframe src={reportUrl} className="w-full border-0"
+                style={{ height: 'calc(100vh - 280px)', minHeight: '500px' }} />
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+              <svg className="w-12 h-12 mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5"
+                  d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+              </svg>
+              <p className="text-sm">No report generated yet.</p>
+              <button onClick={() => setTab('configure')}
+                className="mt-3 text-xs text-emerald-600 hover:underline">
+                Go to Configure →
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -202,6 +202,22 @@ def go_back_pipeline_stage(pipeline_id: int, user_id: int) -> str | None:
     return prev_stage
 
 
+def set_pipeline_stage(pipeline_id: int, user_id: int, stage: str) -> str | None:
+    """Jump directly to any valid stage. Returns stage name or None on failure."""
+    if stage not in STAGES:
+        return None
+    p = get_pipeline(pipeline_id, user_id)
+    if not p or p["user_id"] != user_id:
+        return None
+    db = get_meta_db()
+    db.execute(
+        "UPDATE pipelines SET current_stage = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (stage, pipeline_id),
+    )
+    db.commit()
+    return stage
+
+
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 def delete_pipeline(pipeline_id: int, user_id: int) -> bool:
