@@ -11,21 +11,25 @@ from models.db import get_meta_db
 STAGES = [
     "keyword_selection",
     "openalex_search",
-    "results_review",
-    "report_generation",
+    "report",
     "llm_classification",
-    "llm_results_review",
-    "llm_report_generation",
+    "llm_report",
 ]
 
 STAGE_LABELS = {
-    "keyword_selection":    "Keyword Selection",
-    "openalex_search":      "OpenAlex Search",
-    "results_review":       "Results Review",
-    "report_generation":    "Report Generation",
-    "llm_classification":   "LLM Classification",
-    "llm_results_review":   "LLM Results Review",
-    "llm_report_generation": "Final Report",
+    "keyword_selection": "Keyword Selection",
+    "openalex_search":   "OpenAlex Search",
+    "report":            "Report",
+    "llm_classification": "LLM Classification",
+    "llm_report":        "LLM Report",
+}
+
+# Map removed stage names to their new equivalents (DB migration)
+_STAGE_MIGRATION: dict[str, str] = {
+    "results_review":        "report",
+    "report_generation":     "report",
+    "llm_results_review":    "llm_report",
+    "llm_report_generation": "llm_report",
 }
 
 
@@ -48,6 +52,9 @@ def get_prev_stage(current: str) -> str | None:
 def _row_to_dict(row, current_user_id: int | None = None) -> dict:
     d = dict(row)
     d["config"] = json.loads(d.get("config") or "{}")
+    # Migrate old stage names from the 7-stage pipeline to the 5-stage pipeline
+    if d.get("current_stage") in _STAGE_MIGRATION:
+        d["current_stage"] = _STAGE_MIGRATION[d["current_stage"]]
     if current_user_id is not None:
         d["is_owner"] = d["user_id"] == current_user_id
     return d
@@ -241,7 +248,7 @@ def fork_pipeline(
 ) -> int:
     """
     Fork a pipeline: copy config + duplicate the output SQLite.
-    The fork starts at 'results_review' since the DB is already populated.
+    The fork starts at 'report' since the DB is already populated.
 
     Returns the new pipeline id.
     """
@@ -254,7 +261,7 @@ def fork_pipeline(
     cur = db.execute(
         """INSERT INTO pipelines
                (user_id, forked_from_id, name, description, current_stage, config)
-           VALUES (?, ?, ?, ?, 'results_review', ?)""",
+           VALUES (?, ?, ?, ?, 'report', ?)""",
         (new_user_id, source_id, new_name, f"Forked from: {source['name']}", cfg_json),
     )
     db.commit()

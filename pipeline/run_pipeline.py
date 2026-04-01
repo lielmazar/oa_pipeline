@@ -1019,7 +1019,7 @@ def run_pipeline(
                 # ---- Wait for completions ----
                 done, _ = wait(
                     submitted.keys(),
-                    timeout=0.30,
+                    timeout=0.05,
                     return_when=FIRST_COMPLETED,
                 )
 

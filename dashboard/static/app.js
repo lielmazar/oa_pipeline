@@ -260,29 +260,38 @@ function NavBar({ me, view, runningCount, onShowHome, onShowJobs, onLogout }) {
 // ── Stage constants ───────────────────────────────────────────────────────────
 
 const STAGE_IDS = [
-  'keyword_selection', 'openalex_search', 'results_review',
-  'report_generation', 'llm_classification', 'llm_results_review', 'llm_report_generation',
+  'keyword_selection', 'openalex_search', 'report', 'llm_classification', 'llm_report',
 ];
 
 const STAGE_LABELS_MAP = {
-  keyword_selection:     '① Keywords',
-  openalex_search:       '② Search',
-  results_review:        '③ Review',
-  report_generation:     '④ Report',
-  llm_classification:    '⑤ LLM',
-  llm_results_review:    '⑥ LLM Review',
-  llm_report_generation: '⑦ Final Report',
+  keyword_selection: '① Keywords',
+  openalex_search:   '② Search',
+  report:            '③ Report',
+  llm_classification:'④ LLM',
+  llm_report:        '⑤ LLM Report',
 };
 
 const STAGE_COLORS = {
-  keyword_selection:     'bg-gray-200 text-gray-700',
-  openalex_search:       'bg-blue-100 text-blue-800',
-  results_review:        'bg-cyan-100 text-cyan-800',
-  report_generation:     'bg-emerald-100 text-emerald-800',
-  llm_classification:    'bg-purple-100 text-purple-800',
-  llm_results_review:    'bg-indigo-100 text-indigo-800',
-  llm_report_generation: 'bg-green-100 text-green-800',
+  keyword_selection: 'bg-gray-200 text-gray-700',
+  openalex_search:   'bg-blue-100 text-blue-800',
+  report:            'bg-emerald-100 text-emerald-800',
+  llm_classification:'bg-purple-100 text-purple-800',
+  llm_report:        'bg-green-100 text-green-800',
 };
+
+// Chart color palette matching the Python report
+const CHART_COLORS = [
+  '#2563EB','#059669','#D97706','#DC2626','#7C3AED',
+  '#0891B2','#65A30D','#C026D3','#EA580C','#4F46E5',
+  '#0D9488','#CA8A04','#BE185D','#6D28D9','#0284C7',
+];
+
+// IDs in display order (non-LLM first, LLM-only after)
+const CHART_ORDER = [
+  'publications_by_year','top_fuel_terms','top_impact_terms',
+  'top_countries','top_journals','oa_status','work_types','top_institutions',
+  'llm_scope','llm_ml_paradigm','llm_ml_usage',
+];
 
 // ── Home ──────────────────────────────────────────────────────────────────────
 
@@ -993,6 +1002,7 @@ function KeywordStage({ pipeline, onUpdate }) {
 
 function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
   const [maxFiles, setMaxFiles] = useState('');
+  const [workers, setWorkers] = useState(() => Number(localStorage.getItem('oa_workers') || '16'));
   const [localDir, setLocalDir] = useState(() => localStorage.getItem('oa_local_dir') || '');
   const [editingDir, setEditingDir] = useState(false);
   const [totalFiles, setTotalFiles] = useState(null);
@@ -1035,11 +1045,17 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
     setEditingDir(false);
   };
 
+  const saveWorkers = val => {
+    const n = Math.max(1, Math.min(64, Number(val) || 16));
+    setWorkers(n);
+    localStorage.setItem('oa_workers', String(n));
+  };
+
   const startSearch = async () => {
     const args = {
       '--output-db': pipeline.output_db_path,
       '--state-file': pipeline.state_file_path,
-      '--workers': 16,
+      '--workers': workers,
       '--keyword-config': null,
     };
     if (maxFiles) args['--max-files'] = maxFiles;
@@ -1073,8 +1089,11 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
                   onChange={e => setMaxFiles(e.target.value)}
                   className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
               </div>
-              <div className="flex items-end pb-0.5">
-                <span className="text-xs text-gray-400">Workers: <strong className="text-blue-700">16 cores</strong> (fixed)</span>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Workers</label>
+                <input type="number" min="1" max="64" value={workers}
+                  onChange={e => saveWorkers(e.target.value)}
+                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
               </div>
             </div>
             <div className="mb-4">
@@ -1165,7 +1184,7 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
   );
 }
 
-// ── Stage: Review ─────────────────────────────────────────────────────────────
+// ── Stage: Report ─────────────────────────────────────────────────────────────
 
 const JSON_DISPLAY_COLS = new Set([
   'matched_fuel_terms', 'matched_impact_terms', 'authors_countries',
@@ -1488,7 +1507,132 @@ function computeRowSubgroups(matchedJson, subgroupDefs) {
   return [...matched];
 }
 
-function ReviewStage({ pipeline, isLLM }) {
+// ── Chart panels (server-rendered images) ─────────────────────────────────────
+
+function ChartPanel({ chartId, pipelineId, topN, title, sql, onViewQuery }) {
+  const [showSql, setShowSql] = useState(false);
+  const [imgErr, setImgErr]   = useState(false);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const imgUrl = `/api/charts/image?pipeline_id=${pipelineId}&chart=${chartId}&top_n=${topN}&_r=${refreshKey}`;
+
+  // Reset loaded state whenever the URL changes
+  useEffect(() => { setImgLoaded(false); setImgErr(false); }, [chartId, pipelineId, topN, refreshKey]);
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+        <span className="text-sm font-semibold text-gray-800">{title || chartId}</span>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh chart"
+            className="text-gray-300 hover:text-gray-500 transition text-xs px-1">
+            ↻
+          </button>
+          {sql && (
+            <button onClick={() => setShowSql(s => !s)}
+              className={`text-xs px-2 py-0.5 rounded border transition
+                ${showSql ? 'bg-gray-100 text-gray-700 border-gray-300'
+                           : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
+              SQL
+            </button>
+          )}
+          {sql && (
+            <button onClick={() => onViewQuery(sql)}
+              className="text-xs text-blue-500 hover:text-blue-700 hover:underline">
+              Edit & Run →
+            </button>
+          )}
+        </div>
+      </div>
+      {showSql && sql && (
+        <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
+          <pre className="text-xs font-mono text-gray-600 whitespace-pre-wrap overflow-x-auto">{sql}</pre>
+        </div>
+      )}
+      <div className="p-3 relative">
+        {!imgLoaded && !imgErr && (
+          <div className="flex items-center justify-center h-48 text-gray-300">
+            <span className="w-6 h-6 border-2 border-gray-200 border-t-blue-400 rounded-full animate-spin" />
+          </div>
+        )}
+        {imgErr ? (
+          <div className="flex items-center justify-center h-32 text-gray-400 text-sm">
+            Could not render chart
+          </div>
+        ) : (
+          <img src={imgUrl} alt={title}
+            className={`w-full h-auto transition-opacity duration-300 ${imgLoaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
+            onError={() => { setImgErr(true); setImgLoaded(false); }}
+            onLoad={() => setImgLoaded(true)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChartsPanel({ pipelineId, isLLM, topN, onTopNChange, onViewQuery }) {
+  const [configs, setConfigs] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    apiFetch('/api/charts/configs')
+      .then(r => r.json())
+      .then(list => setConfigs(list))
+      .catch(() => setConfigs([]));
+  }, []);
+
+  const visible = configs
+    ? CHART_ORDER.filter(id => {
+        const cfg = configs.find(c => c.id === id);
+        return cfg && (!cfg.llm_only || isLLM);
+      })
+    : [];
+
+  const cfgMap = useMemo(
+    () => Object.fromEntries((configs || []).map(c => [c.id, c])),
+    [configs]
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-4">
+        <span className="text-sm font-medium text-gray-600">Top N per chart</span>
+        <input type="range" min="5" max="50" step="5" value={topN}
+          onChange={e => onTopNChange(Number(e.target.value))}
+          className="w-36 accent-emerald-600" />
+        <span className="text-sm font-semibold text-emerald-700 w-6">{topN}</span>
+        <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh all charts"
+          className="ml-auto text-sm text-gray-500 hover:text-gray-700 border border-gray-200 hover:border-gray-400 px-3 py-1 rounded-lg transition flex items-center gap-1.5">
+          ↻ Refresh
+        </button>
+      </div>
+      {configs === null ? (
+        <div className="flex items-center justify-center py-20 text-gray-400">
+          <span className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin mr-2" />
+          Loading…
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
+          No chart data available yet — run the search stage first.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {visible.map(id => (
+            <ChartPanel key={`${id}-${topN}-${refreshKey}`} chartId={id} pipelineId={pipelineId}
+              topN={topN}
+              title={cfgMap[id]?.title || id}
+              sql={cfgMap[id]?.sql || ''}
+              onViewQuery={onViewQuery} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── RecordsPanel (browseable DB table) ────────────────────────────────────────
+
+function RecordsPanel({ pipeline, isLLM }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState('publication_year');
   const [search, setSearch] = useState('');
@@ -1753,56 +1897,24 @@ function ReviewStage({ pipeline, isLLM }) {
         </div>
 
         {totalPages > 0 && (
-          <div className="flex justify-between items-center mt-3 text-sm text-gray-500">
-            <span>Page {page} of {totalPages} ({(records?.total || 0).toLocaleString()} records)</span>
-            <div className="flex gap-2">
+          <div className="flex justify-between items-center mt-3 text-sm text-gray-500 flex-wrap gap-2">
+            <span>{(records?.total || 0).toLocaleString()} records</span>
+            <div className="flex items-center gap-2">
+              <button disabled={page <= 1} onClick={() => doPage(1)}
+                className="px-2 py-1 border rounded hover:bg-gray-100 disabled:opacity-40 text-xs">«</button>
               <button disabled={page <= 1} onClick={() => doPage(page - 1)}
                 className="px-3 py-1 border rounded hover:bg-gray-100 disabled:opacity-40">← Prev</button>
+              <span className="flex items-center gap-1 text-xs">
+                <input type="number" min="1" max={totalPages} value={page}
+                  onChange={e => { const p = Math.max(1, Math.min(totalPages, Number(e.target.value) || 1)); doPage(p); }}
+                  className="w-12 border rounded px-1 py-0.5 text-center focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                <span>/ {totalPages}</span>
+              </span>
               <button disabled={page >= totalPages} onClick={() => doPage(page + 1)}
                 className="px-3 py-1 border rounded hover:bg-gray-100 disabled:opacity-40">Next →</button>
+              <button disabled={page >= totalPages} onClick={() => doPage(totalPages)}
+                className="px-2 py-1 border rounded hover:bg-gray-100 disabled:opacity-40 text-xs">»</button>
             </div>
-          </div>
-        )}
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h4 className="font-semibold mb-3">SQL Query</h4>
-        <textarea value={sqlText} onChange={e => setSqlText(e.target.value)} rows={3}
-          placeholder="SELECT * FROM filtered_records LIMIT 10"
-          className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-400 mb-2" />
-        <div className="flex gap-3">
-          <button onClick={runSql}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition">Run Query</button>
-          {sqlResult?.rows && (
-            <button onClick={exportCsv}
-              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition">Export CSV</button>
-          )}
-        </div>
-        {sqlResult && (
-          <div className="mt-4 overflow-x-auto">
-            {sqlResult.error ? (
-              <p className="text-red-600 text-sm">{sqlResult.error}</p>
-            ) : !sqlResult.rows?.length ? (
-              <p className="text-gray-400 text-sm">No results</p>
-            ) : (
-              <>
-                <p className="text-xs text-gray-500 mb-1">{sqlResult.rows.length} row(s){sqlResult.truncated ? ' (truncated)' : ''}</p>
-                <div className="rounded border border-gray-200">
-                  <table className="text-xs">
-                    <thead className="bg-gray-50 border-b">
-                      <tr>{sqlResult.columns.map(c => <th key={c} className="px-2 py-1 text-left font-medium">{c}</th>)}</tr>
-                    </thead>
-                    <tbody>
-                      {sqlResult.rows.map((r, i) => (
-                        <tr key={i} className="border-b border-gray-100">
-                          {r.map((v, j) => <td key={j} className="px-2 py-1 max-w-xs truncate">{String(v ?? '')}</td>)}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
           </div>
         )}
       </div>
@@ -1812,244 +1924,104 @@ function ReviewStage({ pipeline, isLLM }) {
   );
 }
 
-// ── Stage: Report ─────────────────────────────────────────────────────────────
+// ── QueryPanel ────────────────────────────────────────────────────────────────
 
-function ReportStage({ pipeline, isLLM }) {
-  const [activeJobId, setActiveJobId] = useState(null);
-  const [hasReport, setHasReport] = useState(false);
-  const [topN, setTopN] = useState(20);
-  const [tab, setTab] = useState('configure'); // 'configure' | 'preview'
-  const [fullscreen, setFullscreen] = useState(false);
-  const reportKey = isLLM ? 'llm_report_path' : 'report_path';
+function QueryPanel({ pipeline, initialSql, chartConfigs }) {
+  const [sqlText, setSqlText] = useState(initialSql || 'SELECT * FROM filtered_records LIMIT 20');
+  const [sqlResult, setSqlResult] = useState(null);
+  const [running, setRunning] = useState(false);
 
-  const config = pipeline.config || {};
-  const groups = useMemo(() => {
-    const migrated = _migrateGroups(config);
-    return migrated.map(g => ({
-      name: g.name,
-      terms: (g.subgroups || []).flatMap(sg => sg.terms || []),
-    }));
-  }, [pipeline.id]);
-
-  const [selected, setSelected] = useState(() => groups.map(g => new Set(g.terms)));
-
-  const toggleTerm = (gi, term) => setSelected(prev =>
-    prev.map((s, i) => {
-      if (i !== gi) return s;
-      const ns = new Set(s);
-      ns.has(term) ? ns.delete(term) : ns.add(term);
-      return ns;
-    })
-  );
-  const selectAll = gi => setSelected(prev => prev.map((s, i) => i === gi ? new Set(groups[i].terms) : s));
-  const selectNone = gi => setSelected(prev => prev.map((s, i) => i === gi ? new Set() : s));
-
-  const { lines, status: jobStatus } = useJobStream(activeJobId, () => {
-    setHasReport(true);
-    setTab('preview');
-  });
-  const reportUrl = `/api/report?pipeline_id=${pipeline.id}${isLLM ? '&llm=1' : ''}`;
-
+  // Sync textarea when parent pushes a chart query via initialSql
   useEffect(() => {
-    if (pipeline[reportKey]) { setHasReport(true); }
-  }, [pipeline, reportKey]);
+    if (initialSql) setSqlText(initialSql);
+  }, [initialSql]);
 
-  const genReport = async () => {
-    const args = {
-      '--db': pipeline.output_db_path,
-      '--output': isLLM ? pipeline.llm_report_path : pipeline.report_path,
-      '--state': pipeline.state_file_path,
-      '--top-n': String(topN),
-    };
-    if (groups[0]?.terms.length > 0 && selected[0]?.size < groups[0].terms.length && selected[0]?.size > 0)
-      args['--include-group1'] = [...selected[0]].join(',');
-    if (groups[1]?.terms.length > 0 && selected[1]?.size < groups[1].terms.length && selected[1]?.size > 0)
-      args['--include-group2'] = [...selected[1]].join(',');
-    const res = await apiFetch('/api/jobs', {
+  const runSql = async () => {
+    const sql = sqlText.trim();
+    if (!sql) return;
+    setRunning(true);
+    const res = await apiFetch('/api/db/query', {
       method: 'POST',
-      body: JSON.stringify({ script: 'generate_report', pipeline_id: pipeline.id, args }),
+      body: JSON.stringify({ pipeline_id: pipeline.id, sql }),
     });
-    const job = await res.json();
-    if (!res.ok) { alert(job.error); return; }
-    setActiveJobId(job.id);
+    setSqlResult(await res.json());
+    setRunning(false);
   };
 
-  const hasTerms = groups.some(g => g.terms.length > 0);
-
-  // Fullscreen overlay
-  if (fullscreen) {
-    return (
-      <div className="fixed inset-0 z-50 bg-white flex flex-col">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50">
-          <h4 className="font-semibold text-sm">{isLLM ? 'Final Report' : 'Report'} — {pipeline.name}</h4>
-          <div className="flex items-center gap-2">
-            <a href={reportUrl} target="_blank" className="text-xs text-blue-600 hover:underline px-2 py-1 border border-blue-200 rounded">
-              Open in new tab ↗
-            </a>
-            <button onClick={() => setFullscreen(false)}
-              className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 border border-gray-200 rounded hover:bg-gray-100 transition">
-              ✕ Exit fullscreen
-            </button>
-          </div>
-        </div>
-        <iframe src={reportUrl} className="flex-1 w-full border-0" />
-      </div>
-    );
-  }
-
-  const TABS = [
-    { id: 'configure', label: 'Configure' },
-    { id: 'preview',   label: hasReport ? 'Preview ✓' : 'Preview' },
-  ];
+  const exportCsv = () => {
+    if (!sqlResult?.rows) return;
+    const csv = [
+      sqlResult.columns.join(','),
+      ...sqlResult.rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = `pipeline_${pipeline.id}_query.csv`;
+    a.click();
+  };
 
   return (
     <div className="space-y-4">
-      {/* Tab bar */}
-      <div className="flex border-b border-gray-200">
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={`px-5 py-2.5 text-sm font-medium transition border-b-2 -mb-px ${
-              tab === t.id
-                ? 'border-emerald-500 text-emerald-700'
-                : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {t.label}
-          </button>
-        ))}
-        {hasReport && (
-          <div className="ml-auto flex items-center pr-1">
-            <a href={reportUrl} target="_blank"
-              className="text-xs text-blue-600 hover:underline px-3 py-1">
-              Open in new tab ↗
-            </a>
-          </div>
-        )}
-      </div>
-
-      {/* Configure tab */}
-      {tab === 'configure' && (
-        <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h3 className="font-semibold text-lg mb-1">
-              Stage {isLLM ? 7 : 4}: {isLLM ? 'Final Report' : 'Report Generation'}
-            </h3>
-            <p className="text-sm text-gray-500 mb-5">
-              {isLLM
-                ? 'Generate the final enriched report with LLM classification results.'
-                : 'Generate an HTML report with charts and statistics.'}
-            </p>
-
-            {/* Top N slider */}
-            <div className="mb-5">
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-medium text-gray-600">Top N terms per chart</label>
-                <span className="text-sm font-semibold text-emerald-700 w-8 text-right">{topN}</span>
-              </div>
-              <input type="range" min="5" max="50" step="5" value={topN}
-                onChange={e => setTopN(Number(e.target.value))}
-                className="w-full accent-emerald-600" />
-              <div className="flex justify-between text-xs text-gray-400 mt-0.5">
-                <span>5</span><span>50</span>
-              </div>
-            </div>
-
-            {/* Term filter */}
-            {hasTerms && (
-              <details className="mb-5 border border-gray-100 rounded-lg">
-                <summary className="px-4 py-2.5 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50 select-none flex items-center justify-between">
-                  <span>Term filter</span>
-                  <span className="text-xs text-gray-400 font-normal">
-                    {groups.map((g, i) => `${selected[i]?.size ?? g.terms.length}/${g.terms.length} ${g.name}`).join(' · ')}
-                  </span>
-                </summary>
-                <div className="p-4 grid grid-cols-1 gap-4 border-t border-gray-100">
-                  {groups.map((group, gi) => group.terms.length === 0 ? null : (
-                    <div key={gi}>
-                      <div className="flex items-center gap-3 mb-2">
-                        <span className="text-xs font-semibold text-gray-700">{group.name}</span>
-                        <button onClick={() => selectAll(gi)} className="text-xs text-blue-500 hover:underline">All</button>
-                        <button onClick={() => selectNone(gi)} className="text-xs text-gray-400 hover:underline">None</button>
-                        <span className="text-xs text-gray-400 ml-auto">{selected[gi]?.size ?? group.terms.length} selected</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {group.terms.map(term => {
-                          const on = selected[gi]?.has(term);
-                          return (
-                            <button key={term} onClick={() => toggleTerm(gi, term)}
-                              className={`text-xs px-2 py-0.5 rounded-full border transition ${on
-                                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
-                                : 'bg-gray-50 border-gray-200 text-gray-400 line-through'}`}>
-                              {term}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
-
-            {pipeline.is_owner && (
-              <button onClick={genReport}
-                className="px-5 py-2 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition flex items-center gap-2">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                Generate {isLLM ? 'Final Report' : 'Report'}
-              </button>
-            )}
-          </div>
-
-          {/* Job terminal */}
-          {activeJobId && (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="bg-gray-800 px-4 py-2 flex justify-between items-center">
-                <span className="text-gray-300 text-sm font-mono">job {activeJobId}</span>
-                <span className={`text-xs px-2 py-0.5 rounded ${
-                  jobStatus === 'done'  ? 'bg-green-700 text-green-100' :
-                  jobStatus === 'error' ? 'bg-red-700 text-red-100' :
-                  'bg-gray-700 text-gray-300'}`}>
-                  {jobStatus || 'running'}
-                </span>
-              </div>
-              <Terminal lines={lines} className="h-40" />
-            </div>
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="font-semibold text-sm">SQL Query</h4>
+          {chartConfigs && chartConfigs.length > 0 && (
+            <select className="text-xs border rounded px-2 py-1 text-gray-600"
+              defaultValue=""
+              onChange={e => { if (e.target.value) setSqlText(e.target.value); e.target.value = ''; }}>
+              <option value="">Load chart query…</option>
+              {chartConfigs.map(c => (
+                <option key={c.id} value={c.sql}>{c.title}</option>
+              ))}
+            </select>
           )}
         </div>
-      )}
+        <textarea value={sqlText} onChange={e => setSqlText(e.target.value)} rows={6}
+          placeholder="SELECT * FROM filtered_records LIMIT 20"
+          onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runSql(); } }}
+          className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400 mb-2" />
+        <p className="text-xs text-gray-400 mb-3">Ctrl+Enter to run · Table: <code className="bg-gray-100 px-1 rounded">filtered_records</code></p>
+        <div className="flex gap-3 items-center">
+          <button onClick={runSql} disabled={running}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition disabled:opacity-50 flex items-center gap-2">
+            {running && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+            Run Query
+          </button>
+          {sqlResult?.rows && (
+            <button onClick={exportCsv}
+              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50 transition">
+              Export CSV
+            </button>
+          )}
+        </div>
+      </div>
 
-      {/* Preview tab */}
-      {tab === 'preview' && (
+      {sqlResult && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          {hasReport ? (
-            <>
-              <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50">
-                <span className="text-sm font-medium text-gray-700">Report Preview</span>
-                <button onClick={() => setFullscreen(true)}
-                  className="text-xs text-gray-500 hover:text-gray-800 px-2 py-1 border border-gray-200 rounded hover:bg-white transition flex items-center gap-1">
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-                      d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
-                  </svg>
-                  Fullscreen
-                </button>
-              </div>
-              <iframe src={reportUrl} className="w-full border-0"
-                style={{ height: 'calc(100vh - 280px)', minHeight: '500px' }} />
-            </>
+          {sqlResult.error ? (
+            <p className="text-red-600 text-sm p-4">{sqlResult.error}</p>
+          ) : !sqlResult.rows?.length ? (
+            <p className="text-gray-400 text-sm p-4">No results</p>
           ) : (
-            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-              <svg className="w-12 h-12 mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5"
-                  d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-              </svg>
-              <p className="text-sm">No report generated yet.</p>
-              <button onClick={() => setTab('configure')}
-                className="mt-3 text-xs text-emerald-600 hover:underline">
-                Go to Configure →
-              </button>
-            </div>
+            <>
+              <div className="px-4 py-2 border-b border-gray-100 bg-gray-50 text-xs text-gray-500">
+                {sqlResult.rows.length} row(s){sqlResult.truncated ? ' (truncated)' : ''}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="text-xs w-full">
+                  <thead className="bg-gray-50 border-b">
+                    <tr>{sqlResult.columns.map(c => <th key={c} className="px-3 py-2 text-left font-medium whitespace-nowrap">{c}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {sqlResult.rows.map((r, i) => (
+                      <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+                        {r.map((v, j) => <td key={j} className="px-3 py-1.5 max-w-xs truncate">{String(v ?? '')}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -2057,6 +2029,66 @@ function ReportStage({ pipeline, isLLM }) {
   );
 }
 
+// ── Combined ReportStage ───────────────────────────────────────────────────────
+
+function ReportStage({ pipeline, isLLM }) {
+  const [tab, setTab] = useState('charts');
+  const [topN, setTopN] = useState(20);
+  const [querySql, setQuerySql] = useState('SELECT * FROM filtered_records LIMIT 20');
+  const [chartConfigs, setChartConfigs] = useState([]);
+
+  // Load chart configs once so QueryPanel can list them in its dropdown
+  useEffect(() => {
+    apiFetch('/api/charts/configs')
+      .then(r => r.json())
+      .then(list => setChartConfigs((list || []).filter(c => !c.llm_only || isLLM)))
+      .catch(() => {});
+  }, [isLLM]);
+
+  const handleViewQuery = sql => {
+    setQuerySql(sql);
+    setTab('query');
+  };
+
+  const TABS = [
+    { id: 'charts',  label: 'Charts' },
+    { id: 'records', label: 'Records' },
+    { id: 'query',   label: 'Query' },
+  ];
+
+  return (
+    <div>
+      {/* Tab bar */}
+      <div className="flex border-b border-gray-200 bg-white rounded-t-xl mb-4">
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition
+              ${tab === t.id
+                ? 'border-emerald-500 text-emerald-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {t.label}
+          </button>
+        ))}
+        <div className="ml-auto flex items-center pr-3">
+          <span className="text-xs text-gray-400">
+            {isLLM ? 'LLM Report' : 'Report'} — {pipeline.name}
+          </span>
+        </div>
+      </div>
+
+      {tab === 'charts' && (
+        <ChartsPanel pipelineId={pipeline.id} isLLM={isLLM}
+          topN={topN} onTopNChange={setTopN} onViewQuery={handleViewQuery} />
+      )}
+      {tab === 'records' && (
+        <RecordsPanel pipeline={pipeline} isLLM={isLLM} />
+      )}
+      {tab === 'query' && (
+        <QueryPanel pipeline={pipeline} initialSql={querySql} chartConfigs={chartConfigs} />
+      )}
+    </div>
+  );
+}
 // ── Stage: LLM ────────────────────────────────────────────────────────────────
 
 function LLMStage({ pipeline, pipelineStatus }) {
@@ -2380,8 +2412,6 @@ function PipelineView({ initialPipeline, onBack, onNavigateTo }) {
   };
 
   const stage = pipeline.current_stage;
-  const ALL_STAGES = ['keyword_selection','openalex_search','results_review','llm_results_review',
-    'report_generation','llm_report_generation','llm_classification'];
 
   return (
     <div>
@@ -2406,17 +2436,17 @@ function PipelineView({ initialPipeline, onBack, onNavigateTo }) {
             onJobStart={() => setJobRunning(true)}
             onJobDone={() => { setJobRunning(false); fetchStatus(); }} />
         )}
-        {(stage === 'results_review' || stage === 'llm_results_review') && (
-          <ReviewStage pipeline={pipeline} isLLM={stage === 'llm_results_review'} />
-        )}
-        {(stage === 'report_generation' || stage === 'llm_report_generation') && (
-          <ReportStage pipeline={pipeline} isLLM={stage === 'llm_report_generation'} />
+        {stage === 'report' && (
+          <ReportStage pipeline={pipeline} isLLM={false} />
         )}
         {stage === 'llm_classification' && (
           <LLMStage pipeline={pipeline} pipelineStatus={pipelineStatus} />
         )}
-        {!ALL_STAGES.includes(stage) && (
-          <div className="text-gray-500">Unknown stage: {stage}</div>
+        {stage === 'llm_report' && (
+          <ReportStage pipeline={pipeline} isLLM={true} />
+        )}
+        {!STAGE_IDS.includes(stage) && (
+          <div className="text-gray-500 text-sm">Unknown stage: {stage}</div>
         )}
       </div>
     </div>
