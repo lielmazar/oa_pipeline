@@ -2029,62 +2029,546 @@ function QueryPanel({ pipeline, initialSql, chartConfigs }) {
   );
 }
 
+// ── RecordViewerPanel (non-modal floating record browser) ─────────────────────
+
+function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
+  const [sql, setSql]             = useState(initialSql || 'SELECT * FROM filtered_records');
+  const [result, setResult]       = useState(null);
+  const [running, setRunning]     = useState(false);
+  const [selectedRecord, setSelectedRecord] = useState(null);
+  const [expandedRow, setExpandedRow]       = useState(null); // row index
+
+  // Collapsible section state
+  const [showFilters, setShowFilters] = useState(true);
+  const [showSql, setShowSql]         = useState(false);
+
+  // Filter / order state
+  const [filterText, setFilterText]       = useState('');
+  const [subgroupFilter, setSubgroupFilter] = useState('');
+  const [sortBy, setSortBy]               = useState('');
+  const [sortDir, setSortDir]             = useState('desc');
+
+  const fuelSubgroups = useMemo(() => {
+    const config = pipeline.config || {};
+    const groups = _migrateGroups(config);
+    return groups[0]?.subgroups || [];
+  }, [pipeline.config]);
+
+  const runQuery = useCallback(async (q) => {
+    setRunning(true);
+    setExpandedRow(null);
+    try {
+      const res = await apiFetch('/api/db/query', {
+        method: 'POST',
+        body: JSON.stringify({ pipeline_id: pipeline.id, sql: q }),
+      });
+      setResult(await res.json());
+    } catch {} finally { setRunning(false); }
+  }, [pipeline.id]);
+
+  useEffect(() => { runQuery(initialSql || 'SELECT * FROM filtered_records'); }, []); // eslint-disable-line
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape' && !selectedRecord) onClose(); };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [onClose, selectedRecord]);
+
+  const openRecord = async (row, cols) => {
+    const idIdx = cols.indexOf('openalex_id');
+    if (idIdx < 0) return;
+    const rowId = row[idIdx];
+    if (!rowId) return;
+    const res = await apiFetch(`/api/db/records/${encodeURIComponent(rowId)}?pipeline_id=${pipeline.id}`);
+    const rec = await res.json();
+    if (res.ok) setSelectedRecord(rec);
+  };
+
+  const cols   = result?.columns || [];
+  const rows   = result?.rows    || [];
+  const ci     = n => cols.indexOf(n);
+  const TITLE_I = ci('title'),  DOI_I = ci('doi'),    YEAR_I = ci('publication_year');
+  const FWCI_I  = ci('fwci'),   OA_I  = ci('open_access_oa_status'), ABS_I = ci('abstract_text');
+  const MFUEL_I = ci('matched_fuel_terms'), SRC_I = ci('primary_location_source_display_name');
+  const CITE_I  = ci('cited_by_count'), LLMCONF_I = ci('llm_confidence');
+  const hasId       = cols.includes('openalex_id');
+  const isRecordView = TITLE_I >= 0;
+  const hasFuelCol  = MFUEL_I >= 0;
+
+  const parseArr = v => { if (!v) return []; try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } };
+  const OA_CHIP = { gold: 'bg-yellow-50 text-yellow-600', green: 'bg-green-50 text-green-600', hybrid: 'bg-purple-50 text-purple-600', bronze: 'bg-orange-50 text-orange-600' };
+
+  // ── Client-side filter + sort ──────────────────────────────────────────────
+  const filteredRows = useMemo(() => {
+    if (!rows.length) return rows;
+    let out = rows;
+
+    // Text search (title + abstract)
+    const q = filterText.trim().toLowerCase();
+    if (q) {
+      out = out.filter(r => {
+        const ttl = TITLE_I >= 0 ? (r[TITLE_I] || '').toLowerCase() : '';
+        const abs = ABS_I   >= 0 ? (r[ABS_I]   || '').toLowerCase() : '';
+        return ttl.includes(q) || abs.includes(q);
+      });
+    }
+
+    // Subgroup filter
+    if (subgroupFilter && fuelSubgroups.length > 0) {
+      out = out.filter(r => {
+        const matchedJson = hasFuelCol ? r[MFUEL_I] : null;
+        const rowSgs = computeRowSubgroups(matchedJson, fuelSubgroups);
+        return rowSgs.includes(subgroupFilter);
+      });
+    }
+
+    // Sort
+    if (sortBy) {
+      const idx = ci(sortBy);
+      if (idx >= 0) {
+        const dir = sortDir === 'asc' ? 1 : -1;
+        out = [...out].sort((a, b) => {
+          const va = a[idx] ?? '', vb = b[idx] ?? '';
+          if (va === '' && vb !== '') return 1;
+          if (va !== '' && vb === '') return -1;
+          if (!isNaN(Number(va)) && !isNaN(Number(vb))) return dir * (Number(va) - Number(vb));
+          return dir * String(va).localeCompare(String(vb));
+        });
+      }
+    }
+
+    return out;
+  }, [rows, filterText, subgroupFilter, sortBy, sortDir, TITLE_I, ABS_I, MFUEL_I, hasFuelCol, fuelSubgroups, ci]);
+
+  const hasActiveFilters = !!(filterText || subgroupFilter || sortBy);
+
+  // ── Collapsible section header ─────────────────────────────────────────────
+  const SectionBar = ({ label, open, onToggle, badge, extra }) => (
+    <button onClick={onToggle}
+      className="w-full flex items-center gap-2 px-4 py-2.5 text-left bg-gray-50 border-b border-gray-200 hover:bg-gray-100 transition flex-shrink-0 group">
+      <svg className={`w-3 h-3 text-gray-400 transition-transform flex-shrink-0 ${open ? 'rotate-90' : ''}`}
+        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7"/>
+      </svg>
+      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{label}</span>
+      {badge}
+      <div className="ml-auto flex items-center gap-2">{extra}</div>
+    </button>
+  );
+
+  return (
+    <div className="fixed right-0 flex flex-col bg-white border-l border-gray-200 shadow-2xl z-30"
+      style={{ top: '48px', height: 'calc(100vh - 48px)', width: '460px' }}>
+
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-semibold text-gray-800 truncate">{title || 'Record Viewer'}</span>
+          {result && !result.error && (
+            <span className="text-xs text-gray-400 flex-shrink-0">
+              {filteredRows.length !== rows.length
+                ? `${filteredRows.length.toLocaleString()} of ${rows.length.toLocaleString()}`
+                : rows.length.toLocaleString()
+              } row{rows.length !== 1 ? 's' : ''}{result.truncated ? '+' : ''}
+            </span>
+          )}
+        </div>
+        <button onClick={onClose} title="Close (Esc)"
+          className="flex-shrink-0 p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition ml-2">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      {/* ── Filter & Order (collapsible) ── */}
+      <div className="flex-shrink-0 border-b border-gray-200">
+        <SectionBar label="Filter & Order" open={showFilters} onToggle={() => setShowFilters(f => !f)}
+          badge={hasActiveFilters
+            ? <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-medium">active</span>
+            : null}
+          extra={hasActiveFilters && (
+            <button onClick={e => { e.stopPropagation(); setFilterText(''); setSubgroupFilter(''); setSortBy(''); }}
+              className="text-xs text-gray-400 hover:text-red-500 transition">Clear all</button>
+          )}
+        />
+        {showFilters && (
+          <div className="px-4 py-3 space-y-3 bg-white">
+
+            {/* Subgroup filter — always shown when subgroups configured */}
+            {fuelSubgroups.length > 0 && (
+              <div>
+                <div className="text-xs text-gray-400 mb-1.5 font-medium">Fuel sub-group</div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button onClick={() => setSubgroupFilter('')}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition ${!subgroupFilter ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+                    All
+                  </button>
+                  {fuelSubgroups.map(sg => (
+                    <button key={sg.name}
+                      onClick={() => setSubgroupFilter(sg.name === subgroupFilter ? '' : sg.name)}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition ${subgroupFilter === sg.name ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+                      {sg.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Text search */}
+            <div className="relative">
+              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none"
+                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+              </svg>
+              <input value={filterText}
+                onChange={e => { setFilterText(e.target.value); setExpandedRow(null); }}
+                placeholder="Filter by title or abstract…"
+                className="w-full pl-8 pr-7 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              {filterText && (
+                <button onClick={() => setFilterText('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm leading-none">×</button>
+              )}
+            </div>
+
+            {/* Sort row */}
+            {isRecordView && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 flex-shrink-0">Sort by</span>
+                <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+                  className="flex-1 text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                  <option value="">— original order —</option>
+                  {YEAR_I    >= 0 && <option value="publication_year">Year</option>}
+                  {FWCI_I    >= 0 && <option value="fwci">FWCI</option>}
+                  {CITE_I    >= 0 && <option value="cited_by_count">Citations</option>}
+                  {TITLE_I   >= 0 && <option value="title">Title (A–Z)</option>}
+                  {LLMCONF_I >= 0 && <option value="llm_confidence">LLM confidence</option>}
+                </select>
+                {sortBy && (
+                  <button onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+                    title="Toggle direction"
+                    className="flex-shrink-0 text-xs border border-gray-300 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 transition min-w-[52px] text-center">
+                    {sortDir === 'desc' ? '↓ Desc' : '↑ Asc'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── SQL Query (collapsible) ── */}
+      <div className="flex-shrink-0 border-b border-gray-200">
+        <SectionBar label="SQL Query" open={showSql} onToggle={() => setShowSql(s => !s)}
+          extra={<code className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-mono">filtered_records</code>}
+        />
+        {showSql && (
+          <div className="px-4 py-3 bg-white">
+            <textarea value={sql} onChange={e => setSql(e.target.value)} rows={3} spellCheck={false}
+              onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runQuery(sql); }}}
+              className="w-full text-xs font-mono border border-gray-300 rounded px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400 resize-none"
+            />
+            <div className="flex items-center gap-2 mt-1.5">
+              <button onClick={() => runQuery(sql)} disabled={running}
+                className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition disabled:opacity-50 flex items-center gap-1.5">
+                {running && <span className="w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin inline-block" />}
+                Run
+              </button>
+              <span className="text-xs text-gray-400">Ctrl+Enter</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Results ── */}
+      <div className="flex-1 overflow-y-auto">
+        {running && !result && (
+          <div className="flex items-center justify-center py-16 text-gray-400">
+            <span className="w-5 h-5 border-2 border-gray-300 border-t-indigo-500 rounded-full animate-spin mr-2" />
+            Running…
+          </div>
+        )}
+        {running && result && (
+          <div className="px-4 py-1.5 bg-indigo-50 text-xs text-indigo-500 flex items-center gap-1.5 flex-shrink-0">
+            <span className="w-3 h-3 border border-indigo-400 border-t-transparent rounded-full animate-spin inline-block" />
+            Refreshing…
+          </div>
+        )}
+        {result?.error && (
+          <div className="p-4 text-red-600 text-xs font-mono bg-red-50">{result.error}</div>
+        )}
+        {result && !result.error && filteredRows.length === 0 && (
+          <div className="p-8 text-center text-gray-400 text-sm">
+            {rows.length > 0 ? 'No records match the current filters' : 'No results'}
+          </div>
+        )}
+        {result && !result.error && filteredRows.length > 0 && (
+          isRecordView ? (
+            <div className="divide-y divide-gray-100">
+              {filteredRows.map((row, ri) => {
+                const isExpanded = expandedRow === ri;
+                const ttl   = row[TITLE_I] || '';
+                const doi   = DOI_I   >= 0 ? (row[DOI_I]   || '') : '';
+                const year  = YEAR_I  >= 0 ? row[YEAR_I]   : null;
+                const fwci  = FWCI_I  >= 0 && row[FWCI_I] != null ? Number(row[FWCI_I]) : null;
+                const oaSt  = OA_I    >= 0 ? (row[OA_I]    || '') : '';
+                const abstr = ABS_I   >= 0 ? (row[ABS_I]   || '') : '';
+                const fuel  = parseArr(MFUEL_I >= 0 ? row[MFUEL_I] : null);
+                const src   = SRC_I   >= 0 ? (row[SRC_I]   || '') : '';
+                const doiUrl   = doi ? `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//, '')}` : null;
+                const fwciCls  = !fwci ? '' : fwci >= 3 ? 'text-green-700 font-bold' : fwci >= 1 ? 'text-blue-700' : 'text-gray-500';
+                const rowSgs   = computeRowSubgroups(hasFuelCol ? row[MFUEL_I] : null, fuelSubgroups);
+
+                return (
+                  <div key={ri}
+                    onClick={() => setExpandedRow(isExpanded ? null : ri)}
+                    className={`px-4 py-3 cursor-pointer transition-colors select-none
+                      ${isExpanded ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+
+                    {/* Title */}
+                    <div className={`text-xs font-medium leading-snug text-gray-900 ${isExpanded ? '' : 'line-clamp-2'}`}>
+                      {doiUrl
+                        ? <a href={doiUrl} target="_blank" rel="noopener"
+                            onClick={e => e.stopPropagation()}
+                            className="hover:underline decoration-blue-400 hover:text-blue-700">
+                            {ttl || doi}
+                          </a>
+                        : (ttl || doi || '—')}
+                    </div>
+
+                    {/* Meta chips */}
+                    <div className="flex flex-wrap gap-1 mt-1.5 items-center">
+                      {year  && <span className="text-xs text-gray-500 font-medium">{year}</span>}
+                      {oaSt  && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[oaSt] || 'bg-gray-100 text-gray-500'}`}>{oaSt}</span>}
+                      {src   && <span className="text-xs text-gray-400 italic truncate max-w-[150px]">{src}</span>}
+                      {fwci != null && <span className={`text-xs ml-auto flex-shrink-0 ${fwciCls}`}>FWCI {fwci.toFixed(1)}</span>}
+                    </div>
+
+                    {/* Subgroup + fuel term chips */}
+                    {(rowSgs.length > 0 || fuel.length > 0) && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {rowSgs.map(sg => (
+                          <span key={sg} className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">{sg}</span>
+                        ))}
+                        {fuel.length > 0 && (
+                          <span className="text-xs text-orange-500">
+                            {fuel.slice(0, 3).join(' · ')}{fuel.length > 3 ? ` +${fuel.length - 3}` : ''}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Abstract — 2-line preview collapsed, full when expanded */}
+                    {abstr && (
+                      <p className={`text-xs text-gray-500 mt-2 leading-relaxed ${isExpanded ? '' : 'line-clamp-2'}`}>
+                        {abstr}
+                      </p>
+                    )}
+
+                    {/* Expanded actions row */}
+                    {isExpanded && (
+                      <div className="mt-3 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                        {hasId && (
+                          <button onClick={() => openRecord(row, cols)}
+                            className="text-xs px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 hover:border-blue-400 hover:text-blue-700 transition flex items-center gap-1.5">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h7"/>
+                            </svg>
+                            View all fields
+                          </button>
+                        )}
+                        <span className="text-xs text-gray-400 ml-auto">click row to collapse</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            // Generic table for non-record SQL results
+            <div className="overflow-x-auto">
+              <table className="text-xs w-full">
+                <thead className="bg-gray-50 border-b sticky top-0">
+                  <tr>{cols.map(c => <th key={c} className="px-3 py-2 text-left font-medium whitespace-nowrap">{c}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {filteredRows.map((r, i) => (
+                    <tr key={i}
+                      className={`border-b border-gray-100 hover:bg-gray-50 ${hasId ? 'cursor-pointer' : ''}`}
+                      onClick={hasId ? () => openRecord(r, cols) : undefined}>
+                      {r.map((v, j) => <td key={j} className="px-3 py-1.5 max-w-xs truncate">{String(v ?? '')}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </div>
+
+      {selectedRecord && (
+        <RecordModal record={selectedRecord} fuelSubgroups={fuelSubgroups}
+          onClose={() => setSelectedRecord(null)} />
+      )}
+    </div>
+  );
+}
+
 // ── Combined ReportStage ───────────────────────────────────────────────────────
 
-function ReportStage({ pipeline, isLLM }) {
-  const [tab, setTab] = useState('charts');
+function ReportStage({ pipeline, isLLM, pipelineStatus }) {
   const [topN, setTopN] = useState(20);
   const [querySql, setQuerySql] = useState('SELECT * FROM filtered_records LIMIT 20');
-  const [chartConfigs, setChartConfigs] = useState([]);
+  const [chartConfigs, setChartConfigs] = useState(null); // null = loading
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [recordViewer, setRecordViewer] = useState(null); // { sql, title } | null
 
-  // Load chart configs once so QueryPanel can list them in its dropdown
   useEffect(() => {
     apiFetch('/api/charts/configs')
       .then(r => r.json())
       .then(list => setChartConfigs((list || []).filter(c => !c.llm_only || isLLM)))
-      .catch(() => {});
+      .catch(() => setChartConfigs([]));
   }, [isLLM]);
 
-  const handleViewQuery = sql => {
-    setQuerySql(sql);
-    setTab('query');
+  const visible = useMemo(() => {
+    if (!chartConfigs) return [];
+    return CHART_ORDER.filter(id => chartConfigs.some(c => c.id === id));
+  }, [chartConfigs]);
+
+  const cfgMap = useMemo(
+    () => Object.fromEntries((chartConfigs || []).map(c => [c.id, c])),
+    [chartConfigs]
+  );
+
+  const scrollToChart = id => {
+    const el = document.getElementById(`chart-${id}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const TABS = [
-    { id: 'charts',  label: 'Charts' },
-    { id: 'records', label: 'Records' },
-    { id: 'query',   label: 'Query' },
-  ];
+  const openRecordViewer = (sql, title) => setRecordViewer({ sql, title });
+
+  // Stage summary data
+  const recordCount = pipelineStatus?.record_count;
+  const llmDone = pipelineStatus?.llm_done;
+
+  const keywordSummary = useMemo(() => {
+    const groups = _migrateGroups(pipeline.config || {});
+    const totalTerms = groups.reduce((s, g) => s + _totalTerms(g), 0);
+    return { groups: groups.length, terms: totalTerms };
+  }, [pipeline.config]);
 
   return (
     <div>
-      {/* Tab bar */}
-      <div className="flex border-b border-gray-200 bg-white rounded-t-xl mb-4">
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition
-              ${tab === t.id
-                ? 'border-emerald-500 text-emerald-700'
-                : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            {t.label}
-          </button>
-        ))}
-        <div className="ml-auto flex items-center pr-3">
-          <span className="text-xs text-gray-400">
-            {isLLM ? 'LLM Report' : 'Report'} — {pipeline.name}
-          </span>
+      {/* ── Stage Summary ── */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5 mb-5">
+        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+          {isLLM ? 'LLM Report — Stage Summary' : 'Search Report — Stage Summary'}
+        </h3>
+        <div className="flex flex-wrap gap-8">
+          <div>
+            <div className="text-xs text-gray-400 mb-0.5">Keywords configured</div>
+            <div className="text-base font-semibold text-gray-800">
+              {keywordSummary.groups} group{keywordSummary.groups !== 1 ? 's' : ''}, {keywordSummary.terms} terms
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-400 mb-0.5">Search results</div>
+            <div className="text-2xl font-bold text-gray-900">
+              {recordCount != null ? (
+                <button
+                  onClick={() => openRecordViewer('SELECT * FROM filtered_records', 'All Search Results')}
+                  className="underline decoration-blue-400 hover:text-blue-600 transition-colors">
+                  {recordCount.toLocaleString()}
+                </button>
+              ) : <span className="text-gray-300 text-lg">—</span>}
+            </div>
+            <div className="text-xs text-gray-400">filtered records</div>
+          </div>
+          {isLLM && (
+            <div>
+              <div className="text-xs text-gray-400 mb-0.5">LLM classified</div>
+              <div className="text-2xl font-bold text-gray-900">
+                {llmDone != null ? (
+                  <button
+                    onClick={() => openRecordViewer(
+                      'SELECT * FROM filtered_records WHERE llm_is_hydrocarbon IS NOT NULL',
+                      'LLM Classified Records'
+                    )}
+                    className="underline decoration-purple-400 hover:text-purple-600 transition-colors">
+                    {llmDone.toLocaleString()}
+                  </button>
+                ) : <span className="text-gray-300 text-lg">—</span>}
+              </div>
+              <div className="text-xs text-gray-400">LLM processed records</div>
+            </div>
+          )}
         </div>
       </div>
 
-      {tab === 'charts' && (
-        <ChartsPanel pipelineId={pipeline.id} isLLM={isLLM}
-          topN={topN} onTopNChange={setTopN} onViewQuery={handleViewQuery} />
+      {/* ── Chart TOC ── */}
+      {visible.length > 0 && (
+        <div className="sticky top-12 z-20 bg-white border border-gray-200 rounded-xl mb-4 shadow-sm">
+          <div className="px-4 py-2 flex items-center gap-2 overflow-x-auto">
+            <span className="text-xs text-gray-400 font-medium flex-shrink-0 mr-1">Jump to:</span>
+            {visible.map(id => (
+              <button key={id} onClick={() => scrollToChart(id)}
+                className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full border border-gray-200 text-gray-600 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 transition whitespace-nowrap">
+                {cfgMap[id]?.title || id}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
-      {tab === 'records' && (
-        <RecordsPanel pipeline={pipeline} isLLM={isLLM} />
+
+      {/* ── Charts toolbar ── */}
+      <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 mb-4 flex items-center gap-4">
+        <span className="text-sm font-medium text-gray-600">Top N</span>
+        <input type="range" min="5" max="50" step="5" value={topN}
+          onChange={e => setTopN(Number(e.target.value))}
+          className="w-36 accent-emerald-600" />
+        <span className="text-sm font-semibold text-emerald-700 w-6">{topN}</span>
+        <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh all charts"
+          className="ml-auto text-sm text-gray-500 hover:text-gray-700 border border-gray-200 hover:border-gray-400 px-3 py-1 rounded-lg transition flex items-center gap-1.5">
+          ↻ Refresh
+        </button>
+      </div>
+
+      {/* ── Charts grid ── */}
+      {chartConfigs === null ? (
+        <div className="flex items-center justify-center py-20 text-gray-400 mb-4">
+          <span className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin mr-2" />
+          Loading…
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400 mb-6">
+          No chart data available yet — run the search stage first.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+          {visible.map(id => (
+            <div key={`${id}-${topN}-${refreshKey}`} id={`chart-${id}`}>
+              <ChartPanel chartId={id} pipelineId={pipeline.id}
+                topN={topN}
+                title={cfgMap[id]?.title || id}
+                sql={cfgMap[id]?.sql || ''}
+                onViewQuery={sql => setQuerySql(sql)} />
+            </div>
+          ))}
+        </div>
       )}
-      {tab === 'query' && (
-        <QueryPanel pipeline={pipeline} initialSql={querySql} chartConfigs={chartConfigs} />
+
+      {/* ── Query panel ── */}
+      <QueryPanel pipeline={pipeline} initialSql={querySql} chartConfigs={chartConfigs || []} />
+
+      {/* ── Non-modal record viewer ── */}
+      {recordViewer && (
+        <RecordViewerPanel
+          key={recordViewer.sql}
+          pipeline={pipeline}
+          initialSql={recordViewer.sql}
+          title={recordViewer.title}
+          onClose={() => setRecordViewer(null)}
+        />
       )}
     </div>
   );
@@ -2437,13 +2921,13 @@ function PipelineView({ initialPipeline, onBack, onNavigateTo }) {
             onJobDone={() => { setJobRunning(false); fetchStatus(); }} />
         )}
         {stage === 'report' && (
-          <ReportStage pipeline={pipeline} isLLM={false} />
+          <ReportStage pipeline={pipeline} isLLM={false} pipelineStatus={pipelineStatus} />
         )}
         {stage === 'llm_classification' && (
           <LLMStage pipeline={pipeline} pipelineStatus={pipelineStatus} />
         )}
         {stage === 'llm_report' && (
-          <ReportStage pipeline={pipeline} isLLM={true} />
+          <ReportStage pipeline={pipeline} isLLM={true} pipelineStatus={pipelineStatus} />
         )}
         {!STAGE_IDS.includes(stage) && (
           <div className="text-gray-500 text-sm">Unknown stage: {stage}</div>
