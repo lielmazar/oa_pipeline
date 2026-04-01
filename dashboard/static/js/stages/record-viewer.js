@@ -10,6 +10,16 @@ function _rvBuildWhere(fs) {
   if (fs.yearTo   && !isNaN(parseInt(fs.yearTo,10)))   parts.push(`publication_year <= ${parseInt(fs.yearTo,10)}`);
   if (fs.oaStatus)   parts.push(`open_access_oa_status = '${fs.oaStatus.replace(/'/g,"''")}'`);
   if (fs.recordType) parts.push(`type = '${fs.recordType.replace(/'/g,"''")}'`);
+  // Fuel subgroup — SQL-based so count and pagination are accurate
+  if (fs.fuelSubgroupTerms?.length) {
+    const terms = fs.fuelSubgroupTerms.map(t => `'${t.replace(/'/g,"''")}'`).join(', ');
+    parts.push(`EXISTS (SELECT 1 FROM json_each(matched_fuel_terms) WHERE value IN (${terms}))`);
+  }
+  // Impact subgroup — SQL-based
+  if (fs.impactSubgroupTerms?.length) {
+    const terms = fs.impactSubgroupTerms.map(t => `'${t.replace(/'/g,"''")}'`).join(', ');
+    parts.push(`EXISTS (SELECT 1 FROM json_each(matched_impact_terms) WHERE value IN (${terms}))`);
+  }
   return parts;
 }
 function _rvPageSql(base, where, sortBy, sortDir, page, perPage) {
@@ -32,68 +42,6 @@ function _rvExportSql(base, where, sortBy, sortDir) {
   if (sortBy) sql += ` ORDER BY ${sortBy} ${sortDir === 'asc' ? 'ASC' : 'DESC'}`;
   return sql;
 }
-
-// ── RecordViewRow (memoized for performance) ──────────────────────────────────
-
-const RecordViewRow = React.memo(function RecordViewRow({ rec, isExpanded, onToggle, onOpenRecord, fuelSubgroups }) {
-  const OA_CHIP = { gold:'bg-yellow-50 text-yellow-600', green:'bg-green-50 text-green-600', hybrid:'bg-purple-50 text-purple-600', bronze:'bg-orange-50 text-orange-600' };
-  const parseArr = v => { if (!v) return []; try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch { return []; } };
-  const doiUrl  = rec.doi ? `https://doi.org/${rec.doi.replace(/^https?:\/\/(dx\.)?doi\.org\//,'')}` : null;
-  const fwciCls = !rec.fwci ? '' : rec.fwci>=3 ? 'text-green-700 font-bold' : rec.fwci>=1 ? 'text-blue-700' : 'text-gray-500';
-  const rowSgs  = useMemo(() => computeRowSubgroups(rec.matchedFuel, fuelSubgroups), [rec.matchedFuel, fuelSubgroups]);
-  const fuel    = useMemo(() => parseArr(rec.matchedFuel), [rec.matchedFuel]);
-
-  return (
-    <div onClick={() => onToggle(rec.oaId)}
-      className={`px-4 py-3 cursor-pointer transition-colors select-none border-b border-gray-100 ${isExpanded ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
-
-      {/* Title */}
-      <div className={`text-xs font-medium leading-snug text-gray-900 ${isExpanded ? '' : 'line-clamp-2'}`}>
-        {doiUrl
-          ? <a href={doiUrl} target="_blank" rel="noopener" onClick={e => e.stopPropagation()}
-              className="hover:underline decoration-blue-400 hover:text-blue-700">{rec.ttl || rec.doi}</a>
-          : (rec.ttl || rec.doi || '—')}
-      </div>
-
-      {/* Meta chips */}
-      <div className="flex flex-wrap gap-1 mt-1.5 items-center">
-        {rec.year && <span className="text-xs text-gray-500 font-medium">{rec.year}</span>}
-        {rec.oaSt && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[rec.oaSt]||'bg-gray-100 text-gray-500'}`}>{rec.oaSt}</span>}
-        {rec.src  && <span className="text-xs text-gray-400 italic truncate max-w-[150px]">{rec.src}</span>}
-        {rec.fwci != null && <span className={`text-xs ml-auto flex-shrink-0 ${fwciCls}`}>FWCI {rec.fwci.toFixed(1)}</span>}
-      </div>
-
-      {/* Subgroups + fuel terms */}
-      {(rowSgs.length>0 || fuel.length>0) && (
-        <div className="flex flex-wrap gap-1 mt-1">
-          {rowSgs.map(sg => <span key={sg} className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">{sg}</span>)}
-          {fuel.length>0 && <span className="text-xs text-orange-500">{fuel.slice(0,3).join(' · ')}{fuel.length>3?` +${fuel.length-3}`:''}</span>}
-        </div>
-      )}
-
-      {/* Abstract — always fully visible when expanded */}
-      {rec.abstr && (
-        <p className={`text-xs text-gray-500 mt-2 leading-relaxed ${isExpanded ? '' : 'line-clamp-2'}`}>{rec.abstr}</p>
-      )}
-
-      {/* Expanded action bar */}
-      {isExpanded && (
-        <div className="mt-3 flex items-center gap-2" onClick={e => e.stopPropagation()}>
-          {rec.oaId && (
-            <button onClick={() => onOpenRecord(rec.oaId)}
-              className="text-xs px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 hover:border-blue-400 hover:text-blue-700 transition flex items-center gap-1.5">
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h7"/>
-              </svg>
-              View all fields
-            </button>
-          )}
-          <span className="text-xs text-gray-400 ml-auto">click row to collapse</span>
-        </div>
-      )}
-    </div>
-  );
-});
 
 // ── RecordViewerPanel (non-modal floating record browser) ─────────────────────
 
@@ -123,24 +71,44 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   const [showSql, setShowSql]         = useState(false);
 
   // Filter state
-  const [filterText, setFilterText]         = useState('');
-  const [subgroupFilter, setSubgroupFilter] = useState('');
-  const [yearFrom, setYearFrom]             = useState('');
-  const [yearTo, setYearTo]                 = useState('');
-  const [oaStatus, setOaStatus]             = useState('');
-  const [recType, setRecType]               = useState('');
-  const [sortBy, setSortBy]                 = useState('');
-  const [sortDir, setSortDir]               = useState('desc');
+  const [filterText, setFilterText]               = useState('');
+  const [subgroupFilter, setSubgroupFilter]       = useState('');   // fuel
+  const [impactSubgroupFilter, setImpactSubgroupFilter] = useState(''); // impact
+  const [yearFrom, setYearFrom]                   = useState('');
+  const [yearTo, setYearTo]                       = useState('');
+  const [oaStatus, setOaStatus]                   = useState('');
+  const [recType, setRecType]                     = useState('');
+  const [sortBy, setSortBy]                       = useState('');
+  const [sortDir, setSortDir]                     = useState('desc');
 
+  // Derive subgroup definitions from pipeline config
   const fuelSubgroups = useMemo(() => {
     const groups = _migrateGroups(pipeline.config || {});
     return groups[0]?.subgroups || [];
   }, [pipeline.config]);
 
-  // Build WHERE parts from current filter state
+  const impactSubgroups = useMemo(() => {
+    const groups = _migrateGroups(pipeline.config || {});
+    return groups[1]?.subgroups || [];
+  }, [pipeline.config]);
+
+  // Resolve selected subgroup → term list for SQL
+  const fuelSubgroupTerms = useMemo(() => {
+    if (!subgroupFilter) return null;
+    const sg = fuelSubgroups.find(s => s.name === subgroupFilter);
+    return sg?.terms?.length ? sg.terms : null;
+  }, [subgroupFilter, fuelSubgroups]);
+
+  const impactSubgroupTerms = useMemo(() => {
+    if (!impactSubgroupFilter) return null;
+    const sg = impactSubgroups.find(s => s.name === impactSubgroupFilter);
+    return sg?.terms?.length ? sg.terms : null;
+  }, [impactSubgroupFilter, impactSubgroups]);
+
+  // Build WHERE parts — all filters are server-side (accurate count + pagination)
   const whereParts = useMemo(
-    () => _rvBuildWhere({ textSearch: filterText, yearFrom, yearTo, oaStatus, recordType: recType }),
-    [filterText, yearFrom, yearTo, oaStatus, recType]
+    () => _rvBuildWhere({ textSearch: filterText, yearFrom, yearTo, oaStatus, recordType: recType, fuelSubgroupTerms, impactSubgroupTerms }),
+    [filterText, yearFrom, yearTo, oaStatus, recType, fuelSubgroupTerms, impactSubgroupTerms]
   );
 
   // ── Fetch count ────────────────────────────────────────────────────────────
@@ -207,7 +175,10 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
     setExporting(true);
     try {
       const exportSql = _rvExportSql(sql, whereParts, sortBy, sortDir);
-      const res = await apiFetch('/api/db/query', { method: 'POST', body: JSON.stringify({ pipeline_id: pipeline.id, sql: exportSql }) });
+      const res = await apiFetch('/api/db/query', {
+        method: 'POST',
+        body: JSON.stringify({ pipeline_id: pipeline.id, sql: exportSql, max_rows: 200000 }),
+      });
       const d = await res.json();
       if (d.error || !d.rows) { alert(d.error || 'Export failed'); return; }
       const csvRows = [
@@ -221,11 +192,21 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
     } finally { setExporting(false); }
   };
 
-  // ── Open full record detail ────────────────────────────────────────────────
+  // ── Open full record detail via SQL (avoids path-encoding issues with openalex URLs) ──
   const openRecord = async (oaId) => {
-    const res = await apiFetch(`/api/db/records/${encodeURIComponent(oaId)}?pipeline_id=${pipeline.id}`);
-    const rec = await res.json();
-    if (res.ok) setSelectedRecord(rec);
+    if (!oaId) return;
+    const safId = oaId.replace(/'/g, "''");
+    const res = await apiFetch('/api/db/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        pipeline_id: pipeline.id,
+        sql: `SELECT * FROM filtered_records WHERE openalex_id = '${safId}'`,
+      }),
+    });
+    const d = await res.json();
+    if (!d.error && d.rows?.[0] && d.columns) {
+      setSelectedRecord(Object.fromEntries(d.columns.map((c, i) => [c, d.rows[0][i]])));
+    }
   };
 
   // Escape key
@@ -241,21 +222,10 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   const isRecordView = TITLE_I >= 0;
   const totalPages   = totalCount != null ? Math.ceil(totalCount / RV_PER_PAGE) : null;
 
-  // Client-side subgroup filter (applied on top of server-paginated rows)
-  const visibleRows = useMemo(() => {
-    if (!subgroupFilter || !fuelSubgroups.length) return rows;
-    const MFUEL_I = ci('matched_fuel_terms');
-    if (MFUEL_I < 0) return rows;
-    return rows.filter(r => {
-      const sgs = computeRowSubgroups(r[MFUEL_I], fuelSubgroups);
-      return sgs.includes(subgroupFilter);
-    });
-  }, [rows, subgroupFilter, fuelSubgroups, ci]);
-
-  const hasActiveFilters = !!(filterText || subgroupFilter || yearFrom || yearTo || oaStatus || recType || sortBy);
+  const hasActiveFilters = !!(filterText || subgroupFilter || impactSubgroupFilter || yearFrom || yearTo || oaStatus || recType || sortBy);
   const clearFilters = () => {
-    setFilterText(''); setSubgroupFilter(''); setYearFrom(''); setYearTo('');
-    setOaStatus(''); setRecType(''); setSortBy('');
+    setFilterText(''); setSubgroupFilter(''); setImpactSubgroupFilter('');
+    setYearFrom(''); setYearTo(''); setOaStatus(''); setRecType(''); setSortBy('');
   };
 
   // ── Collapsible bar ────────────────────────────────────────────────────────
@@ -272,6 +242,29 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
     </button>
   );
 
+  // ── Subgroup pill row ──────────────────────────────────────────────────────
+  const SubgroupPills = ({ label, subgroups, active, onSelect }) => {
+    if (!subgroups.length) return null;
+    return (
+      <div>
+        <div className="text-xs text-gray-400 mb-1.5 font-medium">{label}</div>
+        <div className="flex flex-wrap gap-1.5">
+          <button onClick={() => onSelect('')}
+            className={`text-xs px-2.5 py-1 rounded-full border transition ${!active ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+            All
+          </button>
+          {subgroups.map(sg => (
+            <button key={sg.name}
+              onClick={() => onSelect(sg.name === active ? '' : sg.name)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition ${active === sg.name ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+              {sg.name}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="fixed right-0 flex flex-col bg-white border-l border-gray-200 shadow-2xl z-30"
@@ -282,7 +275,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm font-semibold text-gray-800 truncate">{title || 'Record Viewer'}</span>
           <span className="text-xs text-gray-400 flex-shrink-0">
-            {countLoading ? '\u2026' : totalCount != null ? `${totalCount.toLocaleString()} records` : ''}
+            {countLoading ? '…' : totalCount != null ? `${totalCount.toLocaleString()} records` : ''}
           </span>
         </div>
         <div className="flex items-center gap-2 ml-2 flex-shrink-0">
@@ -317,25 +310,21 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
         {showFilters && (
           <div className="px-4 py-3 space-y-3 bg-white">
 
-            {/* Fuel sub-group — always shown */}
-            {fuelSubgroups.length > 0 && (
-              <div>
-                <div className="text-xs text-gray-400 mb-1.5 font-medium">Fuel sub-group</div>
-                <div className="flex flex-wrap gap-1.5">
-                  <button onClick={() => setSubgroupFilter('')}
-                    className={`text-xs px-2.5 py-1 rounded-full border transition ${!subgroupFilter ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
-                    All
-                  </button>
-                  {fuelSubgroups.map(sg => (
-                    <button key={sg.name}
-                      onClick={() => setSubgroupFilter(sg.name === subgroupFilter ? '' : sg.name)}
-                      className={`text-xs px-2.5 py-1 rounded-full border transition ${subgroupFilter === sg.name ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
-                      {sg.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Fuel sub-group filter */}
+            <SubgroupPills
+              label="Fuel sub-group"
+              subgroups={fuelSubgroups}
+              active={subgroupFilter}
+              onSelect={setSubgroupFilter}
+            />
+
+            {/* Impact sub-group filter */}
+            <SubgroupPills
+              label="Impact sub-group"
+              subgroups={impactSubgroups}
+              active={impactSubgroupFilter}
+              onSelect={setImpactSubgroupFilter}
+            />
 
             {/* Text search */}
             <div className="relative">
@@ -453,16 +442,18 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
           </div>
         )}
         {error && <div className="p-4 text-red-600 text-xs font-mono bg-red-50">{error}</div>}
-        {!loading && !error && visibleRows.length === 0 && (
+        {!loading && !error && rows.length === 0 && (
           <div className="p-8 text-center text-gray-400 text-sm">No records match the current filters</div>
         )}
-        {visibleRows.length > 0 && (
+        {rows.length > 0 && (
           isRecordView ? (
             <div>
-              {visibleRows.map((row, ri) => {
-                const DOI_I    = ci('doi'),   YEAR_I  = ci('publication_year');
-                const FWCI_I   = ci('fwci'),  OA_I    = ci('open_access_oa_status');
-                const ABS_I    = ci('abstract_text'), MFUEL_I = ci('matched_fuel_terms');
+              {rows.map((row, ri) => {
+                const DOI_I    = ci('doi'),   YEAR_I   = ci('publication_year');
+                const FWCI_I   = ci('fwci'),  OA_I     = ci('open_access_oa_status');
+                const ABS_I    = ci('abstract_text');
+                const MFUEL_I  = ci('matched_fuel_terms');
+                const MIMP_I   = ci('matched_impact_terms');
                 const SRC_I    = ci('primary_location_source_display_name');
                 const OAID_I   = ci('openalex_id');
                 const parseArr = v => { if (!v) return []; try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch { return []; } };
@@ -480,7 +471,9 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                 const abstr   = ABS_I  >= 0 ? (row[ABS_I]  || '') : '';
                 const src     = SRC_I  >= 0 ? (row[SRC_I]  || '') : '';
                 const mfuel   = MFUEL_I >= 0 ? row[MFUEL_I] : null;
+                const mimp    = MIMP_I  >= 0 ? row[MIMP_I]  : null;
                 const fuel    = parseArr(mfuel);
+                const imp     = parseArr(mimp);
                 const rowSgs  = computeRowSubgroups(mfuel, fuelSubgroups);
                 const doiUrl  = doi ? `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//,'')}` : null;
                 const fwciCls = !fwci ? '' : fwci>=3 ? 'text-green-700 font-bold' : fwci>=1 ? 'text-blue-700' : 'text-gray-500';
@@ -490,6 +483,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                     onClick={() => setExpandedId(isExp ? null : rowKey)}
                     className={`px-4 py-3 cursor-pointer select-none border-b border-gray-100 ${isExp ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
 
+                    {/* Title */}
                     <div className={`text-xs font-medium leading-snug text-gray-900 ${isExp ? '' : 'line-clamp-2'}`}>
                       {doiUrl
                         ? <a href={doiUrl} target="_blank" rel="noopener" onClick={e => e.stopPropagation()}
@@ -497,6 +491,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                         : (ttl||doi||'—')}
                     </div>
 
+                    {/* Meta chips */}
                     <div className="flex flex-wrap gap-1 mt-1.5 items-center">
                       {year  && <span className="text-xs text-gray-500 font-medium">{year}</span>}
                       {oaSt  && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[oaSt]||'bg-gray-100 text-gray-500'}`}>{oaSt}</span>}
@@ -504,17 +499,27 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                       {fwci != null && <span className={`text-xs ml-auto flex-shrink-0 ${fwciCls}`}>FWCI {fwci.toFixed(1)}</span>}
                     </div>
 
+                    {/* Fuel sub-group chips + ALL fuel terms */}
                     {(rowSgs.length > 0 || fuel.length > 0) && (
                       <div className="flex flex-wrap gap-1 mt-1">
                         {rowSgs.map(sg => <span key={sg} className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">{sg}</span>)}
-                        {fuel.length > 0 && <span className="text-xs text-orange-500">{fuel.slice(0,3).join(' · ')}{fuel.length>3?` +${fuel.length-3}`:''}</span>}
+                        {fuel.map(t => <span key={t} className="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">{t}</span>)}
                       </div>
                     )}
 
+                    {/* ALL impact terms */}
+                    {imp.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {imp.map(t => <span key={t} className="text-xs text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">{t}</span>)}
+                      </div>
+                    )}
+
+                    {/* Abstract — always fully visible when expanded */}
                     {abstr && (
                       <p className={`text-xs text-gray-500 mt-2 leading-relaxed ${isExp ? '' : 'line-clamp-2'}`}>{abstr}</p>
                     )}
 
+                    {/* Expanded action bar */}
                     {isExp && (
                       <div className="mt-3 flex items-center gap-2" onClick={e => e.stopPropagation()}>
                         {oaId && (
@@ -540,7 +545,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                   <tr>{cols.map(c => <th key={c} className="px-3 py-2 text-left font-medium whitespace-nowrap">{c}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {visibleRows.map((r, i) => (
+                  {rows.map((r, i) => (
                     <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
                       {r.map((v, j) => <td key={j} className="px-3 py-1.5 max-w-xs truncate">{String(v ?? '')}</td>)}
                     </tr>

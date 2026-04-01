@@ -119,7 +119,10 @@ def api_db_query():
     if not sql:
         return jsonify({"error": "sql is required"}), 400
 
-    result = db_api.run_query(db_path, sql, max_rows=DB_QUERY_MAX_ROWS)
+    # Allow caller to request a higher limit (capped for safety)
+    requested = data.get("max_rows")
+    max_rows = min(int(requested), 200_000) if requested else DB_QUERY_MAX_ROWS
+    result = db_api.run_query(db_path, sql, max_rows=max_rows)
     return jsonify(result)
 
 

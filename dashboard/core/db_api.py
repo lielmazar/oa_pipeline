@@ -4,6 +4,7 @@ Read-only SQLite helpers for the dashboard.
 All connections use the URI ?mode=ro flag which prevents any writes at the
 SQLite level, independent of the query-level guards in run_query().
 """
+import re
 import sqlite3
 from pathlib import Path
 
@@ -166,9 +167,12 @@ def run_query(db_path: Path, sql: str, max_rows: int = 5000) -> dict:
     if not sql.upper().startswith("SELECT"):
         return {"error": "Only SELECT queries are allowed"}
 
-    upper = sql.upper()
+    # Strip single-quoted string literals before scanning so user-supplied data
+    # (e.g. a term like 'drop-in fuel') never triggers a false positive.
+    # The read-only SQLite connection is the real safety net; this is belt-and-suspenders.
+    sql_structure = re.sub(r"'(?:[^']|'')*'", " ", sql.upper())
     for kw in _FORBIDDEN_KW:
-        if kw in upper:
+        if re.search(rf'\b{kw}\b', sql_structure):
             return {"error": f"Query contains forbidden keyword: {kw}"}
 
     try:
