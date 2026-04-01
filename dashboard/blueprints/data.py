@@ -1,8 +1,6 @@
 """Data blueprint — /api/db/*, /api/charts/*, /api/report, /api/log"""
 from __future__ import annotations
 
-import io
-import os
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file
@@ -10,7 +8,9 @@ from core import chart_gen as _chart_gen
 
 from blueprints.auth import require_auth, get_current_user_id
 from core import db_api
+from core.charts import CHART_QUERIES, get_chart_configs, get_chart_sql
 from core.config import DB_PAGE_SIZE, DB_QUERY_MAX_ROWS
+from core.utils import tail as _tail
 from models.pipeline import get_pipeline
 
 data_bp = Blueprint("data", __name__)
@@ -125,124 +125,6 @@ def api_db_query():
 
 # ── Chart data ────────────────────────────────────────────────────────────────
 
-# Each entry: title, sql (may contain {top_n}), type (bar|hbar|pie), x_key, y_key
-# llm_only=True means only meaningful when LLM columns are populated.
-_CHART_QUERIES = {
-    "publications_by_year": {
-        "title": "Publications by Year",
-        "sql": (
-            "SELECT "
-            "  CASE WHEN publication_year IS NULL OR publication_year <= 2000 "
-            "       THEN 'Unknown/≤2000' "
-            "       ELSE CAST(publication_year AS TEXT) END AS year, "
-            "  COUNT(*) AS count "
-            "FROM filtered_records "
-            "GROUP BY year "
-            "ORDER BY MIN(COALESCE(publication_year, 0))"
-        ),
-        "type": "bar", "x_key": "year", "y_key": "count",
-    },
-    "top_fuel_terms": {
-        "title": "Top Fuel Terms",
-        "sql": (
-            "SELECT value AS term, COUNT(*) AS count "
-            "FROM filtered_records, json_each(matched_fuel_terms) "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-        ),
-        "type": "hbar", "x_key": "term", "y_key": "count",
-    },
-    "top_impact_terms": {
-        "title": "Top Impact Terms",
-        "sql": (
-            "SELECT value AS term, COUNT(*) AS count "
-            "FROM filtered_records, json_each(matched_impact_terms) "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-        ),
-        "type": "hbar", "x_key": "term", "y_key": "count",
-    },
-    "top_countries": {
-        "title": "Top Contributing Countries",
-        "sql": (
-            "SELECT value AS country, COUNT(*) AS count "
-            "FROM filtered_records, json_each(authors_countries) "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-        ),
-        "type": "hbar", "x_key": "country", "y_key": "count",
-    },
-    "top_journals": {
-        "title": "Top Journals / Sources",
-        "sql": (
-            "SELECT primary_location_source_display_name AS journal, COUNT(*) AS count "
-            "FROM filtered_records "
-            "WHERE primary_location_source_display_name IS NOT NULL "
-            "GROUP BY journal ORDER BY count DESC LIMIT {top_n}"
-        ),
-        "type": "hbar", "x_key": "journal", "y_key": "count",
-    },
-    "oa_status": {
-        "title": "Open Access Status",
-        "sql": (
-            "SELECT COALESCE(open_access_oa_status, 'unknown') AS status, COUNT(*) AS count "
-            "FROM filtered_records GROUP BY status ORDER BY count DESC"
-        ),
-        "type": "pie", "x_key": "status", "y_key": "count",
-    },
-    "work_types": {
-        "title": "Work Types",
-        "sql": (
-            "SELECT COALESCE(type, 'unknown') AS type, COUNT(*) AS count "
-            "FROM filtered_records GROUP BY type ORDER BY count DESC LIMIT 10"
-        ),
-        "type": "bar", "x_key": "type", "y_key": "count",
-    },
-    "top_institutions": {
-        "title": "Top Institutions",
-        "sql": (
-            "SELECT value AS institution, COUNT(*) AS count "
-            "FROM filtered_records, json_each(authors_institutions) "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-        ),
-        "type": "hbar", "x_key": "institution", "y_key": "count",
-    },
-    "llm_scope": {
-        "title": "Fuel Classification (LLM)",
-        "sql": (
-            "SELECT value AS fuel_type, COUNT(*) AS count "
-            "FROM filtered_records, json_each(llm_fuel_classification) "
-            "WHERE value IS NOT NULL AND value != '' "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-        ),
-        "type": "hbar", "x_key": "fuel_type", "y_key": "count",
-        "llm_only": True,
-    },
-    "llm_ml_paradigm": {
-        "title": "ML/AI Paradigm (LLM)",
-        "sql": (
-            "SELECT value AS paradigm, COUNT(*) AS count "
-            "FROM filtered_records, json_each(llm_ml_paradigm) "
-            "WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' "
-            "GROUP BY value ORDER BY count DESC"
-        ),
-        "type": "hbar", "x_key": "paradigm", "y_key": "count",
-        "llm_only": True,
-    },
-    "llm_ml_usage": {
-        "title": "ML/AI Usage Rate (LLM)",
-        "sql": (
-            "SELECT "
-            "  CASE WHEN llm_ml_paradigm IS NOT NULL "
-            "            AND llm_ml_paradigm NOT IN ('[]', 'null', '') "
-            "            AND LOWER(llm_ml_paradigm) NOT LIKE '%\"none\"%' "
-            "       THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS uses_ml, "
-            "  COUNT(*) AS count "
-            "FROM filtered_records GROUP BY uses_ml"
-        ),
-        "type": "pie", "x_key": "uses_ml", "y_key": "count",
-        "llm_only": True,
-    },
-}
-
-
 @data_bp.route("/api/charts/configs")
 def api_chart_configs():
     """Return all chart configs (with interpolated SQL) — no DB required."""
@@ -250,18 +132,7 @@ def api_chart_configs():
     if err:
         return err
     top_n = request.args.get("top_n", 20, type=int)
-    configs = []
-    for cid, cfg in _CHART_QUERIES.items():
-        configs.append({
-            "id": cid,
-            "title": cfg["title"],
-            "sql": cfg["sql"].replace("{top_n}", str(top_n)),
-            "type": cfg["type"],
-            "x_key": cfg["x_key"],
-            "y_key": cfg["y_key"],
-            "llm_only": cfg.get("llm_only", False),
-        })
-    return jsonify(configs)
+    return jsonify(get_chart_configs(top_n))
 
 
 @data_bp.route("/api/charts/data")
@@ -277,15 +148,15 @@ def api_chart_data():
 
     if not pipeline_id:
         return jsonify({"error": "pipeline_id required"}), 400
-    if chart_id not in _CHART_QUERIES:
+    if chart_id not in CHART_QUERIES:
         return jsonify({"error": f"unknown chart '{chart_id}'"}), 400
 
     db_path, err_msg = _get_pipeline_db(pipeline_id, uid)
     if err_msg:
         return jsonify({"error": err_msg}), 404
 
-    cfg = _CHART_QUERIES[chart_id]
-    sql = cfg["sql"].replace("{top_n}", str(top_n))
+    cfg = CHART_QUERIES[chart_id]
+    sql = get_chart_sql(chart_id, top_n)
     result = db_api.run_query(db_path, sql, max_rows=500)
 
     return jsonify({
@@ -315,15 +186,15 @@ def api_chart_image():
 
     if not pipeline_id:
         return jsonify({"error": "pipeline_id required"}), 400
-    if chart_id not in _CHART_QUERIES:
+    if chart_id not in CHART_QUERIES:
         return jsonify({"error": f"unknown chart '{chart_id}'"}), 400
 
     db_path, err_msg = _get_pipeline_db(pipeline_id, uid)
     if err_msg:
         return jsonify({"error": err_msg}), 404
 
-    cfg = _CHART_QUERIES[chart_id]
-    sql = cfg["sql"].replace("{top_n}", str(top_n))
+    cfg = CHART_QUERIES[chart_id]
+    sql = get_chart_sql(chart_id, top_n)
 
     png = _chart_gen.generate(
         db_path=db_path,
@@ -392,20 +263,3 @@ def api_log():
         return jsonify({"lines": []})
 
     return jsonify({"lines": _tail(log_path, lines)})
-
-
-def _tail(path: Path, n: int) -> list[str]:
-    """Return the last n lines of a potentially large file."""
-    chunk_size = 8192
-    lines: list[str] = []
-    with open(path, "rb") as f:
-        f.seek(0, 2)
-        remaining = f.tell()
-        buf = b""
-        while remaining > 0 and len(lines) < n + 1:
-            read_size = min(chunk_size, remaining)
-            remaining -= read_size
-            f.seek(remaining)
-            buf = f.read(read_size) + buf
-            lines = buf.decode("utf-8", errors="replace").splitlines()
-    return lines[-n:]

@@ -3,9 +3,30 @@ from __future__ import annotations
 
 import datetime
 import os
+from pathlib import Path
 
-from flask import Flask, render_template, request
+from flask import Flask, Response, render_template, request
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+# Ordered list of JS modules that make up the frontend bundle.
+_JS_MODULES = [
+    "utils.js",
+    "hooks.js",
+    "constants.js",
+    "components/shared.js",
+    "components/home.js",
+    "components/pipeline.js",
+    "stages/keywords.js",
+    "stages/search.js",
+    "stages/report-utils.js",
+    "stages/records-panel.js",
+    "stages/record-viewer.js",
+    "stages/report-stage.js",
+    "stages/llm.js",
+    "views/pipeline.js",
+    "views/jobs.js",
+    "app-root.js",
+]
 
 from core.config import META_DB_PATH
 from core.job_manager import JobManager
@@ -53,6 +74,21 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     @app.route("/")
     def index():
         return render_template("index.html")
+
+    @app.route("/js/bundle.js")
+    def js_bundle():
+        """Serve all frontend JS modules concatenated as a single script."""
+        js_dir = Path(app.root_path) / "static" / "js"
+        parts = []
+        for module in _JS_MODULES:
+            path = js_dir / module
+            if path.exists():
+                parts.append(f"// ═══ {module} ═══\n" + path.read_text(encoding="utf-8"))
+        return Response(
+            "\n\n".join(parts),
+            mimetype="application/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.after_request
     def _no_cache_api(response):
