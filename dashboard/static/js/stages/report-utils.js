@@ -51,10 +51,29 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
   const fwci = record.fwci != null ? Number(record.fwci) : null;
   const fwciColor = !fwci ? 'text-gray-400' : fwci >= 3 ? 'text-green-600 font-bold' : fwci >= 1 ? 'text-blue-600' : 'text-gray-500';
 
-  const recSubgroups = useMemo(
-    () => computeRowSubgroups(record.matched_fuel_terms, fuelSubgroups || []),
-    [record.matched_fuel_terms, fuelSubgroups]
-  );
+  // Prefer DB-stored subgroups (matched_fuel_subgroups) over client-side computation
+  const recSubgroups = useMemo(() => {
+    if (record.matched_fuel_subgroups) {
+      try {
+        const p = JSON.parse(record.matched_fuel_subgroups);
+        if (Array.isArray(p) && p.length > 0) return p;
+      } catch {}
+    }
+    return computeRowSubgroups(record.matched_fuel_terms, fuelSubgroups || []);
+  }, [record.matched_fuel_subgroups, record.matched_fuel_terms, fuelSubgroups]);
+
+  const recImpactSubgroups = useMemo(() => {
+    if (record.matched_impact_subgroups) {
+      try {
+        const p = JSON.parse(record.matched_impact_subgroups);
+        if (Array.isArray(p) && p.length > 0) return p;
+      } catch {}
+    }
+    return [];
+  }, [record.matched_impact_subgroups]);
+
+  const citeCount = record.cited_by_count != null ? Number(record.cited_by_count) : null;
+  const isRetracted = !!record.is_retracted;
 
   const OA_STYLE = {
     gold:     'bg-yellow-50 text-yellow-700 border-yellow-200',
@@ -82,6 +101,11 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
         <div className="p-6 pb-4 border-b border-gray-100">
           <div className="flex gap-3 items-start">
             <div className="flex-1 min-w-0">
+              {isRetracted && (
+                <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
+                  ⚠ This paper has been retracted
+                </div>
+              )}
               <h3 className="text-base font-bold text-gray-900 leading-snug mb-3">
                 {record.title || oaId || 'Record'}
               </h3>
@@ -100,6 +124,9 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
                 {recSubgroups.map(sg => (
                   <Chip key={sg} cls="bg-blue-50 text-blue-700 border-blue-200">{sg}</Chip>
                 ))}
+                {recImpactSubgroups.map(sg => (
+                  <Chip key={sg} cls="bg-teal-50 text-teal-700 border-teal-200">{sg}</Chip>
+                ))}
               </div>
             </div>
             <button onClick={onClose} title="Close (Esc)"
@@ -114,10 +141,10 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
         {/* ── Stats bar ── */}
         <div className="grid grid-cols-4 divide-x divide-gray-100 border-b border-gray-100 bg-gray-50/50">
           {[
-            { label: 'Year',  value: record.publication_year || '—', cls: 'text-gray-800' },
-            { label: 'FWCI',  value: fwci != null ? fwci.toFixed(2) : '—', cls: fwciColor },
-            { label: 'Type',  value: record.type || '—', cls: 'text-gray-700' },
-            { label: 'Language', value: (record.language || '—').toUpperCase(), cls: 'text-gray-700' },
+            { label: 'Year',    value: record.publication_year || '—', cls: 'text-gray-800' },
+            { label: 'FWCI',    value: fwci != null ? fwci.toFixed(2) : '—', cls: fwciColor },
+            { label: 'Cited',   value: citeCount != null ? citeCount.toLocaleString() : '—', cls: citeCount > 0 ? 'text-blue-700' : 'text-gray-400' },
+            { label: 'Type',    value: record.type || '—', cls: 'text-gray-700' },
           ].map(({ label, value, cls }) => (
             <div key={label} className="px-4 py-3 text-center">
               <div className="text-xs text-gray-400 mb-0.5 uppercase tracking-wide">{label}</div>
@@ -153,6 +180,27 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
                     <span className="text-xs text-gray-400 w-12 flex-shrink-0">Impact</span>
                     {impactTerms.map(t => <Chip key={t} cls="bg-teal-50 text-teal-700 border-teal-200">{t}</Chip>)}
                   </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Publisher / Source */}
+          {(record.primary_location_source_display_name || record.primary_location_source_host_organization_name || record.primary_location_source_issn_l) && (
+            <div>
+              <SectionHead>Publication Venue</SectionHead>
+              <div className="text-sm text-gray-700 space-y-1">
+                {record.primary_location_source_display_name && (
+                  <div><span className="text-xs text-gray-400">Source: </span>{record.primary_location_source_display_name}</div>
+                )}
+                {record.primary_location_source_host_organization_name && (
+                  <div><span className="text-xs text-gray-400">Publisher: </span>{record.primary_location_source_host_organization_name}</div>
+                )}
+                {record.primary_location_source_issn_l && (
+                  <div><span className="text-xs text-gray-400">ISSN-L: </span><code className="text-xs bg-gray-100 px-1 rounded">{record.primary_location_source_issn_l}</code></div>
+                )}
+                {record.primary_location_source_type && (
+                  <div><span className="text-xs text-gray-400">Type: </span>{record.primary_location_source_type}</div>
                 )}
               </div>
             </div>

@@ -53,10 +53,17 @@ def build_stage_status(pipeline: dict) -> dict:
             pipeline_state = json.loads(Path(state_path).read_text())
             all_files = len(pipeline_state.get("all_files", []))
             processed = len(pipeline_state.get("processed_files", []))
+            seen = pipeline_state.get("total_records_seen", 0)
+            inserted = pipeline_state.get("total_records_inserted", 0)
             status["search_progress"] = {
                 "total": all_files,
                 "processed": processed,
                 "percent": round(100 * processed / all_files, 1) if all_files else 0,
+                "seen": seen,
+                "inserted": inserted,
+                "skip_stats": pipeline_state.get("skip_stats", {}),
+                "file_errors": pipeline_state.get("file_errors", 0),
+                "record_errors": pipeline_state.get("record_errors", 0),
             }
         except Exception:
             status["search_progress"] = None

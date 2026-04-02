@@ -72,12 +72,9 @@
           ]
         },
         {
-          "name": "Other Fuels",
+          "name": "Feedstocks and Processed",
           "terms": [
-            "sustainable fuel",
             "biofuel",
-            "synthetic fuel",
-            "e-fuel",
             "advanced biofuel",
             "cellulosic biofuel",
             "algae fuel",
@@ -90,28 +87,32 @@
             "biomass-to-liquid",
             "BtL",
             "power-to-liquid",
-            "green fuel",
-            "drop-in fuel",
             "paraffinic fuel",
             "Fischer-Tropsch fuel",
             "FT fuel",
             "hydroprocessed fuel",
             "co-processed fuel",
             "co-processing",
+            "gas-to-liquid",
+            "GTL",
+            "vegetable oil",
+            "e-fuel"
+          ]
+        },
+        {
+          "name": "Other Fuels (general)",
+          "is_others": true,
+          "terms": [
+            "sustainable fuel",
+            "synthetic fuel",
+            "green fuel",
+            "drop-in fuel",
             "renewable fuel",
             "alternative fuel",
             "second generation fuel",
             "second-generation fuel",
-            "gas-to-liquid",
-            "GTL",
-            "fuel blend",
-            "vegetable oil"
+            "fuel blend"
           ]
-        },
-        {
-          "name": "Others",
-          "is_others": true,
-          "terms": []
         }
       ]
     },
@@ -213,7 +214,7 @@
           ]
         },
         {
-          "name": "Others",
+          "name": "Default",
           "is_others": true,
           "terms": []
         }

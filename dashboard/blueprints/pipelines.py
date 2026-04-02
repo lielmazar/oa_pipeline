@@ -1,11 +1,14 @@
 """Pipelines blueprint — /api/pipelines/*"""
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, current_app
+import yaml
+
+from flask import Blueprint, jsonify, request, current_app, Response
 
 from blueprints.auth import get_current_user_id, require_auth
 from core.config import PIPELINES_BASE_DIR, PIPELINE_SCRIPTS_DIR
@@ -32,6 +35,43 @@ from models.pipeline import (
 pipelines_bp = Blueprint("pipelines", __name__)
 
 DEFAULT_KEYWORDS_PATH = PIPELINE_SCRIPTS_DIR / "default_keywords.json"
+DEFAULT_KEYWORDS_YAML_PATH = PIPELINE_SCRIPTS_DIR / "default_keywords.yaml"
+
+
+def _groups_to_yaml(groups: list) -> str:
+    """Convert internal groups structure to a clean YAML string."""
+    doc = []
+    for g in groups:
+        grp: dict = {"name": g["name"], "subgroups": []}
+        for sg in g.get("subgroups", []):
+            entry: dict = {"name": sg["name"], "terms": sg.get("terms", [])}
+            if sg.get("is_others"):
+                entry["is_default"] = True
+            grp["subgroups"].append(entry)
+        doc.append(grp)
+    return yaml.dump({"groups": doc}, allow_unicode=True, sort_keys=False,
+                     default_flow_style=False)
+
+
+def _yaml_to_groups(text: str) -> list:
+    """Parse YAML keyword config and return canonical groups list."""
+    data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("YAML root must be a mapping")
+    raw_groups = data.get("groups", [])
+    result = []
+    for g in raw_groups:
+        subgroups = []
+        for sg in g.get("subgroups", []):
+            subgroups.append({
+                "name": sg["name"],
+                "terms": sg.get("terms", []),
+                **({"is_others": True} if sg.get("is_default") else {}),
+            })
+        if not subgroups:
+            subgroups = [{"name": "Default", "is_others": True, "terms": []}]
+        result.append({"name": g["name"], "subgroups": subgroups})
+    return result
 
 
 def _pipeline_base(pipeline_id: int) -> Path:
@@ -77,6 +117,98 @@ def api_default_keywords():
     if err:
         return err
     return jsonify(_load_default_keywords())
+
+
+@pipelines_bp.route("/api/default-keywords/yaml", methods=["GET"])
+def api_default_keywords_yaml_get():
+    """Download the server default keywords as YAML."""
+    err = require_auth()
+    if err:
+        return err
+    kw = _load_default_keywords()
+    groups = kw.get("groups", [])
+    text = _groups_to_yaml(groups)
+    return Response(text, mimetype="text/yaml",
+                    headers={"Content-Disposition": 'attachment; filename="keywords.yaml"'})
+
+
+@pipelines_bp.route("/api/default-keywords/yaml", methods=["POST"])
+def api_default_keywords_yaml_post():
+    """Upload a YAML file to replace the server default keywords (owner only — any admin)."""
+    err = require_auth()
+    if err:
+        return err
+    body = request.get_json(silent=True)
+    raw = ((body.get("yaml") or "") if isinstance(body, dict) else "").strip()
+    if not raw:
+        raw = (request.get_data(as_text=True) or "").strip()
+    if not raw:
+        return jsonify({"error": "empty body"}), 400
+    try:
+        groups = _yaml_to_groups(raw)
+    except Exception as exc:
+        return jsonify({"error": f"Invalid YAML: {exc}"}), 400
+    kw_data = {"groups": groups}
+    DEFAULT_KEYWORDS_JSON_PATH = PIPELINE_SCRIPTS_DIR / "default_keywords.json"
+    DEFAULT_KEYWORDS_JSON_PATH.write_text(json.dumps(kw_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    DEFAULT_KEYWORDS_YAML_PATH.write_text(raw, encoding="utf-8")
+    return jsonify({"ok": True, "groups": len(groups)})
+
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/keywords/yaml", methods=["GET"])
+def api_pipeline_keywords_yaml_get(pipeline_id: int):
+    """Download this pipeline's keywords as YAML."""
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "not found"}), 404
+    config = pipeline.get("config") or {}
+    groups = config.get("groups", [])
+    if not groups:
+        kw = _load_default_keywords()
+        groups = kw.get("groups", [])
+    text = _groups_to_yaml(groups)
+    return Response(text, mimetype="text/yaml",
+                    headers={"Content-Disposition": 'attachment; filename="keywords.yaml"'})
+
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/keywords/yaml", methods=["POST"])
+def api_pipeline_keywords_yaml_post(pipeline_id: int):
+    """Upload YAML to replace this pipeline's keywords (owner only)."""
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "not found"}), 404
+    if pipeline["user_id"] != uid:
+        return jsonify({"error": "not owner"}), 403
+    body = request.get_json(silent=True)
+    raw = ((body.get("yaml") or "") if isinstance(body, dict) else "").strip()
+    if not raw:
+        raw = (request.get_data(as_text=True) or "").strip()
+    if not raw:
+        return jsonify({"error": "empty body"}), 400
+    try:
+        groups = _yaml_to_groups(raw)
+    except Exception as exc:
+        return jsonify({"error": f"Invalid YAML: {exc}"}), 400
+    config = dict(pipeline.get("config") or {})
+    config["groups"] = groups
+    ok = update_pipeline(pipeline_id, uid, config=config)
+    if not ok:
+        return jsonify({"error": "update failed"}), 500
+    # Also rewrite keywords.json
+    paths = _pipeline_paths(pipeline_id)
+    kw_path = Path(paths["keywords_path"])
+    kw_path.parent.mkdir(parents=True, exist_ok=True)
+    kw_path.write_text(json.dumps({"groups": groups}, indent=2, ensure_ascii=False), encoding="utf-8")
+    pipeline = get_pipeline(pipeline_id, uid)
+    return jsonify({"ok": True, "groups": len(groups), "config": pipeline.get("config")})
 
 
 # ── List all pipelines ────────────────────────────────────────────────────────

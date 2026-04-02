@@ -8,17 +8,33 @@ function _rvBuildWhere(fs) {
   }
   if (fs.yearFrom && !isNaN(parseInt(fs.yearFrom,10))) parts.push(`publication_year >= ${parseInt(fs.yearFrom,10)}`);
   if (fs.yearTo   && !isNaN(parseInt(fs.yearTo,10)))   parts.push(`publication_year <= ${parseInt(fs.yearTo,10)}`);
-  if (fs.oaStatus)   parts.push(`open_access_oa_status = '${fs.oaStatus.replace(/'/g,"''")}'`);
-  if (fs.recordType) parts.push(`type = '${fs.recordType.replace(/'/g,"''")}'`);
-  // Fuel subgroup — SQL-based so count and pagination are accurate
-  if (fs.fuelSubgroupTerms?.length) {
-    const terms = fs.fuelSubgroupTerms.map(t => `'${t.replace(/'/g,"''")}'`).join(', ');
-    parts.push(`EXISTS (SELECT 1 FROM json_each(matched_fuel_terms) WHERE value IN (${terms}))`);
+  if (fs.oaStatus === 'open_any') {
+    parts.push(`(open_access_is_oa = 1 OR open_access_any_repository_has_fulltext = 1)`);
+  } else if (fs.oaStatus) {
+    parts.push(`open_access_oa_status = '${fs.oaStatus.replace(/'/g,"''")}'`);
   }
-  // Impact subgroup — SQL-based
-  if (fs.impactSubgroupTerms?.length) {
-    const terms = fs.impactSubgroupTerms.map(t => `'${t.replace(/'/g,"''")}'`).join(', ');
-    parts.push(`EXISTS (SELECT 1 FROM json_each(matched_impact_terms) WHERE value IN (${terms}))`);
+  if (fs.recordType) parts.push(`type = '${fs.recordType.replace(/'/g,"''")}'`);
+  if (fs.publisherFilter?.trim()) {
+    const p = fs.publisherFilter.trim().replace(/'/g, "''");
+    parts.push(`primary_location_source_host_organization_name LIKE '%${p}%'`);
+  }
+  if (fs.sourceType) parts.push(`primary_location_source_type = '${fs.sourceType.replace(/'/g,"''")}'`);
+  if (fs.hideRetracted) parts.push(`(is_retracted IS NULL OR is_retracted = 0)`);
+  // Fuel subgroup: prefer DB column (matched_fuel_subgroups), fall back to terms list
+  if (fs.fuelSubgroupName) {
+    const sgName = fs.fuelSubgroupName.replace(/'/g, "''");
+    parts.push(
+      `(EXISTS (SELECT 1 FROM json_each(matched_fuel_subgroups) WHERE value = '${sgName}')` +
+      ` OR EXISTS (SELECT 1 FROM json_each(matched_fuel_terms) WHERE value IN (${(fs.fuelSubgroupTerms||[]).map(t=>`'${t.replace(/'/g,"''")}'`).join(',')||"''"})))`
+    );
+  }
+  // Impact subgroup: same dual approach
+  if (fs.impactSubgroupName) {
+    const sgName = fs.impactSubgroupName.replace(/'/g, "''");
+    parts.push(
+      `(EXISTS (SELECT 1 FROM json_each(matched_impact_subgroups) WHERE value = '${sgName}')` +
+      ` OR EXISTS (SELECT 1 FROM json_each(matched_impact_terms) WHERE value IN (${(fs.impactSubgroupTerms||[]).map(t=>`'${t.replace(/'/g,"''")}'`).join(',')||"''"})))`
+    );
   }
   return parts;
 }
@@ -78,6 +94,9 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   const [yearTo, setYearTo]                       = useState('');
   const [oaStatus, setOaStatus]                   = useState('');
   const [recType, setRecType]                     = useState('');
+  const [publisherFilter, setPublisherFilter]     = useState('');
+  const [sourceType, setSourceType]               = useState('');
+  const [hideRetracted, setHideRetracted]         = useState(true);
   const [sortBy, setSortBy]                       = useState('');
   const [sortDir, setSortDir]                     = useState('desc');
 
@@ -107,8 +126,15 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
 
   // Build WHERE parts — all filters are server-side (accurate count + pagination)
   const whereParts = useMemo(
-    () => _rvBuildWhere({ textSearch: filterText, yearFrom, yearTo, oaStatus, recordType: recType, fuelSubgroupTerms, impactSubgroupTerms }),
-    [filterText, yearFrom, yearTo, oaStatus, recType, fuelSubgroupTerms, impactSubgroupTerms]
+    () => _rvBuildWhere({
+      textSearch: filterText, yearFrom, yearTo, oaStatus, recordType: recType,
+      publisherFilter, sourceType, hideRetracted,
+      fuelSubgroupName: subgroupFilter || null,
+      fuelSubgroupTerms,
+      impactSubgroupName: impactSubgroupFilter || null,
+      impactSubgroupTerms,
+    }),
+    [filterText, yearFrom, yearTo, oaStatus, recType, publisherFilter, sourceType, hideRetracted, subgroupFilter, fuelSubgroupTerms, impactSubgroupFilter, impactSubgroupTerms]
   );
 
   // ── Fetch count ────────────────────────────────────────────────────────────
@@ -222,10 +248,12 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   const isRecordView = TITLE_I >= 0;
   const totalPages   = totalCount != null ? Math.ceil(totalCount / RV_PER_PAGE) : null;
 
-  const hasActiveFilters = !!(filterText || subgroupFilter || impactSubgroupFilter || yearFrom || yearTo || oaStatus || recType || sortBy);
+  const hasActiveFilters = !!(filterText || subgroupFilter || impactSubgroupFilter || yearFrom || yearTo || oaStatus || recType || publisherFilter || sourceType || !hideRetracted || sortBy);
   const clearFilters = () => {
     setFilterText(''); setSubgroupFilter(''); setImpactSubgroupFilter('');
-    setYearFrom(''); setYearTo(''); setOaStatus(''); setRecType(''); setSortBy('');
+    setYearFrom(''); setYearTo(''); setOaStatus(''); setRecType('');
+    setPublisherFilter(''); setSourceType('');
+    setHideRetracted(true); setSortBy('');
   };
 
   // ── Collapsible bar ────────────────────────────────────────────────────────
@@ -341,7 +369,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
               )}
             </div>
 
-            {/* Year range + OA status + record type */}
+            {/* Year range */}
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <div className="text-xs text-gray-400 mb-1">Year from</div>
@@ -355,15 +383,20 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                   placeholder="e.g. 2024"
                   className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400" />
               </div>
+            </div>
+
+            {/* OA status + Record type */}
+            <div className="grid grid-cols-2 gap-2">
               <div>
                 <div className="text-xs text-gray-400 mb-1">OA status</div>
                 <select value={oaStatus} onChange={e => setOaStatus(e.target.value)}
                   className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
                   <option value="">Any</option>
-                  <option value="gold">Gold</option>
-                  <option value="green">Green</option>
-                  <option value="hybrid">Hybrid</option>
-                  <option value="bronze">Bronze</option>
+                  <option value="open_any">Open (any)</option>
+                  <option value="gold">Gold OA</option>
+                  <option value="green">Green OA</option>
+                  <option value="hybrid">Hybrid OA</option>
+                  <option value="bronze">Bronze OA</option>
                   <option value="closed">Closed</option>
                 </select>
               </div>
@@ -378,8 +411,53 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                   <option value="book-chapter">Book chapter</option>
                   <option value="dataset">Dataset</option>
                   <option value="preprint">Preprint</option>
+                  <option value="supplementary-materials">Supplemental material</option>
+                  <option value="report">Report</option>
+                  <option value="paratext">Paratext</option>
                 </select>
               </div>
+            </div>
+
+            {/* Publisher filter */}
+            <div>
+              <div className="text-xs text-gray-400 mb-1">Publisher (contains)</div>
+              <div className="relative">
+                <input value={publisherFilter} onChange={e => setPublisherFilter(e.target.value)}
+                  placeholder="e.g. Elsevier, Springer…"
+                  className="w-full text-xs border border-gray-300 rounded-lg px-2 pr-6 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                {publisherFilter && (
+                  <button onClick={() => setPublisherFilter('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm">×</button>
+                )}
+              </div>
+            </div>
+
+            {/* Source type */}
+            <div>
+              <div className="text-xs text-gray-400 mb-1">Source type</div>
+              <select value={sourceType} onChange={e => setSourceType(e.target.value)}
+                className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                <option value="">Any</option>
+                <option value="journal">Journal</option>
+                <option value="conference">Conference</option>
+                <option value="repository">Repository</option>
+                <option value="ebook platform">eBook platform</option>
+                <option value="book series">Book series</option>
+                <option value="metadata">Metadata</option>
+              </select>
+            </div>
+
+            {/* Retracted toggle with explanation */}
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" checked={hideRetracted} onChange={e => setHideRetracted(e.target.checked)}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-400" />
+                <span className="text-xs text-gray-600">Hide retracted papers</span>
+              </label>
+              <span className="text-xs text-gray-400 cursor-help"
+                title="Retracted papers are publications that have been formally withdrawn by the journal after issues were found (e.g. data fabrication, errors). They are kept in the database but flagged.">
+                ⓘ
+              </span>
             </div>
 
             {/* Sort */}
@@ -459,6 +537,10 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                 const parseArr = v => { if (!v) return []; try { const p=JSON.parse(v); return Array.isArray(p)?p:[]; } catch { return []; } };
                 const OA_CHIP  = { gold:'bg-yellow-50 text-yellow-600', green:'bg-green-50 text-green-600', hybrid:'bg-purple-50 text-purple-600', bronze:'bg-orange-50 text-orange-600' };
 
+                const MFUEL_SG_I = ci('matched_fuel_subgroups');
+                const CITE_I     = ci('cited_by_count');
+                const RETRACTED_I = ci('is_retracted');
+
                 const oaId    = OAID_I >= 0 ? (row[OAID_I] || '') : '';
                 const rowKey  = oaId || String(ri);
                 const isExp   = expandedId === rowKey;
@@ -474,7 +556,11 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                 const mimp    = MIMP_I  >= 0 ? row[MIMP_I]  : null;
                 const fuel    = parseArr(mfuel);
                 const imp     = parseArr(mimp);
-                const rowSgs  = computeRowSubgroups(mfuel, fuelSubgroups);
+                const citeCount = CITE_I >= 0 && row[CITE_I] != null ? Number(row[CITE_I]) : null;
+                const isRetracted = RETRACTED_I >= 0 && row[RETRACTED_I];
+                // Prefer DB-stored subgroups; fall back to client-side computation
+                const dbSgs   = MFUEL_SG_I >= 0 ? row[MFUEL_SG_I] : null;
+                const rowSgs  = dbSgs ? parseArr(dbSgs) : computeRowSubgroups(mfuel, fuelSubgroups);
                 const doiUrl  = doi ? `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//,'')}` : null;
                 const fwciCls = !fwci ? '' : fwci>=3 ? 'text-green-700 font-bold' : fwci>=1 ? 'text-blue-700' : 'text-gray-500';
 
@@ -493,9 +579,11 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
 
                     {/* Meta chips */}
                     <div className="flex flex-wrap gap-1 mt-1.5 items-center">
+                      {isRetracted && <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-semibold">RETRACTED</span>}
                       {year  && <span className="text-xs text-gray-500 font-medium">{year}</span>}
                       {oaSt  && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[oaSt]||'bg-gray-100 text-gray-500'}`}>{oaSt}</span>}
                       {src   && <span className="text-xs text-gray-400 italic truncate max-w-[140px]">{src}</span>}
+                      {citeCount != null && citeCount > 0 && <span className="text-xs text-gray-400">cited {citeCount.toLocaleString()}×</span>}
                       {fwci != null && <span className={`text-xs ml-auto flex-shrink-0 ${fwciCls}`}>FWCI {fwci.toFixed(1)}</span>}
                     </div>
 

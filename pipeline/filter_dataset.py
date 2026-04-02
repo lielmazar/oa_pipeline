@@ -363,18 +363,27 @@ _FUEL_FIRST_TOKENS: frozenset = frozenset()
 _IMPACT_FIRST_TOKENS: frozenset = frozenset()
 _terms_initialized = False
 
+# Subgroup maps: original_term -> subgroup_name (empty when no config supplied)
+FUEL_SUBGROUP_MAP: dict[str, str] = {}
+IMPACT_SUBGROUP_MAP: dict[str, str] = {}
+
 
 def _init_terms(
     fuel_terms: list[str] | None = None,
     impact_terms: list[str] | None = None,
+    fuel_subgroups: list[dict] | None = None,
+    impact_subgroups: list[dict] | None = None,
 ) -> None:
     """Compile keyword indices. Call once before processing.
 
     If fuel_terms / impact_terms are None the module-level defaults are used.
+    fuel_subgroups / impact_subgroups are lists of {name, terms} dicts used to
+    annotate matched records with their subgroup name.
     Can be called multiple times; subsequent calls rebuild the indices.
     """
     global FUEL_INDEX, FUEL_REVERSE, IMPACT_INDEX, IMPACT_REVERSE
     global _FUEL_FIRST_TOKENS, _IMPACT_FIRST_TOKENS, _terms_initialized
+    global FUEL_SUBGROUP_MAP, IMPACT_SUBGROUP_MAP
     ft = fuel_terms if fuel_terms is not None else FUEL_TERMS
     it = impact_terms if impact_terms is not None else IMPACT_TERMS
     FUEL_INDEX, FUEL_REVERSE = compile_terms(ft)
@@ -382,6 +391,35 @@ def _init_terms(
     _FUEL_FIRST_TOKENS = frozenset(FUEL_INDEX.keys())
     _IMPACT_FIRST_TOKENS = frozenset(IMPACT_INDEX.keys())
     _terms_initialized = True
+    # Build term → subgroup name maps for provenance annotation
+    if fuel_subgroups:
+        FUEL_SUBGROUP_MAP = {
+            term: sg["name"]
+            for sg in fuel_subgroups
+            for term in sg.get("terms", [])
+        }
+    else:
+        FUEL_SUBGROUP_MAP = {}
+    if impact_subgroups:
+        IMPACT_SUBGROUP_MAP = {
+            term: sg["name"]
+            for sg in impact_subgroups
+            for term in sg.get("terms", [])
+        }
+    else:
+        IMPACT_SUBGROUP_MAP = {}
+
+
+def _compute_subgroups(
+    matched_terms: list[str], subgroup_map: dict[str, str]
+) -> list[str]:
+    """Return deduplicated list of subgroup names for the given matched terms."""
+    seen: list[str] = []
+    for term in matched_terms:
+        sg = subgroup_map.get(term)
+        if sg and sg not in seen:
+            seen.append(sg)
+    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +469,7 @@ class MatchResult:
         "matched", "abstract_text",
         "fuel_terms", "fuel_stems",
         "impact_terms", "impact_stems",
+        "fuel_subgroups", "impact_subgroups",
     )
 
     def __init__(
@@ -441,6 +480,8 @@ class MatchResult:
         fuel_stems: list[str] | None = None,
         impact_terms: list[str] | None = None,
         impact_stems: list[str] | None = None,
+        fuel_subgroups: list[str] | None = None,
+        impact_subgroups: list[str] | None = None,
     ):
         self.matched = matched
         self.abstract_text = abstract_text
@@ -448,6 +489,8 @@ class MatchResult:
         self.fuel_stems = fuel_stems or []
         self.impact_terms = impact_terms or []
         self.impact_stems = impact_stems or []
+        self.fuel_subgroups = fuel_subgroups or []
+        self.impact_subgroups = impact_subgroups or []
 
     NO_MATCH: "MatchResult"
 
@@ -479,7 +522,11 @@ def keyword_check_smart(
         it, ist = find_all_matching_terms(
             combined, IMPACT_INDEX, IMPACT_REVERSE
         )
-        return MatchResult(True, abstract_text, ft, fs, it, ist)
+        return MatchResult(
+            True, abstract_text, ft, fs, it, ist,
+            _compute_subgroups(ft, FUEL_SUBGROUP_MAP),
+            _compute_subgroups(it, IMPACT_SUBGROUP_MAP),
+        )
 
     # --- Phase 2: cheap key pre-screen ---
     abs_stem_set = _stem_keys(abstract_inverted_index)
@@ -519,7 +566,11 @@ def keyword_check_smart(
     it, ist = find_all_matching_terms(
         stemmed_tokens, IMPACT_INDEX, IMPACT_REVERSE
     )
-    return MatchResult(True, abstract_text, ft, fs, it, ist)
+    return MatchResult(
+        True, abstract_text, ft, fs, it, ist,
+        _compute_subgroups(ft, FUEL_SUBGROUP_MAP),
+        _compute_subgroups(it, IMPACT_SUBGROUP_MAP),
+    )
 
 
 # Backward compat
@@ -575,9 +626,11 @@ _INSERT_SQL = """
         best_oa_location_version,
         authors_institutions, authors_countries,
         matched_fuel_terms, matched_impact_terms,
-        matched_fuel_stems, matched_impact_stems
+        matched_fuel_stems, matched_impact_stems,
+        matched_fuel_subgroups, matched_impact_subgroups,
+        cited_by_count, primary_location_source_issn_l, is_retracted
     )
-    VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?, ?,?, ?,?,?, ?,?, ?,?,?,?)
+    VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?, ?,?, ?,?,?, ?,?, ?,?,?,?, ?,?, ?,?,?)
 """
 
 _CREATE_TABLE_SQL = """
@@ -612,7 +665,12 @@ _CREATE_TABLE_SQL = """
         matched_fuel_terms TEXT,
         matched_impact_terms TEXT,
         matched_fuel_stems TEXT,
-        matched_impact_stems TEXT
+        matched_impact_stems TEXT,
+        matched_fuel_subgroups TEXT,
+        matched_impact_subgroups TEXT,
+        cited_by_count INTEGER,
+        primary_location_source_issn_l TEXT,
+        is_retracted INTEGER
     )
 """
 
@@ -626,6 +684,8 @@ def ensure_db(conn: sqlite3.Connection) -> None:
         "has_fulltext", "fulltext_origin",
         "best_oa_location_license", "best_oa_location_pdf_url",
         "best_oa_location_version",
+        "matched_fuel_subgroups", "matched_impact_subgroups",
+        "cited_by_count", "primary_location_source_issn_l", "is_retracted",
     ):
         try:
             conn.execute(
@@ -678,20 +738,26 @@ def _extract_row(
     boa_pdf_url = boa.get("pdf_url")
     boa_version = boa.get("version")
 
+    # Publisher / citation fields
+    cited_by_count = record.get("cited_by_count")
+    issn_l = pl_src.get("issn_l")
+    is_retracted = 1 if bool(record.get("is_retracted")) else 0
+
     ai, ac = extract_authors_institutions_and_countries(record)
 
+    is_oa_val = int(bool(open_access.get("is_oa")))
     return (
         openalex_id,
         doi,
         title,
-        1,
+        is_oa_val,
         abstract_text,
         record.get("publication_year"),
         record.get("publication_date"),
         record.get("fwci"),
         language,
         record.get("type"),
-        1,
+        is_oa_val,
         1 if oa_any_repo else 0,
         oa_status,
         oa_url,
@@ -712,6 +778,11 @@ def _extract_row(
         _stdlib_json.dumps(match.impact_terms, ensure_ascii=False),
         _stdlib_json.dumps(match.fuel_stems, ensure_ascii=False),
         _stdlib_json.dumps(match.impact_stems, ensure_ascii=False),
+        _stdlib_json.dumps(match.fuel_subgroups, ensure_ascii=False),
+        _stdlib_json.dumps(match.impact_subgroups, ensure_ascii=False),
+        cited_by_count,
+        issn_l,
+        is_retracted,
     )
 
 
@@ -753,10 +824,7 @@ def process_records_to_rows(
                     _s("empty_line")
                     continue
 
-                # --- raw-line pre-screen ---
-                if '"is_oa": true' not in line and '"is_oa":true' not in line:
-                    _s("not_oa")
-                    continue
+                # --- raw-line pre-screen: language only ---
                 if (
                     '"language": "en"' not in line
                     and '"language":"en"' not in line
@@ -776,11 +844,6 @@ def process_records_to_rows(
                 doi = (record.get("doi") or "").strip()
                 if not doi:
                     _s("no_doi")
-                    continue
-
-                open_access = record.get("open_access") or {}
-                if not bool(open_access.get("is_oa")):
-                    _s("not_oa")
                     continue
 
                 language = (record.get("language") or "").strip().lower()
@@ -910,9 +973,16 @@ if __name__ == "__main__":
                 return [t for sg in g["subgroups"] for t in sg.get("terms", [])]
             return g.get("terms", [])
 
+        def _extract_subgroups(g):
+            if "subgroups" in g:
+                return [{"name": sg["name"], "terms": sg.get("terms", [])} for sg in g["subgroups"]]
+            return None
+
         _ft = _flatten_grp(_grps[0]) if len(_grps) > 0 else _cfg.get("fuel_terms")
         _it = _flatten_grp(_grps[1]) if len(_grps) > 1 else _cfg.get("impact_terms")
-        _init_terms(_ft, _it)
+        _fsg = _extract_subgroups(_grps[0]) if len(_grps) > 0 else None
+        _isg = _extract_subgroups(_grps[1]) if len(_grps) > 1 else None
+        _init_terms(_ft, _it, _fsg, _isg)
     else:
         _init_terms()
     process_records(

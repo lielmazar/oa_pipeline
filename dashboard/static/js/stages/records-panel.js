@@ -171,11 +171,14 @@ function RecordsPanel({ pipeline, isLLM }) {
           ) : (() => {
             const cols = records.columns;
             const ci = name => cols.indexOf(name);
-            const TITLE = ci('title'); const DOI = ci('doi'); const YEAR = ci('publication_year');
-            const FWCI  = ci('fwci'); const TYPE = ci('type'); const OA = ci('open_access_oa_status');
-            const ABS   = ci('abstract_text'); const MFUEL = ci('matched_fuel_terms');
-            const MIMP  = ci('matched_impact_terms'); const INST = ci('authors_institutions');
-            const SOURCE= ci('primary_location_source_display_name');
+            const TITLE  = ci('title'); const DOI = ci('doi'); const YEAR = ci('publication_year');
+            const FWCI   = ci('fwci'); const TYPE = ci('type'); const OA = ci('open_access_oa_status');
+            const ABS    = ci('abstract_text'); const MFUEL = ci('matched_fuel_terms');
+            const MIMP   = ci('matched_impact_terms'); const INST = ci('authors_institutions');
+            const SOURCE = ci('primary_location_source_display_name');
+            const MFUEL_SG = ci('matched_fuel_subgroups');
+            const CITE   = ci('cited_by_count');
+            const RETRACTED = ci('is_retracted');
             const parseArr = v => { if (!v) return []; try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } };
             const OA_CHIP = { gold: 'bg-yellow-50 text-yellow-600', green: 'bg-green-50 text-green-600', hybrid: 'bg-purple-50 text-purple-600', bronze: 'bg-orange-50 text-orange-600' };
 
@@ -183,7 +186,11 @@ function RecordsPanel({ pipeline, isLLM }) {
               <div className="divide-y divide-gray-100">
                 {records.rows.map((row, ri) => {
                   const matchedJson  = MFUEL >= 0 ? row[MFUEL] : null;
-                  const rowSubgroups = computeRowSubgroups(matchedJson, fuelSubgroups);
+                  // Prefer DB-stored subgroups; fall back to client-side computation
+                  const dbSgs = MFUEL_SG >= 0 ? row[MFUEL_SG] : null;
+                  const rowSubgroups = dbSgs
+                    ? parseArr(dbSgs)
+                    : computeRowSubgroups(matchedJson, fuelSubgroups);
                   if (subgroupFilter && !rowSubgroups.includes(subgroupFilter)) return null;
 
                   const rowId   = row[ci('openalex_id')] || ri;
@@ -197,6 +204,8 @@ function RecordsPanel({ pipeline, isLLM }) {
                   const source  = SOURCE >= 0 ? (row[SOURCE] || '') : '';
                   const fuelArr = parseArr(matchedJson);
                   const impArr  = parseArr(MIMP >= 0 ? row[MIMP] : null);
+                  const citeCount = CITE >= 0 && row[CITE] != null ? Number(row[CITE]) : null;
+                  const isRetracted = RETRACTED >= 0 && row[RETRACTED];
                   const doiUrl  = doi ? `https://doi.org/${doi.replace(/^https?:\/\/(dx\.)?doi\.org\//, '')}` : null;
                   const fwciCls = !fwci ? 'bg-gray-100 text-gray-400' : fwci >= 3 ? 'bg-green-100 text-green-700 font-bold' : fwci >= 1 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500';
 
@@ -224,9 +233,11 @@ function RecordsPanel({ pipeline, isLLM }) {
 
                       {/* Row 2: meta chips */}
                       <div className="flex flex-wrap gap-1.5 mt-1.5 items-center">
+                        {isRetracted && <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-semibold">RETRACTED</span>}
                         {year && <span className="text-xs text-gray-500 font-medium">{year}</span>}
                         {oaStat && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[oaStat] || 'bg-gray-100 text-gray-500'}`}>{oaStat}</span>}
                         {source && <span className="text-xs text-gray-400 italic truncate max-w-[220px]">{source}</span>}
+                        {citeCount != null && citeCount > 0 && <span className="text-xs text-gray-400">cited {citeCount.toLocaleString()}×</span>}
                         {rowSubgroups.map(sg => (
                           <span key={sg} className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">{sg}</span>
                         ))}

@@ -2,18 +2,39 @@
 
 // Migrate any config format → canonical {name, subgroups:[{name,terms,is_others?}]}
 function _migrateGroups(config) {
-  const raw = config.groups && config.groups.length > 0 ? config.groups : [
+  // Brand-new pipeline: no groups, no terms at all → start with named groups + empty Default
+  const hasGroups = config.groups && config.groups.length > 0;
+  const hasFlatTerms = (config.fuel_terms && config.fuel_terms.length > 0) ||
+                       (config.impact_terms && config.impact_terms.length > 0);
+
+  if (!hasGroups && !hasFlatTerms) {
+    // First-time / empty config — one empty Default subgroup per group
+    return [
+      { name: 'Fuel Terms',   subgroups: [{ name: 'Default', is_others: true, terms: [] }] },
+      { name: 'Impact Terms', subgroups: [{ name: 'Default', is_others: true, terms: [] }] },
+    ];
+  }
+
+  const raw = hasGroups ? config.groups : [
     { name: 'Fuel Terms',   terms: [...(config.fuel_terms   || [])] },
     { name: 'Impact Terms', terms: [...(config.impact_terms || [])] },
   ];
   return raw.map(g => {
     if (g.subgroups && g.subgroups.length > 0) {
-      return { name: g.name, subgroups: g.subgroups.map(sg => ({ ...sg, terms: [...(sg.terms || [])] })) };
+      return {
+        name: g.name,
+        subgroups: g.subgroups.map(sg => ({
+          ...sg,
+          terms: [...(sg.terms || [])],
+          // Migrate legacy 'Others' name to 'Default'
+          name: (sg.is_others && sg.name === 'Others') ? 'Default' : sg.name,
+        })),
+      };
     }
-    // Flat terms → wrap in one "Others" catch-all subgroup
+    // Flat terms → wrap in one "Default" catch-all subgroup
     return {
       name: g.name,
-      subgroups: [{ name: 'Others', is_others: true, terms: [...(g.terms || [])] }],
+      subgroups: [{ name: 'Default', is_others: true, terms: [...(g.terms || [])] }],
     };
   });
 }
@@ -44,6 +65,8 @@ function KeywordStage({ pipeline, onUpdate }) {
   const [dropTarget, setDropTarget] = useState(null);// {gi, si}
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [yamlMsg, setYamlMsg] = useState(null); // { ok, text }
+  const yamlUploadRef = useRef(null);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -137,6 +160,42 @@ function KeywordStage({ pipeline, onUpdate }) {
     finally { setLoading(false); }
   };
 
+  const downloadYaml = async () => {
+    const res = await apiFetch(`/api/pipelines/${pipeline.id}/keywords/yaml`);
+    if (!res.ok) { alert('Download failed'); return; }
+    const text = await res.text();
+    const a = document.createElement('a');
+    a.href = 'data:text/yaml;charset=utf-8,' + encodeURIComponent(text);
+    a.download = `keywords_pipeline_${pipeline.id}.yaml`;
+    a.click();
+  };
+
+  const uploadYaml = async (file) => {
+    if (!file) return;
+    let text;
+    try { text = await file.text(); }
+    catch (e) { setYamlMsg({ ok: false, text: 'Could not read file' }); return; }
+    let res, data;
+    try {
+      res = await apiFetch(`/api/pipelines/${pipeline.id}/keywords/yaml`, {
+        method: 'POST',
+        body: JSON.stringify({ yaml: text }),
+      });
+      data = await res.json();
+    } catch (e) {
+      setYamlMsg({ ok: false, text: 'Upload failed: ' + (e.message || 'network error') });
+      return;
+    }
+    if (!res.ok) { setYamlMsg({ ok: false, text: data.error || 'Upload failed' }); return; }
+    const newGroups = _migrateGroups(data.config || {});
+    setGroups(newGroups);
+    setNewTermInput(newGroups.map(g => g.subgroups.map(() => '')));
+    setNewSgName(newGroups.map(() => ''));
+    setYamlMsg({ ok: true, text: `Loaded ${data.groups} group(s) from YAML` });
+    setTimeout(() => setYamlMsg(null), 4000);
+    if (onUpdate) onUpdate({ ...pipeline, config: data.config });
+  };
+
   const save = async () => {
     const res = await apiFetch(`/api/pipelines/${pipeline.id}`, {
       method: 'PATCH',
@@ -185,13 +244,36 @@ function KeywordStage({ pipeline, onUpdate }) {
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-start justify-between mb-1">
           <h3 className="font-semibold text-lg">Stage 1: Keyword Selection</h3>
-          {pipeline.is_owner && (
-            <button onClick={loadDefaults} disabled={loading}
-              className="text-xs px-3 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 transition">
-              {loading ? 'Loading…' : '⟳ Load defaults'}
+          <div className="flex items-center gap-2 flex-wrap">
+            {pipeline.is_owner && (
+              <button onClick={loadDefaults} disabled={loading}
+                className="text-xs px-3 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 transition">
+                {loading ? 'Loading…' : '⟳ Load defaults'}
+              </button>
+            )}
+            <button onClick={downloadYaml}
+              className="text-xs px-3 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 transition"
+              title="Download keywords as YAML">
+              ↓ YAML
             </button>
-          )}
+            {pipeline.is_owner && (
+              <>
+                <input ref={yamlUploadRef} type="file" accept=".yaml,.yml" className="hidden"
+                  onChange={e => { uploadYaml(e.target.files?.[0]); e.target.value = ''; }} />
+                <button onClick={() => yamlUploadRef.current?.click()}
+                  className="text-xs px-3 py-1 border border-blue-300 rounded-lg text-blue-600 hover:bg-blue-50 transition"
+                  title="Upload keywords from YAML">
+                  ↑ Upload YAML
+                </button>
+              </>
+            )}
+          </div>
         </div>
+        {yamlMsg && (
+          <div className={`text-xs px-3 py-1.5 rounded-lg mb-2 ${yamlMsg.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+            {yamlMsg.text}
+          </div>
+        )}
         <p className="text-sm text-gray-500 mb-4">
           Each record must match ≥ 1 term from <em>each</em> top-level group.
           Within a group, sub-groups categorise terms for report analysis.
@@ -205,7 +287,7 @@ function KeywordStage({ pipeline, onUpdate }) {
               <div className="bg-gray-800 text-white px-5 py-3 flex items-center gap-3">
                 <span className="font-semibold text-sm">{group.name || `Group ${gi + 1}`}</span>
                 <span className="text-gray-400 text-xs">{_totalTerms(group)} terms</span>
-                <span className="text-gray-500 text-xs ml-auto">{(group.subgroups || []).filter(sg => !sg.is_others).length} sub-groups + Others</span>
+                <span className="text-gray-500 text-xs ml-auto">{(group.subgroups || []).filter(sg => !sg.is_others).length} sub-groups + Default</span>
               </div>
 
               {/* Sub-groups */}
@@ -235,29 +317,32 @@ function KeywordStage({ pipeline, onUpdate }) {
                           />
                         ) : (
                           <button
-                            disabled={!pipeline.is_owner || sg.is_others}
-                            onClick={() => pipeline.is_owner && !sg.is_others && setEditingSg({ gi, si })}
-                            className={`font-medium text-xs flex items-center gap-1 ${sg.is_others ? 'text-gray-400 italic cursor-default' : 'text-gray-700 hover:text-blue-600'}`}
-                            title={sg.is_others ? 'Catch-all for unassigned terms' : 'Click to rename'}
+                            disabled={!pipeline.is_owner}
+                            onClick={() => pipeline.is_owner && setEditingSg({ gi, si })}
+                            className={`font-medium text-xs flex items-center gap-1 ${sg.is_others ? 'text-gray-500 italic' : 'text-gray-700'} hover:text-blue-600`}
+                            title={sg.is_others ? 'Default sub-group — click to rename, cannot be deleted' : 'Click to rename'}
                           >
                             <span className={`inline-block w-2 h-2 rounded-full mr-1 ${colorCls.split(' ')[0].replace('bg-', 'bg-').replace('-50', '-400')}`} />
                             {sg.name || `Sub-group ${si + 1}`}
-                            {pipeline.is_owner && !sg.is_others && <span className="text-gray-400 text-xs">✎</span>}
+                            {pipeline.is_owner && <span className="text-gray-400 text-xs">✎</span>}
                           </button>
                         )}
                         <span className="text-xs text-gray-400">({(sg.terms || []).length} terms)</span>
-                        {/* Delete sub-group */}
-                        {pipeline.is_owner && !sg.is_others && (
-                          <button onClick={() => removeSubgroup(gi, si)}
-                            className="ml-auto text-xs text-red-400 hover:text-red-600 transition px-1"
-                            title="Delete sub-group (terms move to Others)">✕</button>
-                        )}
+                        {/* Delete sub-group / Default label */}
+                        {sg.is_others
+                          ? <span className="ml-auto text-xs text-gray-300 italic select-none">catch-all</span>
+                          : pipeline.is_owner && (
+                            <button onClick={() => removeSubgroup(gi, si)}
+                              className="ml-auto text-xs text-red-400 hover:text-red-600 transition px-1"
+                              title="Delete sub-group (terms move to Default)">✕</button>
+                          )
+                        }
                       </div>
 
                       {/* Terms drop zone */}
                       <div className={`flex flex-wrap gap-1.5 p-2 min-h-[2.5rem] rounded-lg border transition-colors ${colorCls} ${isDropTarget ? 'border-blue-400' : ''}`}>
                         {(sg.terms || []).length === 0
-                          ? <span className="text-gray-400 text-xs italic">Drop terms here or add below</span>
+                          ? <span className="text-gray-400 text-xs italic">{sg.is_others ? 'Unassigned terms appear here' : 'Drop terms here or add below'}</span>
                           : (sg.terms || []).map(term => {
                             const isDragging = dragSrc && dragSrc.gi === gi && dragSrc.si === si && dragSrc.term === term;
                             return (

@@ -633,6 +633,9 @@ def load_state(state_file: Path) -> dict:
         "total_records_inserted": 0,
         "started_at": None,
         "last_updated": None,
+        "skip_stats": {},
+        "file_errors": 0,
+        "record_errors": 0,
     }
 
 
@@ -678,9 +681,16 @@ def _worker_local(
                 return [t for sg in g["subgroups"] for t in sg.get("terms", [])]
             return g.get("terms", [])
 
+        def _extract_subgroups(g):
+            if "subgroups" in g:
+                return [{"name": sg["name"], "terms": sg.get("terms", [])} for sg in g["subgroups"]]
+            return None
+
         _ft = _flatten_grp(_grps[0]) if len(_grps) > 0 else _cfg.get("fuel_terms")
         _it = _flatten_grp(_grps[1]) if len(_grps) > 1 else _cfg.get("impact_terms")
-        _init_terms(_ft, _it)
+        _fsg = _extract_subgroups(_grps[0]) if len(_grps) > 0 else None
+        _isg = _extract_subgroups(_grps[1]) if len(_grps) > 1 else None
+        _init_terms(_ft, _it, _fsg, _isg)
     else:
         _init_terms()
 
@@ -753,9 +763,16 @@ def _worker_s3(
                 return [t for sg in g["subgroups"] for t in sg.get("terms", [])]
             return g.get("terms", [])
 
+        def _extract_subgroups(g):
+            if "subgroups" in g:
+                return [{"name": sg["name"], "terms": sg.get("terms", [])} for sg in g["subgroups"]]
+            return None
+
         _ft = _flatten_grp(_grps[0]) if len(_grps) > 0 else _cfg.get("fuel_terms")
         _it = _flatten_grp(_grps[1]) if len(_grps) > 1 else _cfg.get("impact_terms")
-        _init_terms(_ft, _it)
+        _fsg = _extract_subgroups(_grps[0]) if len(_grps) > 0 else None
+        _isg = _extract_subgroups(_grps[1]) if len(_grps) > 1 else None
+        _init_terms(_ft, _it, _fsg, _isg)
     else:
         _init_terms()
 
@@ -913,10 +930,15 @@ def run_pipeline(
     total_files = len(all_files)
     already_done = len(processed_set)
 
+    cpu_cores = os.cpu_count() or "?"
+    print(
+        f" CPU cores: {cpu_cores}  ·  workers: {workers}  ·  mode: {mode}",
+        flush=True,
+    )
     logger.info(
         f"Pipeline start — {total_files:,} total, "
         f"{already_done:,} done, {len(pending):,} to process, "
-        f"{workers} worker(s), mode={mode}."
+        f"{workers} worker(s), mode={mode}, cpu_cores={cpu_cores}."
     )
 
     if not pending:
@@ -938,6 +960,11 @@ def run_pipeline(
     display.files_done = already_done
     display.total_seen = state["total_records_seen"]
     display.total_inserted = state["total_records_inserted"]
+    # Restore skip stats and error counts from a previous run
+    if state.get("skip_stats"):
+        display.skip_stats.update(state["skip_stats"])
+    display.file_errors += state.get("file_errors", 0)
+    display.record_errors += state.get("record_errors", 0)
 
     # ---- DB ----
     conn = _init_main_db(output_db)
@@ -1045,6 +1072,9 @@ def run_pipeline(
                         if key not in failed_set:
                             state["failed_files"].append(key)
                             failed_set.add(key)
+                        state["skip_stats"] = dict(display.skip_stats)
+                        state["file_errors"] = display.file_errors
+                        state["record_errors"] = display.record_errors
                         save_state(state, state_file)
                         display.files_done = len(
                             state["processed_files"]
@@ -1057,6 +1087,9 @@ def run_pipeline(
                     processed_set.add(key)
                     state["total_records_seen"] += result["seen"]
                     state["total_records_inserted"] += result["inserted"]
+                    state["skip_stats"] = dict(display.skip_stats)
+                    state["file_errors"] = display.file_errors
+                    state["record_errors"] = display.record_errors
                     save_state(state, state_file)
 
                     display.files_done = len(state["processed_files"])
@@ -1151,9 +1184,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=4,
+        default=max(1, (os.cpu_count() or 4)),
         metavar="N",
-        help="Number of parallel workers (default: 4).",
+        help="Number of parallel workers (default: all CPU cores).",
     )
     parser.add_argument(
         "--no-color",
