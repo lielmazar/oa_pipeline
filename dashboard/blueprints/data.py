@@ -196,6 +196,9 @@ def api_chart_image():
     if err_msg:
         return jsonify({"error": err_msg}), 404
 
+    pipeline = get_pipeline(pipeline_id, uid)
+    pipeline_config = (pipeline.get("config") or {}) if pipeline else {}
+
     cfg = CHART_QUERIES[chart_id]
     sql = get_chart_sql(chart_id, top_n)
 
@@ -206,6 +209,8 @@ def api_chart_image():
         y_key=cfg["y_key"],
         chart_type=cfg["type"],
         title=cfg["title"],
+        pipeline_config=pipeline_config,
+        subgroup_key=cfg.get("subgroup_key"),
     )
     return Response(png, mimetype="image/png",
                     headers={"Cache-Control": "no-store"})
