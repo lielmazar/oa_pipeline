@@ -256,18 +256,21 @@ def phase_prepare(
         cte = ""
         table = "filtered_records"
 
+    # rowid is a physical SQLite column — not available through a CTE
+    order_col = "openalex_id" if subset_sql else "rowid"
+
     if overwrite:
         query = f"""
             {cte}SELECT openalex_id, title, abstract_text
             FROM   {table}
-            ORDER  BY rowid
+            ORDER  BY {order_col}
         """
     else:
         query = f"""
             {cte}SELECT openalex_id, title, abstract_text
             FROM   {table}
             WHERE  llm_is_hydrocarbon IS NULL
-            ORDER  BY rowid
+            ORDER  BY {order_col}
         """
     if limit:
         query += f" LIMIT {limit}"
@@ -642,21 +645,24 @@ def phase_estimate(model: str = "gpt-5.4-nano", limit: int | None = None,
         f"{cte}SELECT COUNT(*) FROM {table}"
     ).fetchone()[0]
 
+    # rowid is a physical SQLite column — not available through a CTE
+    order_col = "openalex_id" if subset_sql else "rowid"
+
     # llm_is_hydrocarbon may not exist yet — fall back to all records
     try:
         unprocessed_total = conn.execute(
             f"{cte}SELECT COUNT(*) FROM {table} WHERE llm_is_hydrocarbon IS NULL"
         ).fetchone()[0]
         if overwrite:
-            base_query = f"{cte}SELECT title, abstract_text FROM {table} ORDER BY rowid"
+            base_query = f"{cte}SELECT title, abstract_text FROM {table} ORDER BY {order_col}"
         else:
             base_query = (
                 f"{cte}SELECT title, abstract_text FROM {table} "
-                "WHERE llm_is_hydrocarbon IS NULL ORDER BY rowid"
+                f"WHERE llm_is_hydrocarbon IS NULL ORDER BY {order_col}"
             )
     except sqlite3.OperationalError:
         unprocessed_total = total_in_db
-        base_query = f"{cte}SELECT title, abstract_text FROM {table} ORDER BY rowid"
+        base_query = f"{cte}SELECT title, abstract_text FROM {table} ORDER BY {order_col}"
 
     if limit:
         base_query += f" LIMIT {limit}"

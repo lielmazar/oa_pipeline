@@ -223,7 +223,10 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
   };
 
   // ── CSV export (full result set, no pagination) ────────────────────────────
-  const _CSV_EXCLUDE = new Set(['is_retracted', 'matched_fuel_stems', 'matched_impact_stems']);
+  const _CSV_EXCLUDE = new Set([
+    'is_retracted', 'matched_fuel_stems', 'matched_impact_stems',
+    'open_access_is_oa',  // duplicate of top-level is_oa
+  ]);
   const _CSV_RENAME = {
     primary_location_source_host_organization_name: 'publisher',
     primary_location_source_display_name: 'journal',
@@ -232,7 +235,6 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
     primary_location_is_oa: 'location_is_oa',
     primary_location_landing_page_url: 'landing_page_url',
     primary_location_license: 'license',
-    open_access_is_oa: 'is_oa',
     open_access_any_repository_has_fulltext: 'any_repo_fulltext',
     open_access_oa_status: 'oa_status',
     open_access_oa_url: 'oa_url',

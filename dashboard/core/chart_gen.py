@@ -225,7 +225,8 @@ def _pie(labels: list, values: list, title: str) -> plt.Figure:
 
 
 def _stacked_hbar(
-    labels: list, values: list, title: str, subgroups: list[dict]
+    labels: list, values: list, title: str, subgroups: list[dict],
+    sg_counts: dict | None = None,
 ) -> plt.Figure:
     """
     Stacked horizontal bar chart.
@@ -277,21 +278,22 @@ def _stacked_hbar(
     fig, ax = plt.subplots(figsize=(10, h))
 
     legend_patches = []
-    max_total = max(sum(c for _, c in items) for _, items in ordered) if ordered else 1
+    totals = [sum(c for _, c in items) for _, items in ordered]
+    max_total = max(totals) if totals else 1
 
     for sg_i, (sg_name, items) in enumerate(ordered):
         n_terms = len(items)
         base_rgb = mcolors.hex2color(sg_base_hex[sg_name])
         left = 0
         for ti, (term, count) in enumerate(items):
-            # Shade range: ti=0 → base color (most saturated); ti=n-1 → lightened 55%
-            blend = (0.55 * ti / (n_terms - 1)) if n_terms > 1 else 0.0
+            # Shade range: ti=0 → base color; ti=n-1 → lightened 45% max (avoid near-white)
+            blend = (0.45 * ti / (n_terms - 1)) if n_terms > 1 else 0.0
             color = tuple(c * (1 - blend) + blend for c in base_rgb)
 
             ax.barh(sg_i, count, left=left, color=color, height=0.65, zorder=3,
                     edgecolor="white", linewidth=0.5)
 
-            # Show count number inside segment if wide enough
+            # Show count number inside segment if wide enough (>= 5% of max bar)
             if count >= max_total * 0.04:
                 luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
                 text_color = "white" if luminance < 0.55 else TEXT_COLOR
@@ -300,8 +302,10 @@ def _stacked_hbar(
                         fontweight="bold", clip_on=True)
             left += count
 
-        # Total count at end of bar
-        ax.text(left + max_total * 0.01, sg_i, f"{left:,}",
+        # Total label: use actual distinct-record count from sg_counts when available,
+        # falling back to the summed term count (which double-counts multi-term records)
+        display_total = (sg_counts or {}).get(sg_name, left)
+        ax.text(left + max_total * 0.015, sg_i, f"{display_total:,}",
                 va="center", fontsize=9, color=MUTED)
 
         legend_patches.append(mpatches.Patch(color=sg_base_hex[sg_name], label=sg_name))
@@ -311,7 +315,8 @@ def _stacked_hbar(
     ax.set_xlabel("Papers")
     ax.set_title(title)
     ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-    ax.set_xlim(0, max_total * 1.12)
+    # Extra 18% headroom so the total labels never clip (they sit at bar_end + 1.5%)
+    ax.set_xlim(0, max_total * 1.18)
 
     if legend_patches:
         ax.legend(handles=legend_patches, loc="lower right",
@@ -563,7 +568,31 @@ def generate(
     try:
         if chart_type == "stacked_hbar":
             subgroups = _extract_subgroups(cfg, subgroup_key or "fuel")
-            fig = _stacked_hbar(labels, values, title, subgroups)
+            # Fetch distinct record counts per subgroup so the total label is accurate.
+            # Term-count sums inflate the total when a record matches multiple terms in
+            # the same subgroup (e.g. a paper matching "diesel" AND "HVO" is counted twice).
+            sg_col = (
+                "matched_fuel_subgroups"
+                if (subgroup_key or "fuel") == "fuel"
+                else "matched_impact_subgroups"
+            )
+            _sg_base = (
+                f"SELECT value AS sg, COUNT(DISTINCT openalex_id) AS cnt "
+                f"FROM filtered_records, json_each({sg_col}) "
+                f"WHERE {sg_col} IS NOT NULL AND {sg_col} != '[]' "
+                f"GROUP BY value"
+            )
+            if subset_sql:
+                _sg_patched = _sg_base.replace("filtered_records", "_fr_subset")
+                _sg_sql = f"WITH _fr_subset AS (\n{subset_sql}\n)\n{_sg_patched}"
+            else:
+                _sg_sql = _sg_base
+            try:
+                _, sg_rows = _run_sql(db_path, _sg_sql)
+                sg_counts = {str(r[0]): int(r[1]) for r in sg_rows}
+            except Exception:
+                sg_counts = {}
+            fig = _stacked_hbar(labels, values, title, subgroups, sg_counts)
             return _to_png(fig) if fig else _empty_png(title)
         elif chart_type == "hbar":
             fig = _hbar(labels, values, title)
