@@ -99,13 +99,15 @@ def api_launch_job():
     script_cfg = SCRIPTS[script_key]
     script_path = script_cfg["path"]
 
-    # For run_pipeline / filter_dataset, auto-inject --keyword-config path
+    # For run_pipeline / filter_dataset, always inject --keyword-config from the
+    # pipeline's keywords.json when it exists — overrides any null/absent value
+    # the frontend may have placed in args.
     if pipeline and script_key in ('run_pipeline', 'filter_dataset', 'generate_report'):
         db_path = pipeline.get("output_db_path")
         if db_path:
             keywords_path = str(Path(db_path).parent / "keywords.json")
             if Path(keywords_path).exists():
-                raw_args.setdefault("--keyword-config", keywords_path)
+                raw_args["--keyword-config"] = keywords_path
 
     args = _build_args(script_key, raw_args, pipeline)
     # Build a readable label: prefer positional subcommands (e.g. "estimate", "run"),

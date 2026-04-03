@@ -50,6 +50,10 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
     apiFetch('/api/system/info')
       .then(r => r.json()).then(d => { if (d.cpu_count) setCpuCount(d.cpu_count); })
       .catch(() => {});
+    // Backfill subgroups for any existing records that are missing them
+    // (records inserted before subgroup config was present)
+    apiFetch(`/api/pipelines/${pipeline.id}/backfill-subgroups`, { method: 'POST' })
+      .catch(() => {});
   }, [pipeline.id]);
 
   const saveDir = val => {
@@ -69,7 +73,6 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
       '--output-db': pipeline.output_db_path,
       '--state-file': pipeline.state_file_path,
       '--workers': workers,
-      '--keyword-config': null,
     };
     if (maxFiles) args['--max-files'] = maxFiles;
     if (localDir) args['--local-dir'] = localDir;

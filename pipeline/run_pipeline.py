@@ -75,6 +75,8 @@ from filter_dataset import (  # noqa: E402
     _INSERT_SQL,
     _CREATE_TABLE_SQL,
     _init_terms,
+    load_subgroup_maps_from_config,
+    backfill_subgroups,
 )
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1121,21 @@ def run_pipeline(
         if is_tty:
             sys.stdout.write(_SHOW_CURSOR)
             sys.stdout.flush()
+        # Backfill subgroups for records that have matched_fuel_terms / matched_impact_terms
+        # populated but empty subgroups — happens when records were inserted in a previous run
+        # that predated the subgroup config or before keywords.json was created.
+        if keyword_config and keyword_config.exists():
+            try:
+                import json as _json_bf
+                _cfg_bf = _json_bf.loads(keyword_config.read_text(encoding="utf-8"))
+                _fuel_map, _impact_map = load_subgroup_maps_from_config(_cfg_bf)
+                if _fuel_map or _impact_map:
+                    n_bf = backfill_subgroups(conn, _fuel_map, _impact_map)
+                    if n_bf:
+                        print(f" Backfilled subgroups for {n_bf:,} records.")
+                        logger.info(f"Backfilled subgroups for {n_bf:,} records.")
+            except Exception as _e_bf:
+                logger.warning(f"Subgroup backfill failed: {_e_bf}")
         conn.close()
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)

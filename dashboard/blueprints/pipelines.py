@@ -558,3 +558,95 @@ def api_batch_cancel(pipeline_id: int):
         return jsonify({"ok": True, "status": batch.status})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ── Backfill subgroups ────────────────────────────────────────────────────────
+
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/backfill-subgroups", methods=["POST"])
+def api_backfill_subgroups(pipeline_id: int):
+    """
+    Update matched_fuel_subgroups / matched_impact_subgroups for all records
+    that have matched terms but empty subgroups.  Uses the pipeline's keywords.json.
+    """
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "not found"}), 404
+
+    paths = _pipeline_paths(pipeline_id)
+    db_path = Path(paths["output_db_path"])
+    kw_path = Path(paths["keywords_path"])
+
+    if not db_path.exists():
+        return jsonify({"error": "database not found"}), 404
+    if not kw_path.exists():
+        return jsonify({"error": "keywords.json not found"}), 404
+
+    try:
+        config = json.loads(kw_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return jsonify({"error": f"cannot read keywords.json: {exc}"}), 500
+
+    groups = config.get("groups", [])
+
+    def _build_map(g: dict) -> dict:
+        return {t: sg["name"] for sg in g.get("subgroups", []) for t in sg.get("terms", [])}
+
+    fuel_map   = _build_map(groups[0]) if len(groups) > 0 else {}
+    impact_map = _build_map(groups[1]) if len(groups) > 1 else {}
+
+    if not fuel_map and not impact_map:
+        return jsonify({"updated": 0, "message": "no subgroups defined in keywords.json"})
+
+    import sqlite3 as _sqlite3
+
+    def _compute(terms: list, sg_map: dict) -> list:
+        seen: list = []
+        for t in terms:
+            sg = sg_map.get(t)
+            if sg and sg not in seen:
+                seen.append(sg)
+        return seen
+
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        cur = conn.execute(
+            "SELECT openalex_id, matched_fuel_terms, matched_impact_terms "
+            "FROM filtered_records "
+            "WHERE matched_fuel_subgroups IS NULL "
+            "   OR matched_fuel_subgroups = '' "
+            "   OR matched_fuel_subgroups = '[]'"
+        )
+        rows = cur.fetchall()
+
+        updates = []
+        for oid, ft_json, it_json in rows:
+            try:
+                ft = json.loads(ft_json or "[]")
+            except Exception:
+                ft = []
+            try:
+                it = json.loads(it_json or "[]")
+            except Exception:
+                it = []
+            updates.append((
+                json.dumps(_compute(ft, fuel_map),   ensure_ascii=False),
+                json.dumps(_compute(it, impact_map), ensure_ascii=False),
+                oid,
+            ))
+
+        if updates:
+            conn.executemany(
+                "UPDATE filtered_records "
+                "SET matched_fuel_subgroups = ?, matched_impact_subgroups = ? "
+                "WHERE openalex_id = ?",
+                updates,
+            )
+            conn.commit()
+        conn.close()
+        return jsonify({"updated": len(updates)})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

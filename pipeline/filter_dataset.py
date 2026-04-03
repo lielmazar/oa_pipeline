@@ -675,6 +675,83 @@ _CREATE_TABLE_SQL = """
 """
 
 
+def load_subgroup_maps_from_config(config: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    Build {term: subgroup_name} maps for fuel and impact from a pipeline config dict.
+    Returns (fuel_map, impact_map).
+    """
+    groups = config.get("groups", [])
+    fuel_map: dict[str, str] = {}
+    impact_map: dict[str, str] = {}
+
+    def _build(g: dict) -> dict[str, str]:
+        m: dict[str, str] = {}
+        for sg in g.get("subgroups", []):
+            for t in sg.get("terms", []):
+                m[t] = sg["name"]
+        return m
+
+    if len(groups) > 0:
+        fuel_map = _build(groups[0])
+    if len(groups) > 1:
+        impact_map = _build(groups[1])
+    return fuel_map, impact_map
+
+
+def backfill_subgroups(
+    conn: sqlite3.Connection,
+    fuel_subgroup_map: dict[str, str],
+    impact_subgroup_map: dict[str, str],
+) -> int:
+    """
+    Update matched_fuel_subgroups / matched_impact_subgroups for records that have
+    matched terms but empty subgroups — typically records inserted before the subgroup
+    config existed or before subgroups were added to keywords.json.
+    Returns the number of rows updated.
+    """
+    if not fuel_subgroup_map and not impact_subgroup_map:
+        return 0
+
+    cur = conn.execute(
+        "SELECT openalex_id, matched_fuel_terms, matched_impact_terms "
+        "FROM filtered_records "
+        "WHERE matched_fuel_subgroups IS NULL "
+        "   OR matched_fuel_subgroups = '' "
+        "   OR matched_fuel_subgroups = '[]'"
+    )
+    to_fix = cur.fetchall()
+    if not to_fix:
+        return 0
+
+    updates: list[tuple] = []
+    for openalex_id, fuel_json, impact_json in to_fix:
+        try:
+            fuel_terms = _stdlib_json.loads(fuel_json or "[]")
+        except Exception:
+            fuel_terms = []
+        try:
+            impact_terms = _stdlib_json.loads(impact_json or "[]")
+        except Exception:
+            impact_terms = []
+
+        fuel_sgs   = _compute_subgroups(fuel_terms,   fuel_subgroup_map)
+        impact_sgs = _compute_subgroups(impact_terms, impact_subgroup_map)
+        updates.append((
+            _stdlib_json.dumps(fuel_sgs,   ensure_ascii=False),
+            _stdlib_json.dumps(impact_sgs, ensure_ascii=False),
+            openalex_id,
+        ))
+
+    conn.executemany(
+        "UPDATE filtered_records "
+        "SET matched_fuel_subgroups = ?, matched_impact_subgroups = ? "
+        "WHERE openalex_id = ?",
+        updates,
+    )
+    conn.commit()
+    return len(updates)
+
+
 def ensure_db(conn: sqlite3.Connection) -> None:
     conn.execute(_CREATE_TABLE_SQL)
     # Add columns if upgrading from an older schema
@@ -925,6 +1002,14 @@ def process_records(
     if rows:
         conn.executemany(_INSERT_SQL, rows)
         conn.commit()
+
+    # Backfill subgroups for any records with empty subgroups (e.g. from a previous
+    # run that predated subgroup config) using the currently active subgroup maps.
+    if FUEL_SUBGROUP_MAP or IMPACT_SUBGROUP_MAP:
+        n_backfilled = backfill_subgroups(conn, FUEL_SUBGROUP_MAP, IMPACT_SUBGROUP_MAP)
+        if n_backfilled:
+            print(f"Backfilled subgroups for {n_backfilled:,} records.")
+
     conn.close()
 
     print(f"Processed records: {total}")

@@ -569,19 +569,51 @@ def generate(
         if chart_type == "stacked_hbar":
             subgroups = _extract_subgroups(cfg, subgroup_key or "fuel")
             # Fetch distinct record counts per subgroup so the total label is accurate.
-            # Term-count sums inflate the total when a record matches multiple terms in
-            # the same subgroup (e.g. a paper matching "diesel" AND "HVO" is counted twice).
+            # Uses the same dual-condition as the records viewer:
+            #   matched_*_subgroups contains the subgroup name
+            #   OR matched_*_terms contains any of the subgroup's terms
+            # This ensures records where subgroups is null/empty but terms match are counted.
             sg_col = (
                 "matched_fuel_subgroups"
                 if (subgroup_key or "fuel") == "fuel"
                 else "matched_impact_subgroups"
             )
-            _sg_base = (
-                f"SELECT value AS sg, COUNT(DISTINCT openalex_id) AS cnt "
-                f"FROM filtered_records, json_each({sg_col}) "
-                f"WHERE {sg_col} IS NOT NULL AND {sg_col} != '[]' "
-                f"GROUP BY value"
+            terms_col = (
+                "matched_fuel_terms"
+                if (subgroup_key or "fuel") == "fuel"
+                else "matched_impact_terms"
             )
+            # Build one SELECT per named subgroup and UNION ALL them
+            sg_count_parts: list[str] = []
+            for sg in subgroups:
+                if sg.get("is_others"):
+                    continue
+                sg_name = sg["name"]
+                sg_terms = sg.get("terms", [])
+                safe_name = sg_name.replace("'", "''")
+                cond_parts = [
+                    f"EXISTS (SELECT 1 FROM json_each({sg_col}) WHERE value = '{safe_name}')"
+                ]
+                if sg_terms:
+                    safe_terms = ", ".join("'" + t.replace("'", "''") + "'" for t in sg_terms)
+                    cond_parts.append(
+                        f"EXISTS (SELECT 1 FROM json_each({terms_col}) WHERE value IN ({safe_terms}))"
+                    )
+                where_clause = " OR ".join(cond_parts)
+                sg_count_parts.append(
+                    f"SELECT '{safe_name}' AS sg, COUNT(DISTINCT openalex_id) AS cnt "
+                    f"FROM filtered_records WHERE {where_clause}"
+                )
+            if sg_count_parts:
+                _sg_base = " UNION ALL ".join(sg_count_parts)
+            else:
+                # Fallback when no named subgroups defined
+                _sg_base = (
+                    f"SELECT value AS sg, COUNT(DISTINCT openalex_id) AS cnt "
+                    f"FROM filtered_records, json_each({sg_col}) "
+                    f"WHERE {sg_col} IS NOT NULL AND {sg_col} != '[]' "
+                    f"GROUP BY value"
+                )
             if subset_sql:
                 _sg_patched = _sg_base.replace("filtered_records", "_fr_subset")
                 _sg_sql = f"WITH _fr_subset AS (\n{subset_sql}\n)\n{_sg_patched}"
