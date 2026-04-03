@@ -30,7 +30,7 @@ CHART_QUERIES: dict[str, dict] = {
         ),
         "type": "stacked_hbar", "x_key": "term", "y_key": "count",
         "subgroup_key": "fuel",
-        "params": ["top_n"],
+        "params": ["top_n", "terms_per_subgroup"],
     },
     "top_impact_terms": {
         "title": "Top Impact Terms by Subgroup",
@@ -41,19 +41,18 @@ CHART_QUERIES: dict[str, dict] = {
         ),
         "type": "stacked_hbar", "x_key": "term", "y_key": "count",
         "subgroup_key": "impact",
-        "params": ["top_n"],
+        "params": ["top_n", "terms_per_subgroup"],
     },
     "fuel_impact_cooccurrence": {
         "title": "Fuel × Impact Subgroup Co-occurrence",
         "sql": (
-            "SELECT ft.value AS fuel_term, it.value AS impact_term, COUNT(*) AS count "
+            "SELECT DISTINCT openalex_id, ft.value AS fuel_term, it.value AS impact_term "
             "FROM filtered_records, "
             "  json_each(matched_fuel_terms) ft, json_each(matched_impact_terms) it "
             "WHERE matched_fuel_terms IS NOT NULL AND matched_fuel_terms != '[]' "
             "  AND matched_impact_terms IS NOT NULL AND matched_impact_terms != '[]' "
-            "GROUP BY ft.value, it.value"
         ),
-        "type": "cooccurrence", "x_key": "fuel_term", "y_key": "count",
+        "type": "cooccurrence", "x_key": "fuel_term", "y_key": "openalex_id",
     },
     "top_countries": {
         "title": "Top Contributing Countries",
@@ -114,24 +113,38 @@ CHART_QUERIES: dict[str, dict] = {
         "llm_only": True,
         "params": ["top_n"],
     },
-    "llm_ml_paradigm": {
-        "title": "ML/AI Paradigm (LLM)",
+    "llm_ml_role": {
+        "title": "ML/AI Functional Role (LLM)",
         "sql": (
-            "SELECT value AS paradigm, COUNT(*) AS count "
-            "FROM filtered_records, json_each(llm_ml_paradigm) "
+            "SELECT value AS role, COUNT(*) AS count "
+            "FROM filtered_records, json_each(llm_ml_role) "
             "WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' "
-            "GROUP BY value ORDER BY count DESC"
+            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "paradigm", "y_key": "count",
+        "type": "hbar", "x_key": "role", "y_key": "count",
         "llm_only": True,
+        "params": ["top_n"],
+    },
+    "llm_ml_algorithm": {
+        "title": "ML/AI Algorithm Family (LLM)",
+        "sql": (
+            "SELECT value AS algorithm, COUNT(*) AS count "
+            "FROM filtered_records, json_each(llm_ml_algorithm) "
+            "WHERE value IS NOT NULL AND value != '' "
+            "  AND LOWER(value) NOT IN ('none', 'other_ml') "
+            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        ),
+        "type": "hbar", "x_key": "algorithm", "y_key": "count",
+        "llm_only": True,
+        "params": ["top_n"],
     },
     "llm_ml_usage": {
         "title": "ML/AI Usage Rate (LLM)",
         "sql": (
             "SELECT "
-            "  CASE WHEN llm_ml_paradigm IS NOT NULL "
-            "            AND llm_ml_paradigm NOT IN ('[]', 'null', '') "
-            "            AND LOWER(llm_ml_paradigm) NOT LIKE '%\"none\"%' "
+            "  CASE WHEN llm_ml_role IS NOT NULL "
+            "            AND llm_ml_role NOT IN ('[]', 'null', '') "
+            "            AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' "
             "       THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS uses_ml, "
             "  COUNT(*) AS count "
             "FROM filtered_records GROUP BY uses_ml"
@@ -143,16 +156,16 @@ CHART_QUERIES: dict[str, dict] = {
         "title": "Fuel × Impact × LLM Model Co-occurrence",
         "sql": (
             "SELECT ft.value AS fuel_term, it.value AS impact_term, "
-            "  m.value AS model_raw, p.value AS paradigm, COUNT(*) AS count "
+            "  m.value AS model_raw, r.value AS ml_role, COUNT(*) AS count "
             "FROM filtered_records, "
             "  json_each(matched_fuel_terms) ft, json_each(matched_impact_terms) it, "
-            "  json_each(llm_models) m, json_each(llm_ml_paradigm) p "
+            "  json_each(llm_models) m, json_each(llm_ml_role) r "
             "WHERE matched_fuel_terms IS NOT NULL AND matched_fuel_terms != '[]' "
             "  AND matched_impact_terms IS NOT NULL AND matched_impact_terms != '[]' "
             "  AND llm_models IS NOT NULL AND llm_models != '[]' AND llm_models != 'null' "
-            "  AND llm_ml_paradigm IS NOT NULL AND llm_ml_paradigm != '[]' "
-            "  AND LOWER(p.value) != 'none' "
-            "GROUP BY ft.value, it.value, model_raw, p.value"
+            "  AND llm_ml_role IS NOT NULL AND llm_ml_role != '[]' "
+            "  AND LOWER(r.value) != 'none' "
+            "GROUP BY ft.value, it.value, model_raw, ml_role"
         ),
         "type": "cooccurrence_3d", "x_key": "fuel_term", "y_key": "count",
         "llm_only": True,

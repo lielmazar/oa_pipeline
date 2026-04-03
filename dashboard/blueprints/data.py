@@ -277,6 +277,7 @@ def api_chart_image():
 
     cfg = CHART_QUERIES[chart_id]
     cutoff_year = request.args.get("cutoff_year", 2000, type=int)
+    terms_per_subgroup = request.args.get("terms_per_subgroup", None, type=int)
     sql = get_chart_sql(chart_id, top_n, cutoff_year)
 
     # Optional: render chart over a saved subset instead of all records
@@ -299,6 +300,7 @@ def api_chart_image():
         pipeline_config=pipeline_config,
         subgroup_key=cfg.get("subgroup_key"),
         subset_sql=subset_sql,
+        terms_per_subgroup=terms_per_subgroup,
     )
     return Response(png, mimetype="image/png",
                     headers={"Cache-Control": "no-store"})

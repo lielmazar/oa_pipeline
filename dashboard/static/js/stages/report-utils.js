@@ -2,7 +2,8 @@
 
 const JSON_DISPLAY_COLS = new Set([
   'matched_fuel_terms', 'matched_impact_terms', 'authors_countries',
-  'authors_institutions', 'llm_fuel_classification', 'llm_ml_paradigm', 'llm_ml_method',
+  'authors_institutions', 'llm_fuel_classification',
+  'llm_ml_role', 'llm_ml_algorithm', 'llm_ml_strategy',
   'llm_ml_model_type', 'concepts', 'topics', 'llm_models',
 ]);
 
@@ -43,8 +44,13 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
   const institutions = parseJsonArr(record.authors_institutions);
   const countries    = parseJsonArr(record.authors_countries);
   const llmScopes    = parseJsonArr(record.llm_fuel_classification).filter(v => v && v.toLowerCase() !== 'none');
-  const llmParadigms = parseJsonArr(record.llm_ml_paradigm).filter(v => v && v.toLowerCase() !== 'none');
-  const llmMethods   = parseJsonArr(record.llm_ml_method).filter(v => v && v.toLowerCase() !== 'none');
+  const llmRoles      = parseJsonArr(record.llm_ml_role).filter(v => v && v.toLowerCase() !== 'none');
+  const llmAlgorithms = parseJsonArr(record.llm_ml_algorithm).filter(v => v && v.toLowerCase() !== 'none' && v.toLowerCase() !== 'other_ml');
+  const llmStrategies = parseJsonArr(record.llm_ml_strategy).filter(v => v && v.toLowerCase() !== 'none');
+  const llmDataSrc    = (record.llm_ml_data_source || '').trim().toLowerCase();
+  // v2 compat
+  const llmParadigms  = parseJsonArr(record.llm_ml_paradigm).filter(v => v && v.toLowerCase() !== 'none');
+  const llmMethods    = parseJsonArr(record.llm_ml_method).filter(v => v && v.toLowerCase() !== 'none');
   const llmModels    = parseJsonArr(record.llm_models);
   const hasLLM       = record.llm_is_hydrocarbon !== undefined && record.llm_is_hydrocarbon !== null;
 
@@ -253,9 +259,40 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
                     </div>
                   </div>
                 )}
-                {(llmParadigms.length > 0 || llmMethods.length > 0) && (
-                  <div className="flex gap-6">
-                    {llmParadigms.length > 0 && (
+                {(llmRoles.length > 0 || llmAlgorithms.length > 0 || llmParadigms.length > 0 || llmMethods.length > 0) && (
+                  <div className="flex flex-wrap gap-6">
+                    {llmRoles.length > 0 && (
+                      <div>
+                        <span className="text-xs text-gray-500 block mb-1">ML role</span>
+                        <div className="flex flex-wrap gap-1">
+                          {llmRoles.map(v => <Chip key={v} cls="bg-blue-100 text-blue-700 border-blue-200">{v}</Chip>)}
+                        </div>
+                      </div>
+                    )}
+                    {llmAlgorithms.length > 0 && (
+                      <div>
+                        <span className="text-xs text-gray-500 block mb-1">Algorithm</span>
+                        <div className="flex flex-wrap gap-1">
+                          {llmAlgorithms.map(v => <Chip key={v} cls="bg-cyan-100 text-cyan-700 border-cyan-200">{v}</Chip>)}
+                        </div>
+                      </div>
+                    )}
+                    {llmStrategies.length > 0 && (
+                      <div>
+                        <span className="text-xs text-gray-500 block mb-1">Strategy</span>
+                        <div className="flex flex-wrap gap-1">
+                          {llmStrategies.map(v => <Chip key={v} cls="bg-violet-100 text-violet-700 border-violet-200">{v}</Chip>)}
+                        </div>
+                      </div>
+                    )}
+                    {llmDataSrc && llmDataSrc !== 'none' && (
+                      <div>
+                        <span className="text-xs text-gray-500 block mb-1">Data source</span>
+                        <Chip cls="bg-amber-100 text-amber-700 border-amber-200">{llmDataSrc}</Chip>
+                      </div>
+                    )}
+                    {/* v2 compat */}
+                    {llmRoles.length === 0 && llmParadigms.length > 0 && (
                       <div>
                         <span className="text-xs text-gray-500 block mb-1">ML paradigm</span>
                         <div className="flex flex-wrap gap-1">
@@ -263,7 +300,7 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
                         </div>
                       </div>
                     )}
-                    {llmMethods.length > 0 && (
+                    {llmAlgorithms.length === 0 && llmMethods.length > 0 && (
                       <div>
                         <span className="text-xs text-gray-500 block mb-1">ML method</span>
                         <div className="flex flex-wrap gap-1">
@@ -370,20 +407,25 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams }
   const [imgLoaded, setImgLoaded] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showParams, setShowParams] = useState(false);
-  const [localTopN, setLocalTopN]   = useState('');   // '' = use global topN
-  const [cutoffYear, setCutoffYear] = useState(2000);
+  const [localTopN, setLocalTopN]       = useState('');   // '' = use global topN
+  const [cutoffYear, setCutoffYear]     = useState(2000);
+  const [termsPerSg, setTermsPerSg]     = useState('');   // '' = show all terms
 
-  const hasCutoffYear = (chartParams || []).includes('cutoff_year');
-  const hasTopN       = (chartParams || []).includes('top_n');
-  const hasAnyParams  = hasCutoffYear || hasTopN;
+  const hasCutoffYear  = (chartParams || []).includes('cutoff_year');
+  const hasTopN        = (chartParams || []).includes('top_n');
+  const hasTermsPerSg  = (chartParams || []).includes('terms_per_subgroup');
+  const hasAnyParams   = hasCutoffYear || hasTopN || hasTermsPerSg;
 
-  const effectiveTopN = (localTopN && !isNaN(Number(localTopN))) ? Number(localTopN) : topN;
+  const effectiveTopN     = (localTopN && !isNaN(Number(localTopN))) ? Number(localTopN) : topN;
+  const effectiveTermsPerSg = (termsPerSg && !isNaN(Number(termsPerSg)) && Number(termsPerSg) > 0)
+    ? Number(termsPerSg) : null;
 
   const imgUrl = `/api/charts/image?pipeline_id=${pipelineId}&chart=${chartId}&top_n=${effectiveTopN}&_r=${refreshKey}` +
     (subsetIdx != null ? `&subset_idx=${subsetIdx}` : '') +
-    (hasCutoffYear ? `&cutoff_year=${cutoffYear}` : '');
+    (hasCutoffYear ? `&cutoff_year=${cutoffYear}` : '') +
+    (hasTermsPerSg && effectiveTermsPerSg != null ? `&terms_per_subgroup=${effectiveTermsPerSg}` : '');
 
-  useEffect(() => { setImgLoaded(false); setImgErr(false); }, [chartId, pipelineId, effectiveTopN, refreshKey, subsetIdx, cutoffYear]);
+  useEffect(() => { setImgLoaded(false); setImgErr(false); }, [chartId, pipelineId, effectiveTopN, refreshKey, subsetIdx, cutoffYear, effectiveTermsPerSg]);
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -417,6 +459,14 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams }
               Show top
               <input type="number" value={localTopN} min="5" max="100" step="5" placeholder={String(topN)}
                 onChange={e => setLocalTopN(e.target.value)}
+                className="border rounded px-2 py-0.5 w-16 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400" />
+            </label>
+          )}
+          {hasTermsPerSg && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-600">
+              Terms per subgroup
+              <input type="number" value={termsPerSg} min="1" max="50" step="1" placeholder="All"
+                onChange={e => setTermsPerSg(e.target.value)}
                 className="border rounded px-2 py-0.5 w-16 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400" />
             </label>
           )}

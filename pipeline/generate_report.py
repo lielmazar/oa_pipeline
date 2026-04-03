@@ -87,6 +87,44 @@ _SHORT_SCOPE: dict[str, str] = {
     "Regulatory Research and Analysis":                           "Regulatory",
 }
 _SHORT_ML: dict[str, str] = {
+    # v3 ml_role codes → short display labels
+    "property_prediction":  "Property Pred.",
+    "process_optimization": "Process Opt.",
+    "surrogate_modeling":   "Surrogate Model",
+    "soft_sensor":          "Soft Sensor",
+    "pattern_discovery":    "Pattern Discovery",
+    "image_analysis":       "Image Analysis",
+    "signal_spectral":      "Spectral/Signal",
+    "molecular_design":     "Molecular Design",
+    "control_automation":   "Control/Automation",
+    "text_mining":          "Text Mining",
+    "emission_modeling":    "Emission Modeling",
+    "lca_tea_integration":  "LCA/TEA ML",
+    "anomaly_detection":    "Anomaly Detection",
+    # v3 ml_algorithm codes → short display labels
+    "ann_mlp":              "ANN/MLP",
+    "cnn":                  "CNN",
+    "rnn_lstm":             "RNN/LSTM",
+    "transformer":          "Transformer",
+    "gan_vae":              "GAN/VAE",
+    "graph_nn":             "Graph NN",
+    "physics_informed_nn":  "PINN",
+    "random_forest":        "Random Forest",
+    "gradient_boosting":    "Grad. Boosting",
+    "svm":                  "SVM",
+    "decision_tree":        "Decision Tree",
+    "knn":                  "kNN",
+    "gaussian_process":     "GP/Kriging",
+    "bayesian_network":     "Bayesian Net",
+    "pls_pcr":              "PLS/PCR",
+    "linear_regularized":   "LASSO/Ridge",
+    "clustering":           "Clustering",
+    "dim_reduction":        "Dim. Reduction",
+    "evolutionary":         "Evolutionary",
+    "reinforcement":        "Reinforcement",
+    "naive_bayes":          "Naive Bayes",
+    "other_ml":             "Other ML",
+    # v2 legacy labels (kept for backward compat)
     "Classical Machine Learning (SVM, Random Forest, Gradient Boosting)": "Classical ML",
     "Deep Learning (Neural Networks)":                                     "Deep Learning",
     "Probabilistic Models (Bayesian Networks, HMM)":                      "Probabilistic",
@@ -190,6 +228,10 @@ def _year_range(records: list[dict]) -> tuple[int, int]:
 
 def _uses_ml(r: dict) -> bool:
     """True when the paper actually employs an ML/AI method."""
+    # v3: use ml_role; fall back to v2 ml_paradigm for older records
+    role = _json_col(r, "llm_ml_role")
+    if role:
+        return not all(v.strip().lower() in ("none", "") for v in role)
     paradigm = _json_col(r, "llm_ml_paradigm")
     if not paradigm:
         return False
@@ -810,26 +852,67 @@ def chart_fuel_classification(llm_recs: list[dict]) -> str:
     return chart_top_terms(renamed, "Research scope (LLM classification)", n=20, color=PALETTE[0])
 
 
-def chart_ml_paradigm(llm_recs: list[dict]) -> str:
-    """Bar chart of ML/AI learning paradigms (None excluded for the ML-specific chart)."""
+def chart_ml_role(llm_recs: list[dict]) -> str:
+    """Bar chart of ML/AI functional roles (None excluded)."""
     c = Counter()
     for r in llm_recs:
-        for v in _json_col(r, "llm_ml_paradigm"):
+        for v in _json_col(r, "llm_ml_role"):
+            if v and v.lower() != "none":
+                c[_SHORT_ML.get(v, v)] += 1
+    if not c:
+        return ""
+    return chart_top_terms(c, "ML/AI functional role (papers using ML/AI only)",
+                           n=13, color=PALETTE[1])
+
+
+def chart_ml_algorithm(llm_recs: list[dict]) -> str:
+    """Bar chart of ML model algorithm families."""
+    c = Counter()
+    for r in llm_recs:
+        for v in _json_col(r, "llm_ml_algorithm"):
+            if v and v.lower() not in ("none", "other_ml"):
+                c[_SHORT_ML.get(v, v)] += 1
+    if not c:
+        return ""
+    return chart_top_terms(c, "ML/AI algorithm family", n=15, color=PALETTE[2])
+
+
+def chart_ml_strategy(llm_recs: list[dict]) -> str:
+    """Bar chart of cross-cutting ML methodological strategies."""
+    c = Counter()
+    for r in llm_recs:
+        for v in _json_col(r, "llm_ml_strategy"):
             if v and v.lower() != "none":
                 c[v] += 1
-    return chart_top_terms(c, "ML/AI learning paradigms (papers using ML/AI only)",
-                           n=10, color=PALETTE[1])
+    if not c:
+        return ""
+    return chart_top_terms(c, "ML/AI methodological strategies", n=8, color=PALETTE[4])
 
 
-def chart_ml_method(llm_recs: list[dict]) -> str:
-    """Bar chart of ML model classes / methods."""
+def chart_ml_data_source(llm_recs: list[dict]) -> str:
+    """Pie chart of ML training data sources."""
     c = Counter()
     for r in llm_recs:
-        for v in _json_col(r, "llm_ml_method"):
-            if v and v.lower() not in ("none", "other"):
-                c[v] += 1
-    renamed = Counter({_SHORT_ML.get(k, k): v for k, v in c.items()})
-    return chart_top_terms(renamed, "ML/AI model class / method", n=10, color=PALETTE[2])
+        v = (r.get("llm_ml_data_source") or "").strip().lower()
+        if v and v not in ("none", ""):
+            c[v] += 1
+    if not c:
+        return ""
+    labels = list(c.keys())
+    values = list(c.values())
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    wedges, _, auto = ax.pie(
+        values, labels=None, autopct="%1.1f%%",
+        colors=PALETTE[:len(labels)], startangle=90, pctdistance=0.78,
+        wedgeprops={"linewidth": 1.5, "edgecolor": "white", "width": 0.5},
+    )
+    for t in auto:
+        t.set_fontsize(9)
+    ax.legend(wedges, [f"{l}  ({v:,})" for l, v in zip(labels, values)],
+              loc="center left", bbox_to_anchor=(1, 0.5), fontsize=9)
+    ax.set_title("ML/AI training data source (ML-using papers)")
+    fig.tight_layout()
+    return _fig_to_base64(fig)
 
 
 def chart_ml_adoption_rate(llm_recs: list[dict]) -> str:
@@ -904,46 +987,46 @@ def chart_ml_adoption_over_time(llm_recs: list[dict]) -> str:
 
 
 def chart_scope_x_ml(llm_recs: list[dict]) -> str:
-    """Heatmap: research scope × ML paradigm."""
+    """Heatmap: research scope × ML role (headline figure)."""
     ml_recs = [r for r in llm_recs if _uses_ml(r)]
     scope_c  = Counter()
-    paradigm_c = Counter()
+    role_c   = Counter()
     pairs: Counter = Counter()
     for r in ml_recs:
-        scopes    = [_SHORT_SCOPE.get(v, v) for v in _json_col(r, "llm_fuel_classification")
-                     if v and v.lower() not in ("none", "other")]
-        paradigms = [_SHORT_ML.get(v, v) for v in _json_col(r, "llm_ml_paradigm")
-                     if v and v.lower() != "none"]
+        scopes = [_SHORT_SCOPE.get(v, v) for v in _json_col(r, "llm_fuel_classification")
+                  if v and v.lower() not in ("none", "other")]
+        roles  = [_SHORT_ML.get(v, v) for v in _json_col(r, "llm_ml_role")
+                  if v and v.lower() != "none"]
         for s in scopes:
             scope_c[s] += 1
-        for p in paradigms:
-            paradigm_c[p] += 1
+        for ro in roles:
+            role_c[ro] += 1
         for s in scopes:
-            for p in paradigms:
-                pairs[(s, p)] += 1
+            for ro in roles:
+                pairs[(s, ro)] += 1
 
-    top_scopes    = [s for s, _ in scope_c.most_common(10)]
-    top_paradigms = [p for p, _ in paradigm_c.most_common()]
-    if not top_scopes or not top_paradigms:
+    top_scopes = [s for s, _ in scope_c.most_common(10)]
+    top_roles  = [r for r, _ in role_c.most_common(12)]
+    if not top_scopes or not top_roles:
         return ""
 
-    matrix = np.zeros((len(top_scopes), len(top_paradigms)), dtype=int)
-    for (s, p), cnt in pairs.items():
-        if s in top_scopes and p in top_paradigms:
-            matrix[top_scopes.index(s)][top_paradigms.index(p)] = cnt
+    matrix = np.zeros((len(top_scopes), len(top_roles)), dtype=int)
+    for (s, ro), cnt in pairs.items():
+        if s in top_scopes and ro in top_roles:
+            matrix[top_scopes.index(s)][top_roles.index(ro)] = cnt
 
-    fig, ax = plt.subplots(figsize=(max(7, len(top_paradigms) * 1.6),
-                                    max(4, len(top_scopes) * 0.55)))
+    fig, ax = plt.subplots(figsize=(max(8, len(top_roles) * 1.4),
+                                    max(4, len(top_scopes) * 0.6)))
     im = ax.imshow(matrix, cmap="Blues", aspect="auto")
-    ax.set_xticks(range(len(top_paradigms)))
-    ax.set_xticklabels(top_paradigms, rotation=30, ha="right", fontsize=9)
+    ax.set_xticks(range(len(top_roles)))
+    ax.set_xticklabels(top_roles, rotation=35, ha="right", fontsize=9)
     ax.set_yticks(range(len(top_scopes)))
     ax.set_yticklabels(top_scopes, fontsize=9)
-    ax.set_title("Research scope × ML/AI paradigm  (papers using ML/AI only)")
+    ax.set_title("Research scope × ML/AI role  (papers using ML/AI only)")
     fig.colorbar(im, ax=ax, label="Papers", shrink=0.8)
     mx = matrix.max() or 1
     for i in range(len(top_scopes)):
-        for j in range(len(top_paradigms)):
+        for j in range(len(top_roles)):
             v = int(matrix[i, j])
             if v > 0:
                 tc = "white" if v > mx * 0.6 else TEXT_COLOR
@@ -1369,10 +1452,10 @@ def chart_3d_fuel_impact_ml(
     for rec in ml_recs:
         fuel_sgs  = {fuel_t2sg[t.lower()] for t in _json_col(rec, fuel_col)
                      if t.lower() in fuel_t2sg}
-        paradigms = [_SHORT_ML.get(v, v) for v in _json_col(rec, "llm_ml_paradigm")
-                     if v and v.lower() != "none"]
+        roles = [_SHORT_ML.get(v, v) for v in _json_col(rec, "llm_ml_role")
+                 if v and v.lower() != "none"]
         for fsn in fuel_sgs:
-            for ml in set(paradigms):
+            for ml in set(roles):
                 counts[(fsn, ml)] += 1
     fuel_sg_names = [sg["name"] for sg in fuel_subgroups if not sg.get("is_others")]
     ml_totals: Counter = Counter({ml: 0 for _, ml in counts})
@@ -1401,7 +1484,7 @@ def chart_3d_fuel_impact_ml(
     ax.set_xticklabels(short_names, rotation=15, ha="right", fontsize=7)
     ax.set_yticks([])
     ax.set_zlabel("Papers")
-    ax.set_title("Fuel sub-group \u00d7 ML technique (3D)", pad=15)
+    ax.set_title("Fuel sub-group \u00d7 ML role (3D)", pad=15)
     ax.legend(top_ml_names, loc="upper left", fontsize=8)
     fig.tight_layout()
     return _fig_to_base64(fig)
@@ -1835,18 +1918,18 @@ def _ml_by_subgroup_table(
             for v in _json_col(r, "llm_fuel_classification"):
                 if v and v.lower() not in ("none", "other"):
                     scope_c[_SHORT_SCOPE.get(v, v)] += 1
-            for v in _json_col(r, "llm_ml_method"):
+            for v in _json_col(r, "llm_ml_role"):
                 if v and v.lower() not in ("none", "other"):
                     method_c[_SHORT_ML.get(v, v)] += 1
         top_scope = scope_c.most_common(1)[0][0] if scope_c else "—"
-        top_method = method_c.most_common(1)[0][0] if method_c else "—"
+        top_role  = method_c.most_common(1)[0][0] if method_c else "—"
         rows_html += (
             f"<tr><td><strong>{sg_name}</strong></td>"
             f"<td style='text-align:center'>{n_total:,}</td>"
             f"<td style='text-align:center'>{n_ml:,}</td>"
             f"<td>{bar_html}</td>"
             f"<td style='font-size:12px'>{top_scope}</td>"
-            f"<td style='font-size:12px'>{top_method}</td></tr>"
+            f"<td style='font-size:12px'>{top_role}</td></tr>"
         )
     return f"""
 <table>
@@ -1856,7 +1939,7 @@ def _ml_by_subgroup_table(
     <th style="text-align:center">Uses ML</th>
     <th>ML rate</th>
     <th>Top scope</th>
-    <th>Top method</th>
+    <th>Top ML role</th>
   </tr></thead>
   <tbody>{rows_html}</tbody>
 </table>
@@ -1944,12 +2027,12 @@ def chart_scope_per_subgroup(
     return _fig_to_base64(fig)
 
 
-def chart_paradigm_per_subgroup(
+def chart_role_per_subgroup(
     llm_recs: list[dict],
     fuel_subgroups: list[dict],
     matched_col: str,
 ) -> str:
-    """Heatmap: ML learning paradigms × fuel sub-groups (ML-using papers only)."""
+    """Heatmap: ML functional role × fuel sub-groups (ML-using papers only)."""
     grouped = _group_by_subgroup(llm_recs, fuel_subgroups, matched_col)
     sg_ml: dict[str, list[dict]] = {
         sg: [r for r in recs if _uses_ml(r)]
@@ -1958,35 +2041,35 @@ def chart_paradigm_per_subgroup(
     sg_names = [sg for sg, recs in sg_ml.items() if len(recs) >= 3]
     if not sg_names:
         return ""
-    par_c_all: Counter = Counter()
+    role_c_all: Counter = Counter()
     for sgn in sg_names:
         for r in sg_ml[sgn]:
-            for v in _json_col(r, "llm_ml_paradigm"):
+            for v in _json_col(r, "llm_ml_role"):
                 if v and v.lower() != "none":
-                    par_c_all[_SHORT_ML.get(v, v)] += 1
-    top_pars = [p for p, _ in par_c_all.most_common()]
-    if not top_pars:
+                    role_c_all[_SHORT_ML.get(v, v)] += 1
+    top_roles = [p for p, _ in role_c_all.most_common(10)]
+    if not top_roles:
         return ""
-    matrix = np.zeros((len(sg_names), len(top_pars)), dtype=int)
+    matrix = np.zeros((len(sg_names), len(top_roles)), dtype=int)
     for fi, sgn in enumerate(sg_names):
         for r in sg_ml[sgn]:
-            for v in _json_col(r, "llm_ml_paradigm"):
+            for v in _json_col(r, "llm_ml_role"):
                 if v and v.lower() != "none":
                     label = _SHORT_ML.get(v, v)
-                    if label in top_pars:
-                        matrix[fi, top_pars.index(label)] += 1
-    fig, ax = plt.subplots(figsize=(max(7, len(top_pars) * 1.5),
+                    if label in top_roles:
+                        matrix[fi, top_roles.index(label)] += 1
+    fig, ax = plt.subplots(figsize=(max(8, len(top_roles) * 1.5),
                                     max(3.5, len(sg_names) * 0.65)))
     im = ax.imshow(matrix, cmap="Purples", aspect="auto")
-    ax.set_xticks(range(len(top_pars)))
-    ax.set_xticklabels(top_pars, rotation=30, ha="right", fontsize=9)
+    ax.set_xticks(range(len(top_roles)))
+    ax.set_xticklabels(top_roles, rotation=30, ha="right", fontsize=9)
     ax.set_yticks(range(len(sg_names)))
     ax.set_yticklabels(sg_names, fontsize=9)
-    ax.set_title("ML/AI learning paradigm by fuel sub-group (ML-using papers only)")
+    ax.set_title("ML/AI functional role by fuel sub-group (ML-using papers only)")
     fig.colorbar(im, ax=ax, label="Papers", shrink=0.8)
     mx = matrix.max() or 1
     for i in range(len(sg_names)):
-        for j in range(len(top_pars)):
+        for j in range(len(top_roles)):
             v = int(matrix[i, j])
             if v > 0:
                 tc = "white" if v > mx * 0.6 else TEXT_COLOR
@@ -2075,15 +2158,17 @@ def generate_report(db_path: Path, state_path: Path | None,
     c_trends   = chart_yearly_fuel_trends(records, group1_label=group1_label)
 
     # ── LLM / ML charts ───────────────────────────────────────────────────
-    c_scope        = chart_fuel_classification(llm_recs) if has_llm else ""
-    c_ml_adopt     = chart_ml_adoption_rate(llm_recs)    if has_llm else ""
-    c_ml_time      = chart_ml_adoption_over_time(llm_recs) if has_llm else ""
-    c_paradigm     = chart_ml_paradigm(llm_recs)         if has_llm else ""
-    c_method       = chart_ml_method(llm_recs)           if has_llm else ""
-    c_scope_x_ml   = chart_scope_x_ml(llm_recs)          if has_llm else ""
-    c_model_types  = chart_model_types(llm_recs)          if has_llm else ""
-    c_ml_fuel      = chart_ml_by_fuel_type(llm_recs)     if has_llm else ""
-    c_confidence   = chart_confidence_distribution(llm_recs) if has_llm else ""
+    c_scope        = chart_fuel_classification(llm_recs)       if has_llm else ""
+    c_ml_adopt     = chart_ml_adoption_rate(llm_recs)          if has_llm else ""
+    c_ml_time      = chart_ml_adoption_over_time(llm_recs)     if has_llm else ""
+    c_ml_role      = chart_ml_role(llm_recs)                   if has_llm else ""
+    c_ml_algo      = chart_ml_algorithm(llm_recs)              if has_llm else ""
+    c_ml_strategy  = chart_ml_strategy(llm_recs)               if has_llm else ""
+    c_ml_data_src  = chart_ml_data_source(llm_recs)            if has_llm else ""
+    c_scope_x_ml   = chart_scope_x_ml(llm_recs)                if has_llm else ""
+    c_model_types  = chart_model_types(llm_recs)               if has_llm else ""
+    c_ml_fuel      = chart_ml_by_fuel_type(llm_recs)           if has_llm else ""
+    c_confidence   = chart_confidence_distribution(llm_recs)   if has_llm else ""
     c_ml_by_sg     = (chart_ml_adoption_by_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
                       if has_llm and fuel_subgroups else "")
     ml_sg_table    = (_ml_by_subgroup_table(llm_recs, fuel_subgroups, "matched_fuel_terms")
@@ -2131,8 +2216,8 @@ def generate_report(db_path: Path, state_path: Path | None,
         chart_scope_per_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
         if has_llm and fuel_subgroups else ""
     )
-    c_paradigm_by_sg = (
-        chart_paradigm_per_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
+    c_role_by_sg = (
+        chart_role_per_subgroup(llm_recs, fuel_subgroups, "matched_fuel_terms")
         if has_llm and fuel_subgroups else ""
     )
 
@@ -2231,13 +2316,21 @@ def generate_report(db_path: Path, state_path: Path | None,
         scope_c   = _count_json_col(llm_recs, "llm_fuel_classification")
         top_scope = _SHORT_SCOPE.get(*scope_c.most_common(1)[0]) if scope_c else "N/A"
 
-        # Top paradigm (excl. None)
-        par_c = Counter()
+        # Top ML role (excl. None)
+        role_c = Counter()
         for r in llm_recs:
-            for v in _json_col(r, "llm_ml_paradigm"):
+            for v in _json_col(r, "llm_ml_role"):
                 if v and v.lower() != "none":
-                    par_c[v] += 1
-        top_par = par_c.most_common(1)[0][0] if par_c else "N/A"
+                    role_c[_SHORT_ML.get(v, v)] += 1
+        top_role = role_c.most_common(1)[0][0] if role_c else "N/A"
+
+        # Top algorithm
+        algo_c = Counter()
+        for r in llm_recs:
+            for v in _json_col(r, "llm_ml_algorithm"):
+                if v and v.lower() not in ("none", "other_ml"):
+                    algo_c[_SHORT_ML.get(v, v)] += 1
+        top_algo = algo_c.most_common(1)[0][0] if algo_c else "N/A"
 
         # Avg tokens
         avg_in  = (sum(r.get("llm_tokens_input", 0)  or 0 for r in llm_recs) / n_llm)
@@ -2255,7 +2348,8 @@ def generate_report(db_path: Path, state_path: Path | None,
                  modal_id="modal-ml")
           + _kpi("Hydrocarbon focus", f"{n_hydro:,}", f"{hyd_pct:.1f}%")
           + _kpi("Dominant scope", top_scope)
-          + _kpi("Top ML paradigm", top_par, "", "green")
+          + _kpi("Top ML role", top_role, "", "green")
+          + _kpi("Top algorithm", top_algo, "", "green")
           + _kpi("Avg tokens / paper", f"{avg_in:.0f} in", f"{avg_out:.0f} out")
         )
 
@@ -2296,28 +2390,27 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
                     scope_c_named[_SHORT_SCOPE.get(v, v)] += 1
         top3_scopes = ", ".join(s for s, _ in scope_c_named.most_common(3))
 
-        par_c2 = Counter()
+        role_c2 = Counter()
         for r in llm_recs:
-            for v in _json_col(r, "llm_ml_paradigm"):
+            for v in _json_col(r, "llm_ml_role"):
                 if v and v.lower() != "none":
-                    par_c2[v] += 1
-        top_par2 = par_c2.most_common(1)[0][0] if par_c2 else "Supervised Learning"
+                    role_c2[_SHORT_ML.get(v, v)] += 1
+        top_role2 = role_c2.most_common(1)[0][0] if role_c2 else "Property Pred."
 
-        method_c = Counter()
+        algo_c2 = Counter()
         for r in llm_recs:
-            for v in _json_col(r, "llm_ml_method"):
-                if v and v.lower() not in ("none", "other"):
-                    method_c[v] += 1
-        top_method = _SHORT_ML.get(method_c.most_common(1)[0][0], method_c.most_common(1)[0][0]) \
-                     if method_c else "Classical ML"
+            for v in _json_col(r, "llm_ml_algorithm"):
+                if v and v.lower() not in ("none", "other_ml"):
+                    algo_c2[_SHORT_ML.get(v, v)] += 1
+        top_algo2 = algo_c2.most_common(1)[0][0] if algo_c2 else "Grad. Boosting"
 
         llm_section = f"""
 <h2>{s+2}. AI / ML in sustainable-fuels research</h2>
 <p>
-  {n_llm:,} papers in this corpus have been classified by the LLM batch pipeline.
+  {n_llm:,} papers in this corpus have been classified by the LLM batch pipeline (prompt v3).
   The analysis below answers <em>how</em> and <em>where</em> machine learning
-  is applied in the field — covering research scope, learning paradigms,
-  model classes, and growth trends.
+  is applied in the field — covering research scope, ML functional roles,
+  algorithm families, methodological strategies, data sources, and growth trends.
 </p>
 
 <div class="kpi-grid">{llm_kpis}</div>
@@ -2328,8 +2421,8 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
     <li><strong>{ml_pct:.0f}%</strong> of classified papers employ at least one ML/AI method,
         indicating the field is in a rapid AI-adoption phase.</li>
     <li>The dominant research scope is <strong>{top3_scopes}</strong>.</li>
-    <li><strong>{top_par2}</strong> is the most common ML paradigm, with
-        <strong>{top_method}</strong> the most frequent model class.</li>
+    <li>The most common ML functional role is <strong>{top_role2}</strong>, driven by
+        <strong>{top_algo2}</strong> as the leading algorithm family.</li>
     <li>Papers span CFD simulations, experimental studies, and data-driven
         property prediction — often combining multiple modelling approaches.</li>
   </ul>
@@ -2361,25 +2454,38 @@ abstract present · ≥ 1 fuel term AND ≥ 1 impact term in title/abstract.</di
 {_chart(c_scope_time, "Scope trends")}
 """}
 
-<h3>Learning paradigm and model class</h3>
+<h3>ML/AI functional role and algorithm family</h3>
 <p>
-  Among papers that <em>do</em> use ML/AI, the breakdown below shows
-  which paradigms and model families are most prevalent.
-  Supervised learning dominates — driven by property-prediction and
-  regression tasks — while deep learning is gaining ground for
-  combustion-image and time-series applications.
+  Among papers that <em>do</em> use ML/AI, the charts below show
+  the functional purpose ML serves in the research (role) and the algorithm
+  architecture used (algorithm family).  These two dimensions independently
+  reveal <em>what ML does</em> vs <em>how it is implemented</em>.
 </p>
 <div class="two-col">
-  <div>{_chart(c_paradigm, "ML paradigms")}</div>
-  <div>{_chart(c_method, "ML methods")}</div>
+  <div>{_chart(c_ml_role, "ML roles")}</div>
+  <div>{_chart(c_ml_algo, "ML algorithms")}</div>
 </div>
 
-<h3>Research scope × ML paradigm heatmap</h3>
+{"" if not c_ml_strategy else f"""
+<h3>Cross-cutting ML strategies</h3>
+<p>Advanced methodological approaches noted as significant contributions: transfer learning,
+explainability (SHAP/LIME), physics-hybrid architectures, ensemble stacking, and active learning.</p>
+{_chart(c_ml_strategy, "ML strategies")}
+"""}
+
+{"" if not c_ml_data_src else f"""
+<h3>ML training data sources</h3>
+<p>Where the data feeding the ML models originates — distinguishing experiment-driven
+from simulation-dependent sub-fields.</p>
+{_chart(c_ml_data_src, "ML data sources")}
+"""}
+
+<h3>Research scope × ML role heatmap</h3>
 <p>
-  Which research areas pair with which ML approaches?
-  Bright cells indicate strong usage of a paradigm within a scope.
+  Headline co-occurrence matrix: which research areas pair with which ML functional roles?
+  Bright cells indicate the dominant ML application within each fuel research category.
 </p>
-{_chart(c_scope_x_ml, "Scope x ML heatmap")}
+{_chart(c_scope_x_ml, "Scope x ML role heatmap")}
 
 <h3>ML/AI adoption by fuel type</h3>
 <p>
@@ -2398,7 +2504,7 @@ sub-group that employ at least one ML/AI method.</p>
 {"" if not ml_sg_table else f'''
 <h3>ML/AI profile per fuel sub-group</h3>
 <p>Summary of classified papers, ML/AI adoption rate, dominant research scope,
-and most common ML method for each fuel sub-group.</p>
+and most common ML functional role for each fuel sub-group.</p>
 {ml_sg_table}
 ''' }
 {"" if not c_scope_by_sg else f'''
@@ -2406,10 +2512,10 @@ and most common ML method for each fuel sub-group.</p>
 <p>Which LLM-assigned scope categories are most prominent within each fuel sub-group?</p>
 {_chart(c_scope_by_sg, "Scope by sub-group")}
 '''}
-{"" if not c_paradigm_by_sg else f'''
-<h3>ML/AI learning paradigm by fuel sub-group</h3>
-<p>Among papers that employ ML/AI, the dominant learning paradigms per fuel sub-group.</p>
-{_chart(c_paradigm_by_sg, "Paradigm by sub-group")}
+{"" if not c_role_by_sg else f'''
+<h3>ML/AI functional role by fuel sub-group</h3>
+<p>Among papers that employ ML/AI, the dominant ML functional roles per fuel sub-group.</p>
+{_chart(c_role_by_sg, "Role by sub-group")}
 '''}
 
 <h3>Computational and analytical model inventory</h3>
@@ -2657,8 +2763,8 @@ Each distribution is independently clipped at its own IQR-based fence.</p>
   <code>matched_fuel_terms</code>, <code>matched_impact_terms</code> (and their
   stemmed variants) documenting which keywords triggered inclusion.
   LLM-classified records additionally carry <code>llm_fuel_classification</code>,
-  <code>llm_ml_paradigm</code>, <code>llm_ml_method</code>, and
-  <code>llm_models</code> columns for programmatic querying.
+  <code>llm_ml_role</code>, <code>llm_ml_algorithm</code>, <code>llm_ml_strategy</code>,
+  <code>llm_ml_data_source</code>, and <code>llm_models</code> columns for programmatic querying.
 </div>
 
 {_data_quality_note(records, llm_recs, n)}

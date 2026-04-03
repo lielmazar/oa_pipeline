@@ -32,7 +32,7 @@ const CHART_ORDER = [
   'publications_by_year','top_fuel_terms','top_impact_terms',
   'fuel_impact_cooccurrence',
   'top_countries','top_journals','oa_status','work_types','top_institutions',
-  'llm_scope','llm_ml_paradigm','llm_ml_usage',
+  'llm_scope','llm_ml_role','llm_ml_algorithm','llm_ml_usage',
   'fuel_impact_model_cooccurrence',
 ];
 

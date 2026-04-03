@@ -227,13 +227,19 @@ def _pie(labels: list, values: list, title: str) -> plt.Figure:
 def _stacked_hbar(
     labels: list, values: list, title: str, subgroups: list[dict],
     sg_counts: dict | None = None,
+    terms_per_subgroup: int | None = None,
 ) -> plt.Figure:
     """
     Stacked horizontal bar chart.
     Major bars = subgroups (sorted by total count descending).
     Stacked segments = individual terms, shaded within each subgroup's base PALETTE color.
     Count numbers are shown inside segments (not term names).
-    Legend shows only subgroup names.
+
+    When terms_per_subgroup is set:
+      - Each subgroup shows at most that many individual term segments.
+      - Remaining terms collapse into an "Others (N)" segment.
+      - Legend lists individual term names per segment and enumerates "Other" terms.
+    When not set: legend shows only subgroup names (original behaviour).
     """
     import matplotlib.colors as mcolors
 
@@ -266,6 +272,22 @@ def _stacked_hbar(
     if not sg_items:
         return None
 
+    # Apply terms-per-subgroup cap
+    # other_terms_map[sg_name] = list of term names that were collapsed into "Others"
+    other_terms_map: dict[str, list[str]] = {}
+    if terms_per_subgroup is not None and terms_per_subgroup > 0:
+        capped: dict[str, list[tuple[str, int]]] = {}
+        for sg_name, items in sg_items.items():
+            if len(items) > terms_per_subgroup:
+                top  = items[:terms_per_subgroup]
+                rest = items[terms_per_subgroup:]
+                rest_count = sum(c for _, c in rest)
+                other_terms_map[sg_name] = [t for t, _ in rest]
+                capped[sg_name] = top + [(f"Others ({len(rest)})", rest_count)]
+            else:
+                capped[sg_name] = items
+        sg_items = capped
+
     # Sort subgroups by total count descending (largest bar at top for hbar)
     ordered = sorted(sg_items.items(), key=lambda x: sum(c for _, c in x[1]))
 
@@ -293,13 +315,27 @@ def _stacked_hbar(
             ax.barh(sg_i, count, left=left, color=color, height=0.65, zorder=3,
                     edgecolor="white", linewidth=0.5)
 
-            # Show count number inside segment if wide enough (>= 5% of max bar)
+            # Show count number inside segment if wide enough (>= 4% of max bar)
             if count >= max_total * 0.04:
                 luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
                 text_color = "white" if luminance < 0.55 else TEXT_COLOR
                 ax.text(left + count / 2, sg_i, f"{count:,}",
                         ha="center", va="center", fontsize=7.5, color=text_color,
                         fontweight="bold", clip_on=True)
+
+            # Per-term legend entries when terms_per_subgroup is active
+            if terms_per_subgroup is not None:
+                is_others_seg = term.startswith("Others (")
+                if is_others_seg:
+                    rest = other_terms_map.get(sg_name, [])
+                    rest_str = ", ".join(rest)
+                    if len(rest_str) > 72:
+                        rest_str = rest_str[:69] + "…"
+                    lbl = f"[{sg_name}] Other terms: {rest_str}"
+                else:
+                    lbl = f"[{sg_name}] {term}"
+                legend_patches.append(mpatches.Patch(color=mcolors.to_hex(color), label=lbl))
+
             left += count
 
         # Total label: use actual distinct-record count from sg_counts when available,
@@ -308,7 +344,9 @@ def _stacked_hbar(
         ax.text(left + max_total * 0.015, sg_i, f"{display_total:,}",
                 va="center", fontsize=9, color=MUTED)
 
-        legend_patches.append(mpatches.Patch(color=sg_base_hex[sg_name], label=sg_name))
+        # Subgroup-level legend entry when not in per-term mode
+        if terms_per_subgroup is None:
+            legend_patches.append(mpatches.Patch(color=sg_base_hex[sg_name], label=sg_name))
 
     ax.set_yticks(range(n_sg))
     ax.set_yticklabels(sg_names, fontsize=10)
@@ -319,9 +357,15 @@ def _stacked_hbar(
     ax.set_xlim(0, max_total * 1.18)
 
     if legend_patches:
-        ax.legend(handles=legend_patches, loc="lower right",
-                  fontsize=8, framealpha=0.8,
-                  title="Subgroup", title_fontsize=9)
+        if terms_per_subgroup is not None:
+            # Legend outside the axes to avoid overlap with (potentially many) entries
+            ax.legend(handles=legend_patches, loc="upper left",
+                      bbox_to_anchor=(1.02, 1), fontsize=7.5, framealpha=0.8,
+                      title="Terms per bar", title_fontsize=8, borderaxespad=0)
+        else:
+            ax.legend(handles=legend_patches, loc="lower right",
+                      fontsize=8, framealpha=0.8,
+                      title="Subgroup", title_fontsize=9)
 
     fig.tight_layout()
     return fig
@@ -333,20 +377,26 @@ def _cooccurrence_heatmap(
 ) -> plt.Figure:
     """
     2D heatmap: fuel subgroups (X) × impact subgroups (Y).
-    rows: (fuel_term, impact_term, count)
+    rows: (openalex_id, fuel_term, impact_term) — DISTINCT rows, one per paper×term pair.
+    Counts distinct papers per subgroup cell to avoid double-counting multi-term papers.
     """
     fuel_map, fuel_others = _build_term_sg_map(fuel_sgs)
     impact_map, impact_others = _build_term_sg_map(impact_sgs)
 
-    # Aggregate to subgroup level
-    matrix: dict[tuple[str, str], int] = {}
+    # Aggregate to subgroup level: collect distinct openalex_ids per cell
+    matrix_sets: dict[tuple[str, str], set] = {}
     for row in rows:
-        fuel_term = str(row[0] or "")
-        impact_term = str(row[1] or "")
-        count = int(row[2] or 0)
+        oid         = str(row[0] or "")
+        fuel_term   = str(row[1] or "")
+        impact_term = str(row[2] or "")
         fsig = fuel_map.get(fuel_term.lower(), fuel_others)
         isig = impact_map.get(impact_term.lower(), impact_others)
-        matrix[(fsig, isig)] = matrix.get((fsig, isig), 0) + count
+        key = (fsig, isig)
+        if key not in matrix_sets:
+            matrix_sets[key] = set()
+        matrix_sets[key].add(oid)
+
+    matrix: dict[tuple[str, str], int] = {k: len(v) for k, v in matrix_sets.items()}
 
     if not matrix:
         return None
@@ -511,6 +561,7 @@ def generate(
     pipeline_config: dict | None = None,
     subgroup_key: str | None = None,
     subset_sql: str | None = None,
+    terms_per_subgroup: int | None = None,
 ) -> bytes:
     """
     Run *sql* against *db_path*, render a matplotlib chart, return PNG bytes.
@@ -624,7 +675,7 @@ def generate(
                 sg_counts = {str(r[0]): int(r[1]) for r in sg_rows}
             except Exception:
                 sg_counts = {}
-            fig = _stacked_hbar(labels, values, title, subgroups, sg_counts)
+            fig = _stacked_hbar(labels, values, title, subgroups, sg_counts, terms_per_subgroup)
             return _to_png(fig) if fig else _empty_png(title)
         elif chart_type == "hbar":
             fig = _hbar(labels, values, title)
