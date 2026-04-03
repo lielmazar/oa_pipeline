@@ -19,7 +19,6 @@ function _rvBuildWhere(fs) {
     parts.push(`primary_location_source_host_organization_name LIKE '%${p}%'`);
   }
   if (fs.sourceType) parts.push(`primary_location_source_type = '${fs.sourceType.replace(/'/g,"''")}'`);
-  if (fs.hideRetracted) parts.push(`(is_retracted IS NULL OR is_retracted = 0)`);
   // Fuel subgroup: prefer DB column (matched_fuel_subgroups), fall back to terms list
   if (fs.fuelSubgroupName) {
     const sgName = fs.fuelSubgroupName.replace(/'/g, "''");
@@ -27,6 +26,11 @@ function _rvBuildWhere(fs) {
       `(EXISTS (SELECT 1 FROM json_each(matched_fuel_subgroups) WHERE value = '${sgName}')` +
       ` OR EXISTS (SELECT 1 FROM json_each(matched_fuel_terms) WHERE value IN (${(fs.fuelSubgroupTerms||[]).map(t=>`'${t.replace(/'/g,"''")}'`).join(',')||"''"})))`
     );
+  }
+  // Specific fuel term within a subgroup
+  if (fs.fuelTermName) {
+    const t = fs.fuelTermName.replace(/'/g, "''");
+    parts.push(`EXISTS (SELECT 1 FROM json_each(matched_fuel_terms) WHERE LOWER(value) = LOWER('${t}'))`);
   }
   // Impact subgroup: same dual approach
   if (fs.impactSubgroupName) {
@@ -36,7 +40,20 @@ function _rvBuildWhere(fs) {
       ` OR EXISTS (SELECT 1 FROM json_each(matched_impact_terms) WHERE value IN (${(fs.impactSubgroupTerms||[]).map(t=>`'${t.replace(/'/g,"''")}'`).join(',')||"''"})))`
     );
   }
+  // Specific impact term within a subgroup
+  if (fs.impactTermName) {
+    const t = fs.impactTermName.replace(/'/g, "''");
+    parts.push(`EXISTS (SELECT 1 FROM json_each(matched_impact_terms) WHERE LOWER(value) = LOWER('${t}'))`);
+  }
   return parts;
+}
+
+// Build SQL for saving a subset (base query + WHERE conditions, no ORDER BY)
+function _rvSubsetSql(base, where) {
+  const clean = base.trim().replace(/;+$/, '');
+  let s = `SELECT * FROM (${clean}) _q`;
+  if (where.length) s += ` WHERE ${where.join(' AND ')}`;
+  return s;
 }
 function _rvPageSql(base, where, sortBy, sortDir, page, perPage) {
   const clean = base.trim().replace(/;+$/,'');
@@ -63,7 +80,8 @@ function _rvExportSql(base, where, sortBy, sortDir) {
 
 const RV_PER_PAGE = 50;
 
-function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
+function RecordViewerPanel({ pipeline, initialSql, title, onClose,
+  initialFuelSubgroup, initialImpactSubgroup, onSubsetSaved, embedded = false }) {
   // SQL base (what the user can edit)
   const [sql, setSql] = useState(initialSql || 'SELECT * FROM filtered_records');
 
@@ -88,17 +106,23 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
 
   // Filter state
   const [filterText, setFilterText]               = useState('');
-  const [subgroupFilter, setSubgroupFilter]       = useState('');   // fuel
-  const [impactSubgroupFilter, setImpactSubgroupFilter] = useState(''); // impact
+  const [subgroupFilter, setSubgroupFilter]       = useState(initialFuelSubgroup || '');   // fuel subgroup
+  const [fuelTermFilter, setFuelTermFilter]       = useState('');   // specific fuel term within subgroup
+  const [impactSubgroupFilter, setImpactSubgroupFilter] = useState(initialImpactSubgroup || ''); // impact subgroup
+  const [impactTermFilter, setImpactTermFilter]   = useState('');   // specific impact term within subgroup
   const [yearFrom, setYearFrom]                   = useState('');
   const [yearTo, setYearTo]                       = useState('');
   const [oaStatus, setOaStatus]                   = useState('');
   const [recType, setRecType]                     = useState('');
   const [publisherFilter, setPublisherFilter]     = useState('');
   const [sourceType, setSourceType]               = useState('');
-  const [hideRetracted, setHideRetracted]         = useState(true);
   const [sortBy, setSortBy]                       = useState('');
   const [sortDir, setSortDir]                     = useState('desc');
+
+  // Save-as-subset prompt state
+  const [savePromptOpen, setSavePromptOpen] = useState(false);
+  const [subsetName, setSubsetName]         = useState('');
+  const [savingSubset, setSavingSubset]     = useState(false);
 
   // Derive subgroup definitions from pipeline config
   const fuelSubgroups = useMemo(() => {
@@ -128,13 +152,15 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   const whereParts = useMemo(
     () => _rvBuildWhere({
       textSearch: filterText, yearFrom, yearTo, oaStatus, recordType: recType,
-      publisherFilter, sourceType, hideRetracted,
+      publisherFilter, sourceType,
       fuelSubgroupName: subgroupFilter || null,
       fuelSubgroupTerms,
+      fuelTermName: fuelTermFilter || null,
       impactSubgroupName: impactSubgroupFilter || null,
       impactSubgroupTerms,
+      impactTermName: impactTermFilter || null,
     }),
-    [filterText, yearFrom, yearTo, oaStatus, recType, publisherFilter, sourceType, hideRetracted, subgroupFilter, fuelSubgroupTerms, impactSubgroupFilter, impactSubgroupTerms]
+    [filterText, yearFrom, yearTo, oaStatus, recType, publisherFilter, sourceType, subgroupFilter, fuelSubgroupTerms, fuelTermFilter, impactSubgroupFilter, impactSubgroupTerms, impactTermFilter]
   );
 
   // ── Fetch count ────────────────────────────────────────────────────────────
@@ -197,6 +223,24 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   };
 
   // ── CSV export (full result set, no pagination) ────────────────────────────
+  const _CSV_EXCLUDE = new Set(['is_retracted', 'matched_fuel_stems', 'matched_impact_stems']);
+  const _CSV_RENAME = {
+    primary_location_source_host_organization_name: 'publisher',
+    primary_location_source_display_name: 'journal',
+    primary_location_source_type: 'source_type',
+    primary_location_source_issn_l: 'issn_l',
+    primary_location_is_oa: 'location_is_oa',
+    primary_location_landing_page_url: 'landing_page_url',
+    primary_location_license: 'license',
+    open_access_is_oa: 'is_oa',
+    open_access_any_repository_has_fulltext: 'any_repo_fulltext',
+    open_access_oa_status: 'oa_status',
+    open_access_oa_url: 'oa_url',
+    best_oa_location_license: 'best_oa_license',
+    best_oa_location_pdf_url: 'best_oa_pdf_url',
+    best_oa_location_version: 'best_oa_version',
+  };
+
   const exportCsv = async () => {
     setExporting(true);
     try {
@@ -207,9 +251,12 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
       });
       const d = await res.json();
       if (d.error || !d.rows) { alert(d.error || 'Export failed'); return; }
+      // Filter and rename columns
+      const idxs = d.columns.map((c, i) => (!_CSV_EXCLUDE.has(c) ? i : -1)).filter(i => i >= 0);
+      const headers = idxs.map(i => _CSV_RENAME[d.columns[i]] || d.columns[i]);
       const csvRows = [
-        d.columns.join(','),
-        ...d.rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+        headers.join(','),
+        ...d.rows.map(r => idxs.map(i => `"${String(r[i] ?? '').replace(/"/g, '""')}"`).join(','))
       ];
       const a = document.createElement('a');
       a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvRows.join('\n'));
@@ -235,12 +282,13 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
     }
   };
 
-  // Escape key
+  // Escape key (non-embedded only — in embedded mode the split layout owns the close)
   useEffect(() => {
+    if (embedded) return;
     const h = e => { if (e.key === 'Escape' && !selectedRecord) onClose(); };
     document.addEventListener('keydown', h);
     return () => document.removeEventListener('keydown', h);
-  }, [onClose, selectedRecord]);
+  }, [onClose, selectedRecord, embedded]);
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const ci           = useCallback(n => cols.indexOf(n), [cols]);
@@ -248,12 +296,46 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
   const isRecordView = TITLE_I >= 0;
   const totalPages   = totalCount != null ? Math.ceil(totalCount / RV_PER_PAGE) : null;
 
-  const hasActiveFilters = !!(filterText || subgroupFilter || impactSubgroupFilter || yearFrom || yearTo || oaStatus || recType || publisherFilter || sourceType || !hideRetracted || sortBy);
+  const hasActiveFilters = !!(filterText || subgroupFilter || fuelTermFilter || impactSubgroupFilter || impactTermFilter || yearFrom || yearTo || oaStatus || recType || publisherFilter || sourceType || sortBy);
   const clearFilters = () => {
-    setFilterText(''); setSubgroupFilter(''); setImpactSubgroupFilter('');
+    setFilterText('');
+    setSubgroupFilter(''); setFuelTermFilter('');
+    setImpactSubgroupFilter(''); setImpactTermFilter('');
     setYearFrom(''); setYearTo(''); setOaStatus(''); setRecType('');
     setPublisherFilter(''); setSourceType('');
-    setHideRetracted(true); setSortBy('');
+    setSortBy('');
+  };
+
+  // Subgroup change handlers — reset corresponding term filter when subgroup changes
+  const handleFuelSubgroupChange = (name) => {
+    setSubgroupFilter(name);
+    setFuelTermFilter('');
+  };
+  const handleImpactSubgroupChange = (name) => {
+    setImpactSubgroupFilter(name);
+    setImpactTermFilter('');
+  };
+
+  // ── Save as subset ─────────────────────────────────────────────────────────
+  const doSaveSubset = async () => {
+    const name = subsetName.trim();
+    if (!name) return;
+    setSavingSubset(true);
+    try {
+      const subsetSql = _rvSubsetSql(sql, whereParts);
+      const res = await apiFetch('/api/subsets', {
+        method: 'POST',
+        body: JSON.stringify({ pipeline_id: pipeline.id, name, sql: subsetSql }),
+      });
+      if (res.ok) {
+        setSavePromptOpen(false);
+        setSubsetName('');
+        if (onSubsetSaved) onSubsetSaved();
+      } else {
+        const d = await res.json();
+        alert(d.error || 'Failed to save subset');
+      }
+    } finally { setSavingSubset(false); }
   };
 
   // ── Collapsible bar ────────────────────────────────────────────────────────
@@ -295,33 +377,64 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="fixed right-0 flex flex-col bg-white border-l border-gray-200 shadow-2xl z-30"
-      style={{ top: '48px', height: 'calc(100vh - 48px)', width: '480px' }}>
+    <div className={embedded
+        ? "flex flex-col h-full bg-white"
+        : "fixed right-0 flex flex-col bg-white border-l border-gray-200 shadow-2xl z-30"}
+      style={embedded ? {} : { top: '48px', height: 'calc(100vh - 48px)', width: '480px' }}>
 
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white flex-shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-semibold text-gray-800 truncate">{title || 'Record Viewer'}</span>
-          <span className="text-xs text-gray-400 flex-shrink-0">
-            {countLoading ? '…' : totalCount != null ? `${totalCount.toLocaleString()} records` : ''}
-          </span>
+      <div className="relative flex-shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm font-semibold text-gray-800 truncate">{title || 'Record Viewer'}</span>
+            <span className="text-xs text-gray-400 flex-shrink-0">
+              {countLoading ? '…' : totalCount != null ? `${totalCount.toLocaleString()} records` : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+            {hasActiveFilters && onSubsetSaved && (
+              <button onClick={() => setSavePromptOpen(true)}
+                title="Save current filtered view as a named subset for the report"
+                className="flex items-center gap-1 text-xs px-2.5 py-1 border border-indigo-300 rounded-lg text-indigo-600 hover:bg-indigo-50 transition">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+                </svg>
+                Save subset
+              </button>
+            )}
+            <button onClick={exportCsv} disabled={exporting || !totalCount}
+              title="Export all matching records as CSV"
+              className="flex items-center gap-1 text-xs px-2.5 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 hover:border-green-400 hover:text-green-700 transition disabled:opacity-40">
+              {exporting
+                ? <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                : <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>}
+              CSV
+            </button>
+            <button onClick={onClose} title="Close (Esc)"
+              className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2 ml-2 flex-shrink-0">
-          <button onClick={exportCsv} disabled={exporting || !totalCount}
-            title="Export all matching records as CSV"
-            className="flex items-center gap-1 text-xs px-2.5 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 hover:border-green-400 hover:text-green-700 transition disabled:opacity-40">
-            {exporting
-              ? <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
-              : <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>}
-            CSV
-          </button>
-          <button onClick={onClose} title="Close (Esc)"
-            className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
-            </svg>
-          </button>
-        </div>
+        {/* Save-as-subset inline prompt */}
+        {savePromptOpen && (
+          <div className="absolute top-0 left-0 right-0 flex items-center gap-2 px-4 py-3 bg-indigo-50 border-b border-indigo-200 z-10">
+            <span className="text-xs text-indigo-700 font-medium whitespace-nowrap">Subset name:</span>
+            <input autoFocus value={subsetName} onChange={e => setSubsetName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') doSaveSubset(); if (e.key === 'Escape') { setSavePromptOpen(false); setSubsetName(''); } }}
+              placeholder="e.g. SAF papers 2018–2024"
+              className="flex-1 text-xs border border-indigo-300 rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-400" />
+            <button onClick={doSaveSubset} disabled={!subsetName.trim() || savingSubset}
+              className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 transition flex items-center gap-1">
+              {savingSubset && <span className="w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin inline-block" />}
+              Save
+            </button>
+            <button onClick={() => { setSavePromptOpen(false); setSubsetName(''); }}
+              className="text-xs text-indigo-500 hover:text-indigo-700 transition">Cancel</button>
+          </div>
+        )}
       </div>
 
       {/* Filter & Order (collapsible) */}
@@ -336,146 +449,122 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
           )}
         />
         {showFilters && (
-          <div className="px-4 py-3 space-y-3 bg-white">
+          <div className="px-3 py-2.5 space-y-2 bg-white">
 
-            {/* Fuel sub-group filter */}
-            <SubgroupPills
-              label="Fuel sub-group"
-              subgroups={fuelSubgroups}
-              active={subgroupFilter}
-              onSelect={setSubgroupFilter}
-            />
+            {/* Fuel sub-group + optional term drill-down */}
+            <SubgroupPills label="Fuel" subgroups={fuelSubgroups} active={subgroupFilter} onSelect={handleFuelSubgroupChange} />
+            {subgroupFilter && (() => {
+              const terms = fuelSubgroups.find(s => s.name === subgroupFilter)?.terms || [];
+              if (!terms.length) return null;
+              return (
+                <div className="pl-2 border-l-2 border-orange-200 flex flex-wrap gap-1">
+                  <button onClick={() => setFuelTermFilter('')}
+                    className={`text-xs px-2 py-0.5 rounded-full border transition ${!fuelTermFilter ? 'bg-orange-400 text-white border-orange-400' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-300'}`}>All</button>
+                  {terms.map(t => (
+                    <button key={t} onClick={() => setFuelTermFilter(t === fuelTermFilter ? '' : t)}
+                      className={`text-xs px-2 py-0.5 rounded-full border transition ${fuelTermFilter === t ? 'bg-orange-400 text-white border-orange-400' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-300'}`}>{t}</button>
+                  ))}
+                </div>
+              );
+            })()}
 
-            {/* Impact sub-group filter */}
-            <SubgroupPills
-              label="Impact sub-group"
-              subgroups={impactSubgroups}
-              active={impactSubgroupFilter}
-              onSelect={setImpactSubgroupFilter}
-            />
+            {/* Impact sub-group + optional term drill-down */}
+            <SubgroupPills label="Impact" subgroups={impactSubgroups} active={impactSubgroupFilter} onSelect={handleImpactSubgroupChange} />
+            {impactSubgroupFilter && (() => {
+              const terms = impactSubgroups.find(s => s.name === impactSubgroupFilter)?.terms || [];
+              if (!terms.length) return null;
+              return (
+                <div className="pl-2 border-l-2 border-teal-200 flex flex-wrap gap-1">
+                  <button onClick={() => setImpactTermFilter('')}
+                    className={`text-xs px-2 py-0.5 rounded-full border transition ${!impactTermFilter ? 'bg-teal-500 text-white border-teal-500' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-300'}`}>All</button>
+                  {terms.map(t => (
+                    <button key={t} onClick={() => setImpactTermFilter(t === impactTermFilter ? '' : t)}
+                      className={`text-xs px-2 py-0.5 rounded-full border transition ${impactTermFilter === t ? 'bg-teal-500 text-white border-teal-500' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-300'}`}>{t}</button>
+                  ))}
+                </div>
+              );
+            })()}
 
             {/* Text search */}
             <div className="relative">
-              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none"
-                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
               </svg>
               <input value={filterText} onChange={e => setFilterText(e.target.value)}
                 placeholder="Search title / abstract…"
-                className="w-full pl-8 pr-7 py-1.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                className="w-full pl-7 pr-6 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400" />
               {filterText && (
-                <button onClick={() => setFilterText('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm leading-none">×</button>
+                <button onClick={() => setFilterText('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm leading-none">×</button>
               )}
             </div>
 
-            {/* Year range */}
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Year from</div>
-                <input type="number" value={yearFrom} onChange={e => setYearFrom(e.target.value)}
-                  placeholder="e.g. 2018"
-                  className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-              </div>
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Year to</div>
-                <input type="number" value={yearTo} onChange={e => setYearTo(e.target.value)}
-                  placeholder="e.g. 2024"
-                  className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-              </div>
-            </div>
-
-            {/* OA status + Record type */}
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <div className="text-xs text-gray-400 mb-1">OA status</div>
-                <select value={oaStatus} onChange={e => setOaStatus(e.target.value)}
-                  className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                  <option value="">Any</option>
-                  <option value="open_any">Open (any)</option>
-                  <option value="gold">Gold OA</option>
-                  <option value="green">Green OA</option>
-                  <option value="hybrid">Hybrid OA</option>
-                  <option value="bronze">Bronze OA</option>
-                  <option value="closed">Closed</option>
-                </select>
-              </div>
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Record type</div>
-                <select value={recType} onChange={e => setRecType(e.target.value)}
-                  className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                  <option value="">Any</option>
-                  <option value="article">Article</option>
-                  <option value="proceedings-article">Conference paper</option>
-                  <option value="review">Review</option>
-                  <option value="book-chapter">Book chapter</option>
-                  <option value="dataset">Dataset</option>
-                  <option value="preprint">Preprint</option>
-                  <option value="supplementary-materials">Supplemental material</option>
-                  <option value="report">Report</option>
-                  <option value="paratext">Paratext</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Publisher filter */}
-            <div>
-              <div className="text-xs text-gray-400 mb-1">Publisher (contains)</div>
-              <div className="relative">
-                <input value={publisherFilter} onChange={e => setPublisherFilter(e.target.value)}
-                  placeholder="e.g. Elsevier, Springer…"
-                  className="w-full text-xs border border-gray-300 rounded-lg px-2 pr-6 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-                {publisherFilter && (
-                  <button onClick={() => setPublisherFilter('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm">×</button>
-                )}
-              </div>
-            </div>
-
-            {/* Source type */}
-            <div>
-              <div className="text-xs text-gray-400 mb-1">Source type</div>
-              <select value={sourceType} onChange={e => setSourceType(e.target.value)}
-                className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                <option value="">Any</option>
-                <option value="journal">Journal</option>
-                <option value="conference">Conference</option>
-                <option value="repository">Repository</option>
-                <option value="ebook platform">eBook platform</option>
-                <option value="book series">Book series</option>
-                <option value="metadata">Metadata</option>
+            {/* Year + OA + Type in one compact row */}
+            <div className="grid grid-cols-4 gap-1.5 items-end">
+              <input type="number" value={yearFrom} onChange={e => setYearFrom(e.target.value)}
+                placeholder="Year from"
+                className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              <input type="number" value={yearTo} onChange={e => setYearTo(e.target.value)}
+                placeholder="Year to"
+                className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+              <select value={oaStatus} onChange={e => setOaStatus(e.target.value)}
+                className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                <option value="">OA: any</option>
+                <option value="open_any">Open</option>
+                <option value="gold">Gold</option>
+                <option value="green">Green</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="bronze">Bronze</option>
+                <option value="closed">Closed</option>
+              </select>
+              <select value={recType} onChange={e => setRecType(e.target.value)}
+                className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                <option value="">Type: any</option>
+                <option value="article">Article</option>
+                <option value="proceedings-article">Conference</option>
+                <option value="review">Review</option>
+                <option value="book-chapter">Book ch.</option>
+                <option value="preprint">Preprint</option>
+                <option value="report">Report</option>
               </select>
             </div>
 
-            {/* Retracted toggle with explanation */}
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input type="checkbox" checked={hideRetracted} onChange={e => setHideRetracted(e.target.checked)}
-                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-400" />
-                <span className="text-xs text-gray-600">Hide retracted papers</span>
-              </label>
-              <span className="text-xs text-gray-400 cursor-help"
-                title="Retracted papers are publications that have been formally withdrawn by the journal after issues were found (e.g. data fabrication, errors). They are kept in the database but flagged.">
-                ⓘ
-              </span>
+            {/* Publisher + Source type */}
+            <div className="grid grid-cols-2 gap-1.5">
+              <div className="relative">
+                <input value={publisherFilter} onChange={e => setPublisherFilter(e.target.value)}
+                  placeholder="Publisher…"
+                  className="w-full text-xs border border-gray-300 rounded px-2 pr-5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                {publisherFilter && (
+                  <button onClick={() => setPublisherFilter('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm">×</button>
+                )}
+              </div>
+              <select value={sourceType} onChange={e => setSourceType(e.target.value)}
+                className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                <option value="">Source: any</option>
+                <option value="journal">Journal</option>
+                <option value="conference">Conference</option>
+                <option value="repository">Repository</option>
+                <option value="ebook platform">eBook</option>
+                <option value="book series">Book series</option>
+              </select>
             </div>
 
             {/* Sort */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400 flex-shrink-0">Sort by</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-400 flex-shrink-0">Sort</span>
               <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-                className="flex-1 text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                <option value="">— relevance —</option>
+                className="flex-1 text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                <option value="">— default —</option>
                 <option value="publication_year">Year</option>
                 <option value="fwci">FWCI</option>
                 <option value="cited_by_count">Citations</option>
-                <option value="title">Title (A–Z)</option>
+                <option value="title">Title A–Z</option>
                 <option value="llm_confidence">LLM confidence</option>
               </select>
               {sortBy && (
                 <button onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
-                  className="flex-shrink-0 text-xs border border-gray-300 rounded-lg px-2.5 py-1.5 hover:bg-gray-50 transition min-w-[52px] text-center">
-                  {sortDir === 'desc' ? '↓ Desc' : '↑ Asc'}
+                  className="flex-shrink-0 text-xs border border-gray-300 rounded px-2 py-1 hover:bg-gray-50 transition">
+                  {sortDir === 'desc' ? '↓' : '↑'}
                 </button>
               )}
             </div>
@@ -539,7 +628,6 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
 
                 const MFUEL_SG_I = ci('matched_fuel_subgroups');
                 const CITE_I     = ci('cited_by_count');
-                const RETRACTED_I = ci('is_retracted');
 
                 const oaId    = OAID_I >= 0 ? (row[OAID_I] || '') : '';
                 const rowKey  = oaId || String(ri);
@@ -557,7 +645,6 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
                 const fuel    = parseArr(mfuel);
                 const imp     = parseArr(mimp);
                 const citeCount = CITE_I >= 0 && row[CITE_I] != null ? Number(row[CITE_I]) : null;
-                const isRetracted = RETRACTED_I >= 0 && row[RETRACTED_I];
                 // Prefer DB-stored subgroups; fall back to client-side computation
                 const dbSgs   = MFUEL_SG_I >= 0 ? row[MFUEL_SG_I] : null;
                 const rowSgs  = dbSgs ? parseArr(dbSgs) : computeRowSubgroups(mfuel, fuelSubgroups);
@@ -579,7 +666,6 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose }) {
 
                     {/* Meta chips */}
                     <div className="flex flex-wrap gap-1 mt-1.5 items-center">
-                      {isRetracted && <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-semibold">RETRACTED</span>}
                       {year  && <span className="text-xs text-gray-500 font-medium">{year}</span>}
                       {oaSt  && <span className={`text-xs px-1.5 py-0.5 rounded ${OA_CHIP[oaSt]||'bg-gray-100 text-gray-500'}`}>{oaSt}</span>}
                       {src   && <span className="text-xs text-gray-400 italic truncate max-w-[140px]">{src}</span>}

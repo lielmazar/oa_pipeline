@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
 """
+#!/usr/bin/env python3
 generate_report.py
 ==================
 Generate a self-contained HTML report from the filtered OpenAlex SQLite DB.

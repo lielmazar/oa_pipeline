@@ -1,12 +1,99 @@
 // ── Combined ReportStage ───────────────────────────────────────────────────────
 
-const TOP_N = 20; // fixed, no UI slider
+const TOP_N = 20;
+const SPLIT_MIN = 25;  // minimum % for each pane
+const SPLIT_MAX = 75;
+const NAV_HEIGHT = 48; // px — top app bar height
 
 function ReportStage({ pipeline, isLLM, pipelineStatus }) {
-  const [querySql, setQuerySql] = useState('SELECT * FROM filtered_records LIMIT 20');
-  const [chartConfigs, setChartConfigs] = useState(null); // null = loading
-  const [recordViewer, setRecordViewer] = useState(null); // { sql, title } | null
-  const [expandedSg, setExpandedSg] = useState({}); // "gi-si" → bool
+  const [chartConfigs, setChartConfigs] = useState(null);
+  const [recordViewer, setRecordViewer] = useState(null);
+  const [expandedSg, setExpandedSg]     = useState({});
+
+  // ── Saved subsets ──────────────────────────────────────────────────────────
+  const [subsets, setSubsets]           = useState([]);
+  const [activeSubsetIdx, setActiveSubsetIdx] = useState(null);
+
+  // ── Split pane ─────────────────────────────────────────────────────────────
+  const [splitRatio, setSplitRatio]     = useState(58);   // left pane %
+  const [narrowTab, setNarrowTab]       = useState('charts'); // 'charts' | 'records'
+  const [isNarrow, setIsNarrow]         = useState(() => window.innerWidth < 768);
+  const splitContainerRef               = useRef(null);
+  const isDragging                      = useRef(false);
+
+  useEffect(() => {
+    const fn = () => setIsNarrow(window.innerWidth < 768);
+    window.addEventListener('resize', fn);
+    return () => window.removeEventListener('resize', fn);
+  }, []);
+
+  // When viewer is closed, reset tab to charts
+  useEffect(() => {
+    if (!recordViewer) setNarrowTab('charts');
+  }, [recordViewer]);
+
+  const onDividerMouseDown = useCallback((e) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor      = 'col-resize';
+    document.body.style.userSelect  = 'none';
+
+    const onMove = (ev) => {
+      if (!splitContainerRef.current) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const pct  = Math.max(SPLIT_MIN, Math.min(SPLIT_MAX,
+        (ev.clientX - rect.left) / rect.width * 100));
+      setSplitRatio(Math.round(pct * 10) / 10);
+    };
+    const onUp = () => {
+      isDragging.current = false;
+      document.body.style.cursor     = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
+  // Touch support for divider
+  const onDividerTouchStart = useCallback((e) => {
+    const touch = e.touches[0];
+    const onMove = (ev) => {
+      if (!splitContainerRef.current) return;
+      const t = ev.touches[0];
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const pct = Math.max(SPLIT_MIN, Math.min(SPLIT_MAX,
+        (t.clientX - rect.left) / rect.width * 100));
+      setSplitRatio(Math.round(pct * 10) / 10);
+    };
+    const onEnd = () => {
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
+    };
+    document.addEventListener('touchmove', onMove, { passive: true });
+    document.addEventListener('touchend', onEnd);
+  }, []);
+
+  // ── Data loading ───────────────────────────────────────────────────────────
+  const loadSubsets = useCallback(() => {
+    apiFetch(`/api/subsets?pipeline_id=${pipeline.id}`)
+      .then(r => r.json())
+      .then(data => setSubsets(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [pipeline.id]);
+
+  useEffect(() => { loadSubsets(); }, [loadSubsets]);
+
+  const deleteSubset = async (idx) => {
+    if (!confirm(`Delete subset "${subsets[idx]?.name}"?`)) return;
+    await apiFetch('/api/subsets', {
+      method: 'DELETE',
+      body: JSON.stringify({ pipeline_id: pipeline.id, index: idx }),
+    });
+    if (activeSubsetIdx === idx) setActiveSubsetIdx(null);
+    loadSubsets();
+  };
 
   useEffect(() => {
     apiFetch('/api/charts/configs')
@@ -25,15 +112,15 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
     [chartConfigs]
   );
 
-  const openRecordViewer = (sql, title) => setRecordViewer({ sql, title });
+  const openDatasetRecords = useCallback(() => {
+    const sql   = (activeSubsetIdx != null && subsets[activeSubsetIdx])
+      ? subsets[activeSubsetIdx].sql
+      : 'SELECT * FROM filtered_records';
+    const label = activeSubsetIdx != null ? subsets[activeSubsetIdx].name : 'All Records';
+    setRecordViewer({ sql, title: label });
+    if (isNarrow) setNarrowTab('records');
+  }, [activeSubsetIdx, subsets, isNarrow]);
 
-  // ── Pipeline status ──────────────────────────────────────────────────────
-  const recordCount = pipelineStatus?.record_count;
-  const llmDone     = pipelineStatus?.llm_done;
-  const dbSizeMb    = pipelineStatus?.db_size_mb;
-
-
-  // Derive richer group data including actual term lists
   const groupDataFull = useMemo(() => {
     const groups = _migrateGroups(pipeline.config || {});
     return groups.map(g => ({
@@ -48,109 +135,26 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
     }));
   }, [pipeline.config]);
 
-  // Pull funnel stats from pipeline_status search_progress
-  const prog = pipelineStatus?.search_progress;
+  // ── Shared: main content (charts + sidebar controls) ───────────────────────
+  const renderMainContent = (inSplit) => (
+    <div className={inSplit ? 'space-y-4' : 'space-y-5'}>
 
-  return (
-    <div>
-      {/* ── Stage Summary card ── */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5 mb-5">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-4">
-          {isLLM ? 'LLM Report — Stage Summary' : 'Search Report — Stage Summary'}
-        </h3>
-
-        {/* Top stats row */}
-        <div className="flex flex-wrap gap-8 mb-4">
-          <div>
-            <div className="text-xs text-gray-400 mb-0.5">Saved records</div>
-            <div className="text-2xl font-bold text-gray-900">
-              {recordCount != null ? (
-                <button
-                  onClick={() => openRecordViewer('SELECT * FROM filtered_records', 'All Search Results')}
-                  className="underline decoration-blue-400 hover:text-blue-600 transition-colors">
-                  {recordCount.toLocaleString()}
-                </button>
-              ) : <span className="text-gray-300 text-lg">—</span>}
-            </div>
-            <div className="text-xs text-gray-400">publications matched keywords</div>
-          </div>
-
-          {prog?.seen > 0 && (
-            <div>
-              <div className="text-xs text-gray-400 mb-0.5">Records scanned</div>
-              <div className="text-base font-semibold text-gray-700">{prog.seen.toLocaleString()}</div>
-              {prog.inserted > 0 && (
-                <div className="text-xs text-gray-400">{(prog.inserted / prog.seen * 100).toFixed(3)}% match rate</div>
-              )}
-            </div>
-          )}
-
-          {dbSizeMb != null && (
-            <div>
-              <div className="text-xs text-gray-400 mb-0.5">Database size</div>
-              <div className="text-base font-semibold text-gray-700">{dbSizeMb} MB</div>
-            </div>
-          )}
-
-          {isLLM && (
-            <div>
-              <div className="text-xs text-gray-400 mb-0.5">LLM classified</div>
-              <div className="text-2xl font-bold text-gray-900">
-                {llmDone != null ? (
-                  <button
-                    onClick={() => openRecordViewer(
-                      'SELECT * FROM filtered_records WHERE llm_is_hydrocarbon IS NOT NULL',
-                      'LLM Classified Records'
-                    )}
-                    className="underline decoration-purple-400 hover:text-purple-600 transition-colors">
-                    {llmDone.toLocaleString()}
-                  </button>
-                ) : <span className="text-gray-300 text-lg">—</span>}
-              </div>
-              <div className="text-xs text-gray-400">LLM processed records</div>
-            </div>
-          )}
+      {/* Keyword groups card */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap mb-3">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+            {isLLM ? 'LLM Report' : 'Search Report'} — Keyword Groups
+          </h3>
+          <button onClick={openDatasetRecords}
+            className="text-xs px-3 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition flex items-center gap-1.5 flex-shrink-0">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+            </svg>
+            Open Records Viewer
+          </button>
         </div>
-
-        {/* Screening funnel (when stage 2 data available) */}
-        {prog?.seen > 0 && (() => {
-          const sk = prog.skip_stats || {};
-          const notEn = sk['not_english'] || 0;
-          const noDoi = sk['no_doi'] || 0;
-          const noAbs = sk['no_abstract'] || 0;
-          const noKw  = sk['no_keywords'] || 0;
-          const emAbs = sk['empty_abstract'] || 0;
-          const inserted = prog.inserted || 0;
-          const otherSkip = prog.seen - notEn - noDoi - noAbs - noKw - emAbs - inserted;
-
-          return (
-            <div className="border-t border-gray-100 pt-3 mb-4">
-              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Screening funnel</div>
-              <div className="space-y-1 font-mono text-xs">
-                {[
-                  { label: 'records scanned', count: prog.seen, bold: false },
-                  notEn > 0 && { label: '↳ non-English (pre-screened)', count: notEn, dim: true },
-                  noDoi > 0 && { label: '↳ no DOI', count: noDoi, dim: true },
-                  noAbs > 0 && { label: '↳ no abstract', count: noAbs, dim: true },
-                  noKw  > 0 && { label: '↳ no matching keywords', count: noKw, dim: true },
-                  (emAbs + Math.max(0,otherSkip)) > 0 && { label: '↳ other reasons', count: emAbs + Math.max(0,otherSkip), dim: true },
-                  { label: '✓ saved', count: inserted, green: true },
-                ].filter(Boolean).map((row, i) => (
-                  <div key={i} className={`flex gap-3 ${row.dim ? 'pl-4 text-gray-400' : ''}`}>
-                    <span className={`w-28 text-right ${row.green ? 'text-green-700 font-bold' : row.dim ? 'text-gray-400' : 'text-gray-700 font-semibold'}`}>
-                      {row.count.toLocaleString()}
-                    </span>
-                    <span className={row.green ? 'text-green-700 font-semibold' : ''}>{row.label}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* Keyword group/subgroup breakdown — expandable */}
-        {groupDataFull.length > 0 && (
-          <div className="border-t border-gray-100 pt-4 space-y-4">
+        {groupDataFull.length > 0 ? (
+          <div className="space-y-4">
             {groupDataFull.map((g, gi) => (
               <div key={gi}>
                 <div className="text-xs text-gray-500 font-semibold mb-2">
@@ -159,8 +163,8 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {g.subgroups.map((sg, si) => {
-                    const key = `${gi}-${si}`;
-                    const isExp = !!expandedSg[key];
+                    const key    = `${gi}-${si}`;
+                    const isExp  = !!expandedSg[key];
                     const chipCls = sg.isOthers
                       ? 'border-gray-200 bg-gray-50 text-gray-400'
                       : gi === 0
@@ -171,8 +175,7 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
                         <button
                           onClick={() => setExpandedSg(prev => ({ ...prev, [key]: !isExp }))}
                           className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 transition-colors ${chipCls} hover:opacity-80`}
-                          title="Click to show/hide terms"
-                        >
+                          title="Click to show/hide terms">
                           {sg.name}
                           <span className="opacity-60">({sg.termCount})</span>
                           <span className="ml-0.5 opacity-50">{isExp ? '▲' : '▼'}</span>
@@ -196,46 +199,176 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
               </div>
             ))}
           </div>
+        ) : (
+          <p className="text-xs text-gray-400 italic">No keyword groups configured yet.</p>
         )}
       </div>
 
-      {/* ── Charts grid ── */}
+      {/* Dataset / subset selector */}
+      {subsets.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-3 flex-wrap">
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide flex-shrink-0">Dataset</span>
+          <button
+            onClick={() => setActiveSubsetIdx(null)}
+            className={`text-xs px-3 py-1.5 rounded-full border transition ${activeSubsetIdx === null ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+            All records
+          </button>
+          {subsets.map((s, i) => (
+            <button key={i}
+              onClick={() => setActiveSubsetIdx(i === activeSubsetIdx ? null : i)}
+              className={`text-xs px-3 py-1.5 rounded-full border transition ${activeSubsetIdx === i ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+              {s.name}
+            </button>
+          ))}
+          {activeSubsetIdx != null && (
+            <button onClick={() => deleteSubset(activeSubsetIdx)}
+              className="ml-auto text-xs text-red-400 hover:text-red-600 transition">
+              Delete subset
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Charts grid */}
       {chartConfigs === null ? (
-        <div className="flex items-center justify-center py-20 text-gray-400 mb-4">
+        <div className="flex items-center justify-center py-20 text-gray-400">
           <span className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin mr-2" />
           Loading…
         </div>
       ) : visible.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400 mb-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
           No chart data available yet — run the search stage first.
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div className={`grid gap-4 ${inSplit ? 'grid-cols-1 xl:grid-cols-2' : 'grid-cols-1 lg:grid-cols-2'}`}>
           {visible.map(id => (
             <div key={id} id={`chart-${id}`}>
               <ChartPanel chartId={id} pipelineId={pipeline.id}
                 topN={TOP_N}
                 title={cfgMap[id]?.title || id}
-                sql={cfgMap[id]?.sql || ''}
-                onViewQuery={sql => setQuerySql(sql)} />
+                subsetIdx={activeSubsetIdx}
+                chartParams={cfgMap[id]?.params || []} />
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
 
-      {/* ── Query panel ── */}
-      <QueryPanel pipeline={pipeline} initialSql={querySql} chartConfigs={chartConfigs || []} />
+  // ── Split pane layout (wide screens, viewer open) ──────────────────────────
+  if (recordViewer && !isNarrow) {
+    return (
+      <div style={{ position: 'fixed', top: NAV_HEIGHT, left: 0, right: 0, bottom: 0, zIndex: 20 }}>
+        <div ref={splitContainerRef} className="flex h-full">
 
-      {/* ── Non-modal record viewer ── */}
-      {recordViewer && (
-        <RecordViewerPanel
-          key={recordViewer.sql}
-          pipeline={pipeline}
-          initialSql={recordViewer.sql}
-          title={recordViewer.title}
-          onClose={() => setRecordViewer(null)}
-        />
-      )}
+          {/* Left pane: main content */}
+          <div className="flex flex-col overflow-hidden bg-gray-50"
+            style={{ width: `${splitRatio}%`, minWidth: 0 }}>
+            <div className="flex-1 overflow-y-auto p-5">
+              {renderMainContent(true)}
+            </div>
+          </div>
+
+          {/* Drag divider */}
+          <div
+            onMouseDown={onDividerMouseDown}
+            onTouchStart={onDividerTouchStart}
+            className="relative flex-shrink-0 w-1.5 bg-gray-200 hover:bg-blue-400 active:bg-blue-500 cursor-col-resize transition-colors group select-none"
+            title="Drag to resize">
+            {/* Visible handle pip */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+              w-4 h-10 rounded-full bg-gray-300 group-hover:bg-blue-400 transition-colors
+              flex flex-col items-center justify-center gap-0.5">
+              <div className="w-0.5 h-3 rounded bg-white/70"/>
+              <div className="w-0.5 h-3 rounded bg-white/70"/>
+            </div>
+            {/* Ratio presets — appear on hover */}
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 hidden group-hover:flex
+              flex-col gap-1 bg-white border border-gray-200 rounded-lg shadow-lg p-1.5 z-10 w-14">
+              {[[33,67],[50,50],[60,40],[67,33]].map(([l]) => (
+                <button key={l}
+                  onMouseDown={e => { e.stopPropagation(); setSplitRatio(l); }}
+                  className={`text-xs py-0.5 rounded hover:bg-blue-50 hover:text-blue-600 transition text-center
+                    ${splitRatio === l ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-500'}`}>
+                  {l}/{100-l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Right pane: record viewer (embedded) */}
+          <div className="flex flex-col overflow-hidden border-l border-gray-200"
+            style={{ flex: 1, minWidth: 0 }}>
+            <RecordViewerPanel
+              key={recordViewer.sql + (recordViewer.initialFuelSubgroup || '') + (recordViewer.initialImpactSubgroup || '')}
+              pipeline={pipeline}
+              initialSql={recordViewer.sql}
+              title={recordViewer.title}
+              initialFuelSubgroup={recordViewer.initialFuelSubgroup}
+              initialImpactSubgroup={recordViewer.initialImpactSubgroup}
+              onSubsetSaved={loadSubsets}
+              onClose={() => setRecordViewer(null)}
+              embedded={true}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Narrow screen (mobile/tablet): tab layout ──────────────────────────────
+  if (recordViewer && isNarrow) {
+    return (
+      <div style={{ position: 'fixed', top: NAV_HEIGHT, left: 0, right: 0, bottom: 0, zIndex: 20 }}
+        className="flex flex-col bg-gray-50">
+        {/* Tab bar */}
+        <div className="flex-shrink-0 flex border-b border-gray-200 bg-white">
+          {[['charts','Charts'],['records','Records']].map(([id, label]) => (
+            <button key={id}
+              onClick={() => setNarrowTab(id)}
+              className={`flex-1 py-2.5 text-sm font-medium transition border-b-2 ${
+                narrowTab === id
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}>
+              {label}
+            </button>
+          ))}
+          <button onClick={() => setRecordViewer(null)}
+            className="px-4 text-gray-400 hover:text-gray-700 transition border-b-2 border-transparent">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        {/* Content */}
+        <div className="flex-1 overflow-hidden">
+          {narrowTab === 'charts' ? (
+            <div className="h-full overflow-y-auto p-4">
+              {renderMainContent(false)}
+            </div>
+          ) : (
+            <RecordViewerPanel
+              key={recordViewer.sql}
+              pipeline={pipeline}
+              initialSql={recordViewer.sql}
+              title={recordViewer.title}
+              initialFuelSubgroup={recordViewer.initialFuelSubgroup}
+              initialImpactSubgroup={recordViewer.initialImpactSubgroup}
+              onSubsetSaved={loadSubsets}
+              onClose={() => setRecordViewer(null)}
+              embedded={true}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Default: single column (no viewer open) ────────────────────────────────
+  return (
+    <div className="mb-6">
+      {renderMainContent(false)}
     </div>
   );
 }

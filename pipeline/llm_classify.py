@@ -229,12 +229,17 @@ def _extract_output_text(body: dict) -> str:
 
 # ── Phase 1: Prepare ───────────────────────────────────────────────────────
 
-def phase_prepare(limit: int | None = None, overwrite: bool = False) -> Path | None:
+def phase_prepare(
+    limit: int | None = None,
+    overwrite: bool = False,
+    subset_sql: str | None = None,
+) -> Path | None:
     """
     Export records to a JSONL batch file.
 
     overwrite=True  → include ALL records (re-process existing results).
     overwrite=False → skip records that already have llm_is_hydrocarbon set.
+    subset_sql      → SQL selecting a subset of filtered_records (e.g. from saved subsets).
     """
     BATCH_DIR.mkdir(exist_ok=True)
 
@@ -242,16 +247,25 @@ def phase_prepare(limit: int | None = None, overwrite: bool = False) -> Path | N
     conn.row_factory = sqlite3.Row
     ensure_result_columns(conn)
 
+    if subset_sql:
+        # Wrap subset in a CTE to avoid SQLite self-reference issues
+        clean_subset = subset_sql.strip().rstrip(";")
+        cte = f"WITH _fr_subset AS (\n{clean_subset}\n)\n"
+        table = "_fr_subset"
+    else:
+        cte = ""
+        table = "filtered_records"
+
     if overwrite:
-        query = """
-            SELECT openalex_id, title, abstract_text
-            FROM   filtered_records
+        query = f"""
+            {cte}SELECT openalex_id, title, abstract_text
+            FROM   {table}
             ORDER  BY rowid
         """
     else:
-        query = """
-            SELECT openalex_id, title, abstract_text
-            FROM   filtered_records
+        query = f"""
+            {cte}SELECT openalex_id, title, abstract_text
+            FROM   {table}
             WHERE  llm_is_hydrocarbon IS NULL
             ORDER  BY rowid
         """
@@ -604,7 +618,8 @@ def phase_save(local_file: Path | None = None) -> None:
 # ── Cost Estimator ─────────────────────────────────────────────────────────
 
 def phase_estimate(model: str = "gpt-5.4-nano", limit: int | None = None,
-                   overwrite: bool = False) -> None:
+                   overwrite: bool = False,
+                   subset_sql: str | None = None) -> None:
     """
     Print a cost estimate for unprocessed records.
     No API calls — uses character counts from the local database.
@@ -614,27 +629,34 @@ def phase_estimate(model: str = "gpt-5.4-nano", limit: int | None = None,
         return
 
     conn = sqlite3.connect(DB_PATH)
+
+    if subset_sql:
+        clean_subset = subset_sql.strip().rstrip(";")
+        cte = f"WITH _fr_subset AS (\n{clean_subset}\n)\n"
+        table = "_fr_subset"
+    else:
+        cte = ""
+        table = "filtered_records"
+
     total_in_db = conn.execute(
-        "SELECT COUNT(*) FROM filtered_records"
+        f"{cte}SELECT COUNT(*) FROM {table}"
     ).fetchone()[0]
 
     # llm_is_hydrocarbon may not exist yet — fall back to all records
     try:
         unprocessed_total = conn.execute(
-            "SELECT COUNT(*) FROM filtered_records WHERE llm_is_hydrocarbon IS NULL"
+            f"{cte}SELECT COUNT(*) FROM {table} WHERE llm_is_hydrocarbon IS NULL"
         ).fetchone()[0]
         if overwrite:
-            base_query = (
-                "SELECT title, abstract_text FROM filtered_records ORDER BY rowid"
-            )
+            base_query = f"{cte}SELECT title, abstract_text FROM {table} ORDER BY rowid"
         else:
             base_query = (
-                "SELECT title, abstract_text FROM filtered_records "
+                f"{cte}SELECT title, abstract_text FROM {table} "
                 "WHERE llm_is_hydrocarbon IS NULL ORDER BY rowid"
             )
     except sqlite3.OperationalError:
         unprocessed_total = total_in_db
-        base_query = "SELECT title, abstract_text FROM filtered_records ORDER BY rowid"
+        base_query = f"{cte}SELECT title, abstract_text FROM {table} ORDER BY rowid"
 
     if limit:
         base_query += f" LIMIT {limit}"
@@ -759,6 +781,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="Directory for batch run files (default: batch_runs/)",
     )
+    p.add_argument(
+        "--subset-sql",
+        default=None,
+        metavar="SQL",
+        help="SQL query selecting the subset of filtered_records to process (default: all records)",
+    )
     sub = p.add_subparsers(dest="phase", required=True)
 
     # estimate
@@ -829,12 +857,15 @@ def main() -> None:
     args = build_parser().parse_args()
     _configure_paths(getattr(args, "db", None), getattr(args, "batch_dir", None))
 
+    subset_sql = getattr(args, "subset_sql", None)
+
     if args.phase == "estimate":
         phase_estimate(args.model, args.limit,
-                       overwrite=getattr(args, "overwrite", False))
+                       overwrite=getattr(args, "overwrite", False),
+                       subset_sql=subset_sql)
 
     elif args.phase == "prepare":
-        phase_prepare(args.limit, overwrite=args.overwrite)
+        phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql)
 
     elif args.phase == "submit":
         phase_submit()
@@ -846,7 +877,7 @@ def main() -> None:
         phase_save(local_file=getattr(args, "file", None))
 
     elif args.phase == "run":
-        result = phase_prepare(args.limit, overwrite=args.overwrite)
+        result = phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql)
         if result is None:
             return
         phase_submit()

@@ -1,6 +1,8 @@
-"""Data blueprint — /api/db/*, /api/charts/*, /api/report, /api/log"""
+"""Data blueprint — /api/db/*, /api/charts/*, /api/subsets, /api/report, /api/log"""
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file
@@ -28,6 +30,80 @@ def _get_pipeline_db(pipeline_id: int, uid: int) -> tuple[Path | None, str | Non
     if not db_path.exists():
         return None, "database file not found"
     return db_path, None
+
+
+def _get_subsets_path(pipeline_id: int, uid: int) -> tuple[Path | None, str | None]:
+    """Return (subsets_json_path, error_msg) for a pipeline's saved subsets file."""
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return None, "pipeline not found"
+    db_path_str = pipeline.get("output_db_path")
+    if not db_path_str:
+        return None, "pipeline has no database yet"
+    return Path(db_path_str).parent / "subsets.json", None
+
+
+def _read_subsets(path: Path) -> list:
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+# ── Saved subsets ──────────────────────────────────────────────────────────────
+
+@data_bp.route("/api/subsets", methods=["GET", "POST", "DELETE"])
+def api_subsets():
+    err = require_auth()
+    if err:
+        return err
+    uid = get_current_user_id()
+
+    if request.method == "GET":
+        pipeline_id = request.args.get("pipeline_id", type=int)
+        if not pipeline_id:
+            return jsonify({"error": "pipeline_id required"}), 400
+        path, err_msg = _get_subsets_path(pipeline_id, uid)
+        if err_msg:
+            return jsonify([])   # no DB yet → empty list, not an error
+        return jsonify(_read_subsets(path))
+
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        pipeline_id = data.get("pipeline_id")
+        name = (data.get("name") or "").strip()
+        sql = (data.get("sql") or "").strip()
+        if not pipeline_id or not name or not sql:
+            return jsonify({"error": "pipeline_id, name, and sql required"}), 400
+        path, err_msg = _get_subsets_path(int(pipeline_id), uid)
+        if err_msg:
+            return jsonify({"error": err_msg}), 404
+        subsets = _read_subsets(path)
+        subsets.append({"name": name, "sql": sql,
+                        "created_at": datetime.now(timezone.utc).isoformat()})
+        path.write_text(json.dumps(subsets, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        return jsonify(subsets)
+
+    if request.method == "DELETE":
+        data = request.get_json(silent=True) or {}
+        pipeline_id = data.get("pipeline_id")
+        idx = data.get("index")
+        if not pipeline_id or idx is None:
+            return jsonify({"error": "pipeline_id and index required"}), 400
+        path, err_msg = _get_subsets_path(int(pipeline_id), uid)
+        if err_msg:
+            return jsonify({"error": err_msg}), 404
+        subsets = _read_subsets(path)
+        if 0 <= int(idx) < len(subsets):
+            subsets.pop(int(idx))
+            path.write_text(json.dumps(subsets, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        return jsonify(subsets)
+
+    return jsonify({"error": "method not allowed"}), 405
 
 
 # ── DB schema ──────────────────────────────────────────────────────────────────
@@ -200,7 +276,18 @@ def api_chart_image():
     pipeline_config = (pipeline.get("config") or {}) if pipeline else {}
 
     cfg = CHART_QUERIES[chart_id]
-    sql = get_chart_sql(chart_id, top_n)
+    cutoff_year = request.args.get("cutoff_year", 2000, type=int)
+    sql = get_chart_sql(chart_id, top_n, cutoff_year)
+
+    # Optional: render chart over a saved subset instead of all records
+    subset_idx = request.args.get("subset_idx", type=int)
+    subset_sql = None
+    if subset_idx is not None:
+        subsets_path, _ = _get_subsets_path(pipeline_id, uid)
+        if subsets_path:
+            subsets = _read_subsets(subsets_path)
+            if 0 <= subset_idx < len(subsets):
+                subset_sql = subsets[subset_idx].get("sql")
 
     png = _chart_gen.generate(
         db_path=db_path,
@@ -211,6 +298,7 @@ def api_chart_image():
         title=cfg["title"],
         pipeline_config=pipeline_config,
         subgroup_key=cfg.get("subgroup_key"),
+        subset_sql=subset_sql,
     )
     return Response(png, mimetype="image/png",
                     headers={"Cache-Control": "no-store"})

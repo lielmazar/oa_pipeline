@@ -16,6 +16,8 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
   const [activeJobId, setActiveJobId] = useState(null);
   const [speed, setSpeed] = useState(null); // { filesPerMin, dbMBps }
   const [cpuCount, setCpuCount] = useState(null);
+  const [skipDetailOpen, setSkipDetailOpen] = useState(false);
+  const [recordViewer, setRecordViewer] = useState(null);
   const prevProgRef = useRef(null);
 
   const { lines, status: jobStatus } = useJobStream(activeJobId, onJobDone);
@@ -202,12 +204,25 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
             const other = seen - (notEn + noDoi + noAbs + noKw + emAbs + (prog.inserted || 0));
             const inserted = prog.inserted || 0;
 
-            const FunnelRow = ({ indent, label, count, note, color }) => (
+            // Detailed "other" reasons: everything except the 5 main labeled ones and inserted
+            const MAIN_KEYS = new Set(['not_english','no_doi','no_abstract','no_keywords','empty_abstract']);
+            const detailRows = Object.entries(sk)
+              .filter(([k]) => !MAIN_KEYS.has(k))
+              .sort((a, b) => b[1] - a[1]);
+
+            const FunnelRow = ({ indent, label, count, note, color, onClick }) => (
               <div className={`flex items-baseline gap-2 ${indent ? 'pl-4 border-l-2 border-gray-100 ml-2' : ''}`}>
                 <span className={`text-xs font-mono font-semibold w-28 text-right flex-shrink-0 ${color || 'text-gray-700'}`}>
                   {count.toLocaleString()}
                 </span>
-                <span className="text-xs text-gray-600">{label}</span>
+                {onClick ? (
+                  <button onClick={onClick}
+                    className="text-xs text-gray-600 hover:text-blue-600 underline decoration-dotted decoration-gray-400 hover:decoration-blue-400 text-left">
+                    {label}
+                  </button>
+                ) : (
+                  <span className="text-xs text-gray-600">{label}</span>
+                )}
                 {note && <span className="text-xs text-gray-400 italic">{note}</span>}
               </div>
             );
@@ -220,12 +235,60 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
                 {noDoi > 0 && <FunnelRow indent label="no DOI" count={noDoi} color="text-gray-400" />}
                 {noAbs > 0 && <FunnelRow indent label="no abstract" count={noAbs} color="text-gray-400" />}
                 {noKw > 0  && <FunnelRow indent label="no matching keywords" count={noKw} color="text-gray-400" />}
-                {(emAbs + other) > 0 && <FunnelRow indent label="other skip reasons" count={emAbs + Math.max(0, other)} color="text-gray-400" />}
+                {(emAbs + other) > 0 && (
+                  <FunnelRow indent
+                    label={`other skip reasons${detailRows.length > 0 ? ' ⓘ' : ''}`}
+                    count={emAbs + Math.max(0, other)}
+                    color="text-gray-400"
+                    onClick={detailRows.length > 0 ? () => setSkipDetailOpen(true) : null}
+                  />
+                )}
                 <div className="flex items-baseline gap-2 mt-1 pt-1 border-t border-gray-100">
                   <span className="text-sm font-bold w-28 text-right flex-shrink-0 text-green-700">{inserted.toLocaleString()}</span>
                   <span className="text-xs font-semibold text-green-700">records saved</span>
                   {seen > 0 && <span className="text-xs text-gray-400">({(inserted / seen * 100).toFixed(3)}% match rate)</span>}
                 </div>
+
+                {/* Skip detail popup */}
+                {skipDetailOpen && (
+                  <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4"
+                    onClick={e => e.target === e.currentTarget && setSkipDetailOpen(false)}>
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+                      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                        <h3 className="font-semibold text-sm text-gray-800">Other skip reasons — full breakdown</h3>
+                        <button onClick={() => setSkipDetailOpen(false)}
+                          className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100 transition">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="px-5 py-4 space-y-1.5">
+                        {emAbs > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span className="text-gray-600">empty abstract</span>
+                            <span className="font-mono font-semibold text-gray-700">{emAbs.toLocaleString()}</span>
+                          </div>
+                        )}
+                        {detailRows.map(([key, count]) => (
+                          <div key={key} className="flex justify-between text-xs">
+                            <span className="text-gray-600">{_SKIP_LABELS[key] || key}</span>
+                            <span className="font-mono font-semibold text-gray-700">{count.toLocaleString()}</span>
+                          </div>
+                        ))}
+                        {emAbs === 0 && detailRows.length === 0 && (
+                          <p className="text-xs text-gray-400 italic">No detailed breakdown available.</p>
+                        )}
+                      </div>
+                      <div className="px-5 py-3 border-t border-gray-100 bg-gray-50/50 rounded-b-xl text-right">
+                        <button onClick={() => setSkipDetailOpen(false)}
+                          className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition">
+                          Close
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -242,6 +305,97 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
           </div>
           <Terminal lines={lines} />
         </div>
+      )}
+
+      {/* ── Search results summary (shown once data is available) ── */}
+      {(pipelineStatus?.record_count > 0 || pipelineStatus?.search_progress?.seen > 0) && (() => {
+        const recordCount = pipelineStatus.record_count;
+        const dbSizeMb    = pipelineStatus.db_size_mb;
+        const sp          = pipelineStatus.search_progress;
+        const sk          = sp?.skip_stats || {};
+        const notEn   = sk['not_english']   || 0;
+        const noDoi   = sk['no_doi']        || 0;
+        const noAbs   = sk['no_abstract']   || 0;
+        const noKw    = sk['no_keywords']   || 0;
+        const emAbs   = sk['empty_abstract']|| 0;
+        const inserted = sp?.inserted || 0;
+        const seen     = sp?.seen     || 0;
+        const otherSkip = seen > 0
+          ? Math.max(0, seen - notEn - noDoi - noAbs - noKw - emAbs - inserted)
+          : 0;
+
+        return (
+          <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Search Results</h3>
+
+            {/* Stats row */}
+            <div className="flex flex-wrap gap-8">
+              {recordCount != null && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-0.5">Saved records</div>
+                  <div className="text-2xl font-bold text-gray-900">
+                    <button onClick={() => setRecordViewer({ sql: 'SELECT * FROM filtered_records', title: 'All Search Results' })}
+                      className="underline decoration-blue-400 hover:text-blue-600 transition-colors">
+                      {recordCount.toLocaleString()}
+                    </button>
+                  </div>
+                  <div className="text-xs text-gray-400">publications matched keywords</div>
+                </div>
+              )}
+              {seen > 0 && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-0.5">Records scanned</div>
+                  <div className="text-base font-semibold text-gray-700">{seen.toLocaleString()}</div>
+                  {inserted > 0 && (
+                    <div className="text-xs text-gray-400">{(inserted / seen * 100).toFixed(3)}% match rate</div>
+                  )}
+                </div>
+              )}
+              {dbSizeMb != null && dbSizeMb > 0 && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-0.5">Database size</div>
+                  <div className="text-base font-semibold text-gray-700">{dbSizeMb} MB</div>
+                </div>
+              )}
+            </div>
+
+            {/* Screening funnel */}
+            {seen > 0 && (
+              <div className="border-t border-gray-100 pt-3">
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Screening funnel</div>
+                <div className="space-y-1 font-mono text-xs">
+                  {[
+                    { label: 'records scanned', count: seen },
+                    notEn > 0 && { label: '↳ non-English (pre-screened)', count: notEn, dim: true },
+                    noDoi > 0 && { label: '↳ no DOI', count: noDoi, dim: true },
+                    noAbs > 0 && { label: '↳ no abstract', count: noAbs, dim: true },
+                    noKw  > 0 && { label: '↳ no matching keywords', count: noKw, dim: true },
+                    (emAbs + otherSkip) > 0 && { label: '↳ other reasons', count: emAbs + otherSkip, dim: true },
+                    { label: '✓ saved', count: inserted, green: true },
+                  ].filter(Boolean).map((row, i) => (
+                    <div key={i} className={`flex gap-3 ${row.dim ? 'pl-4 text-gray-400' : ''}`}>
+                      <span className={`w-28 text-right ${row.green ? 'text-green-700 font-bold' : row.dim ? 'text-gray-400' : 'text-gray-700 font-semibold'}`}>
+                        {row.count.toLocaleString()}
+                      </span>
+                      <span className={row.green ? 'text-green-700 font-semibold' : ''}>{row.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Inline record viewer (opened from saved-records count) ── */}
+      {recordViewer && (
+        <RecordViewerPanel
+          key={recordViewer.sql}
+          pipeline={pipeline}
+          initialSql={recordViewer.sql}
+          title={recordViewer.title}
+          onClose={() => setRecordViewer(null)}
+        />
       )}
     </div>
   );

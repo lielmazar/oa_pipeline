@@ -10,8 +10,8 @@ CHART_QUERIES: dict[str, dict] = {
         "title": "Publications by Year",
         "sql": (
             "SELECT "
-            "  CASE WHEN publication_year IS NULL OR publication_year <= 2000 "
-            "       THEN 'Unknown/≤2000' "
+            "  CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} "
+            "       THEN 'Unknown/≤{cutoff_year}' "
             "       ELSE CAST(publication_year AS TEXT) END AS year, "
             "  COUNT(*) AS count "
             "FROM filtered_records "
@@ -19,6 +19,7 @@ CHART_QUERIES: dict[str, dict] = {
             "ORDER BY MIN(COALESCE(publication_year, 0))"
         ),
         "type": "bar", "x_key": "year", "y_key": "count",
+        "params": ["cutoff_year"],
     },
     "top_fuel_terms": {
         "title": "Top Fuel Terms by Subgroup",
@@ -29,6 +30,7 @@ CHART_QUERIES: dict[str, dict] = {
         ),
         "type": "stacked_hbar", "x_key": "term", "y_key": "count",
         "subgroup_key": "fuel",
+        "params": ["top_n"],
     },
     "top_impact_terms": {
         "title": "Top Impact Terms by Subgroup",
@@ -39,6 +41,7 @@ CHART_QUERIES: dict[str, dict] = {
         ),
         "type": "stacked_hbar", "x_key": "term", "y_key": "count",
         "subgroup_key": "impact",
+        "params": ["top_n"],
     },
     "fuel_impact_cooccurrence": {
         "title": "Fuel × Impact Subgroup Co-occurrence",
@@ -60,6 +63,7 @@ CHART_QUERIES: dict[str, dict] = {
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
         "type": "hbar", "x_key": "country", "y_key": "count",
+        "params": ["top_n"],
     },
     "top_journals": {
         "title": "Top Journals / Sources",
@@ -70,6 +74,7 @@ CHART_QUERIES: dict[str, dict] = {
             "GROUP BY journal ORDER BY count DESC LIMIT {top_n}"
         ),
         "type": "hbar", "x_key": "journal", "y_key": "count",
+        "params": ["top_n"],
     },
     "oa_status": {
         "title": "Open Access Status",
@@ -95,6 +100,7 @@ CHART_QUERIES: dict[str, dict] = {
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
         "type": "hbar", "x_key": "institution", "y_key": "count",
+        "params": ["top_n"],
     },
     "llm_scope": {
         "title": "Fuel Classification (LLM)",
@@ -106,6 +112,7 @@ CHART_QUERIES: dict[str, dict] = {
         ),
         "type": "hbar", "x_key": "fuel_type", "y_key": "count",
         "llm_only": True,
+        "params": ["top_n"],
     },
     "llm_ml_paradigm": {
         "title": "ML/AI Paradigm (LLM)",
@@ -153,18 +160,19 @@ CHART_QUERIES: dict[str, dict] = {
 }
 
 
-def get_chart_configs(top_n: int = 20) -> list[dict]:
-    """Return all chart configs with {top_n} interpolated."""
+def get_chart_configs(top_n: int = 20, cutoff_year: int = 2000) -> list[dict]:
+    """Return all chart configs with {top_n} and {cutoff_year} interpolated."""
     configs = []
     for cid, cfg in CHART_QUERIES.items():
         entry = {
             "id": cid,
             "title": cfg["title"],
-            "sql": cfg["sql"].replace("{top_n}", str(top_n)),
+            "sql": cfg["sql"].replace("{top_n}", str(top_n)).replace("{cutoff_year}", str(cutoff_year)),
             "type": cfg["type"],
             "x_key": cfg["x_key"],
             "y_key": cfg["y_key"],
             "llm_only": cfg.get("llm_only", False),
+            "params": cfg.get("params", []),
         }
         if "subgroup_key" in cfg:
             entry["subgroup_key"] = cfg["subgroup_key"]
@@ -172,9 +180,9 @@ def get_chart_configs(top_n: int = 20) -> list[dict]:
     return configs
 
 
-def get_chart_sql(chart_id: str, top_n: int = 20) -> str | None:
+def get_chart_sql(chart_id: str, top_n: int = 20, cutoff_year: int = 2000) -> str | None:
     """Return the interpolated SQL for a single chart, or None if unknown."""
     cfg = CHART_QUERIES.get(chart_id)
     if cfg is None:
         return None
-    return cfg["sql"].replace("{top_n}", str(top_n))
+    return cfg["sql"].replace("{top_n}", str(top_n)).replace("{cutoff_year}", str(cutoff_year))

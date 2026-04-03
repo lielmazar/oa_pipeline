@@ -73,7 +73,6 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
   }, [record.matched_impact_subgroups]);
 
   const citeCount = record.cited_by_count != null ? Number(record.cited_by_count) : null;
-  const isRetracted = !!record.is_retracted;
 
   const OA_STYLE = {
     gold:     'bg-yellow-50 text-yellow-700 border-yellow-200',
@@ -101,11 +100,6 @@ function RecordModal({ record, fuelSubgroups, onClose }) {
         <div className="p-6 pb-4 border-b border-gray-100">
           <div className="flex gap-3 items-start">
             <div className="flex-1 min-w-0">
-              {isRetracted && (
-                <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-semibold">
-                  ⚠ This paper has been retracted
-                </div>
-              )}
               <h3 className="text-base font-bold text-gray-900 leading-snug mb-3">
                 {record.title || oaId || 'Record'}
               </h3>
@@ -371,44 +365,61 @@ function computeRowSubgroups(matchedJson, subgroupDefs) {
 
 // ── Chart panels (server-rendered images) ─────────────────────────────────────
 
-function ChartPanel({ chartId, pipelineId, topN, title, sql, onViewQuery }) {
-  const [showSql, setShowSql] = useState(false);
-  const [imgErr, setImgErr]   = useState(false);
+function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams }) {
+  const [imgErr, setImgErr]     = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const imgUrl = `/api/charts/image?pipeline_id=${pipelineId}&chart=${chartId}&top_n=${topN}&_r=${refreshKey}`;
+  const [showParams, setShowParams] = useState(false);
+  const [localTopN, setLocalTopN]   = useState('');   // '' = use global topN
+  const [cutoffYear, setCutoffYear] = useState(2000);
 
-  // Reset loaded state whenever the URL changes
-  useEffect(() => { setImgLoaded(false); setImgErr(false); }, [chartId, pipelineId, topN, refreshKey]);
+  const hasCutoffYear = (chartParams || []).includes('cutoff_year');
+  const hasTopN       = (chartParams || []).includes('top_n');
+  const hasAnyParams  = hasCutoffYear || hasTopN;
+
+  const effectiveTopN = (localTopN && !isNaN(Number(localTopN))) ? Number(localTopN) : topN;
+
+  const imgUrl = `/api/charts/image?pipeline_id=${pipelineId}&chart=${chartId}&top_n=${effectiveTopN}&_r=${refreshKey}` +
+    (subsetIdx != null ? `&subset_idx=${subsetIdx}` : '') +
+    (hasCutoffYear ? `&cutoff_year=${cutoffYear}` : '');
+
+  useEffect(() => { setImgLoaded(false); setImgErr(false); }, [chartId, pipelineId, effectiveTopN, refreshKey, subsetIdx, cutoffYear]);
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
         <span className="text-sm font-semibold text-gray-800">{title || chartId}</span>
         <div className="flex items-center gap-2">
+          {hasAnyParams && (
+            <button onClick={() => setShowParams(s => !s)} title="Chart settings"
+              className={`text-xs px-1.5 py-0.5 rounded border transition ${showParams ? 'bg-gray-100 text-gray-700 border-gray-300' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
+              ⚙
+            </button>
+          )}
           <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh chart"
             className="text-gray-300 hover:text-gray-500 transition text-xs px-1">
             ↻
           </button>
-          {sql && (
-            <button onClick={() => setShowSql(s => !s)}
-              className={`text-xs px-2 py-0.5 rounded border transition
-                ${showSql ? 'bg-gray-100 text-gray-700 border-gray-300'
-                           : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>
-              SQL
-            </button>
-          )}
-          {sql && (
-            <button onClick={() => onViewQuery(sql)}
-              className="text-xs text-blue-500 hover:text-blue-700 hover:underline">
-              Edit & Run →
-            </button>
-          )}
         </div>
       </div>
-      {showSql && sql && (
-        <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
-          <pre className="text-xs font-mono text-gray-600 whitespace-pre-wrap overflow-x-auto">{sql}</pre>
+      {showParams && hasAnyParams && (
+        <div className="px-4 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-4">
+          {hasCutoffYear && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-600">
+              Cutoff year (≤)
+              <input type="number" value={cutoffYear} min="1900" max="2020" step="5"
+                onChange={e => setCutoffYear(Number(e.target.value) || 2000)}
+                className="border rounded px-2 py-0.5 w-20 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400" />
+            </label>
+          )}
+          {hasTopN && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-600">
+              Show top
+              <input type="number" value={localTopN} min="5" max="100" step="5" placeholder={String(topN)}
+                onChange={e => setLocalTopN(e.target.value)}
+                className="border rounded px-2 py-0.5 w-16 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400" />
+            </label>
+          )}
         </div>
       )}
       <div className="p-3 relative">
@@ -432,62 +443,3 @@ function ChartPanel({ chartId, pipelineId, topN, title, sql, onViewQuery }) {
   );
 }
 
-function ChartsPanel({ pipelineId, isLLM, topN, onTopNChange, onViewQuery }) {
-  const [configs, setConfigs] = useState(null);
-  const [refreshKey, setRefreshKey] = useState(0);
-
-  useEffect(() => {
-    apiFetch('/api/charts/configs')
-      .then(r => r.json())
-      .then(list => setConfigs(list))
-      .catch(() => setConfigs([]));
-  }, []);
-
-  const visible = configs
-    ? CHART_ORDER.filter(id => {
-        const cfg = configs.find(c => c.id === id);
-        return cfg && (!cfg.llm_only || isLLM);
-      })
-    : [];
-
-  const cfgMap = useMemo(
-    () => Object.fromEntries((configs || []).map(c => [c.id, c])),
-    [configs]
-  );
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-4">
-        <span className="text-sm font-medium text-gray-600">Top N per chart</span>
-        <input type="range" min="5" max="50" step="5" value={topN}
-          onChange={e => onTopNChange(Number(e.target.value))}
-          className="w-36 accent-emerald-600" />
-        <span className="text-sm font-semibold text-emerald-700 w-6">{topN}</span>
-        <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh all charts"
-          className="ml-auto text-sm text-gray-500 hover:text-gray-700 border border-gray-200 hover:border-gray-400 px-3 py-1 rounded-lg transition flex items-center gap-1.5">
-          ↻ Refresh
-        </button>
-      </div>
-      {configs === null ? (
-        <div className="flex items-center justify-center py-20 text-gray-400">
-          <span className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin mr-2" />
-          Loading…
-        </div>
-      ) : visible.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
-          No chart data available yet — run the search stage first.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {visible.map(id => (
-            <ChartPanel key={`${id}-${topN}-${refreshKey}`} chartId={id} pipelineId={pipelineId}
-              topN={topN}
-              title={cfgMap[id]?.title || id}
-              sql={cfgMap[id]?.sql || ''}
-              onViewQuery={onViewQuery} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}

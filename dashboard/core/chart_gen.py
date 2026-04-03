@@ -230,18 +230,19 @@ def _stacked_hbar(
     """
     Stacked horizontal bar chart.
     Major bars = subgroups (sorted by total count descending).
-    Stacked segments within each bar = individual terms.
+    Stacked segments = individual terms, shaded within each subgroup's base PALETTE color.
+    Count numbers are shown inside segments (not term names).
+    Legend shows only subgroup names.
     """
-    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
 
     term_sg_map, others_name = _build_term_sg_map(subgroups)
     label_lower = [l.lower() for l in labels]
 
     # Group terms by subgroup, preserving data-order (already sorted by count desc)
-    sg_items: dict[str, list[tuple[str, int]]] = {}  # sg_name -> [(term, count)]
+    sg_items: dict[str, list[tuple[str, int]]] = {}
     assigned: set[str] = set()
 
-    # Non-others subgroups in config order
     for sg in subgroups:
         if sg.get("is_others"):
             continue
@@ -254,13 +255,12 @@ def _stacked_hbar(
         if items:
             sg_items[name] = items
 
-    # Others: terms not matched to any named subgroup
     others_items = [
-        (orig, val, low) for orig, val, low in zip(labels, values, label_lower)
+        (orig, val) for orig, val, low in zip(labels, values, label_lower)
         if low not in assigned
     ]
     if others_items:
-        sg_items[others_name] = [(o, v) for o, v, _ in others_items]
+        sg_items[others_name] = others_items
 
     if not sg_items:
         return None
@@ -268,15 +268,9 @@ def _stacked_hbar(
     # Sort subgroups by total count descending (largest bar at top for hbar)
     ordered = sorted(sg_items.items(), key=lambda x: sum(c for _, c in x[1]))
 
-    # Assign a distinct base color per subgroup from PALETTE
+    # Each subgroup gets a distinct base PALETTE color
     sg_names = [name for name, _ in ordered]
-    sg_base_colors = {name: PALETTE[i % len(PALETTE)] for i, name in enumerate(sg_names)}
-
-    # Assign term colors: shades within each subgroup using tab20 for variety
-    all_terms_ordered = [(t, sg) for sg, items in ordered for t, _ in items]
-    n_terms = len(all_terms_ordered)
-    cmap = cm.get_cmap("tab20b", max(n_terms, 1))
-    term_colors = {t: cmap(i / max(n_terms, 1)) for i, (t, _) in enumerate(all_terms_ordered)}
+    sg_base_hex = {name: PALETTE[i % len(PALETTE)] for i, name in enumerate(sg_names)}
 
     n_sg = len(ordered)
     h = max(4, n_sg * 0.7 + 1.5)
@@ -286,21 +280,31 @@ def _stacked_hbar(
     max_total = max(sum(c for _, c in items) for _, items in ordered) if ordered else 1
 
     for sg_i, (sg_name, items) in enumerate(ordered):
+        n_terms = len(items)
+        base_rgb = mcolors.hex2color(sg_base_hex[sg_name])
         left = 0
-        for term, count in items:
-            color = term_colors[term]
+        for ti, (term, count) in enumerate(items):
+            # Shade range: ti=0 → base color (most saturated); ti=n-1 → lightened 55%
+            blend = (0.55 * ti / (n_terms - 1)) if n_terms > 1 else 0.0
+            color = tuple(c * (1 - blend) + blend for c in base_rgb)
+
             ax.barh(sg_i, count, left=left, color=color, height=0.65, zorder=3,
-                    edgecolor="white", linewidth=0.4)
-            # Label inside segment if wide enough
-            if count >= max_total * 0.05:
-                ax.text(left + count / 2, sg_i, term,
-                        ha="center", va="center", fontsize=7, color="white",
+                    edgecolor="white", linewidth=0.5)
+
+            # Show count number inside segment if wide enough
+            if count >= max_total * 0.04:
+                luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
+                text_color = "white" if luminance < 0.55 else TEXT_COLOR
+                ax.text(left + count / 2, sg_i, f"{count:,}",
+                        ha="center", va="center", fontsize=7.5, color=text_color,
                         fontweight="bold", clip_on=True)
             left += count
-            legend_patches.append(mpatches.Patch(color=color, label=term))
-        # Total at end of bar
+
+        # Total count at end of bar
         ax.text(left + max_total * 0.01, sg_i, f"{left:,}",
                 va="center", fontsize=9, color=MUTED)
+
+        legend_patches.append(mpatches.Patch(color=sg_base_hex[sg_name], label=sg_name))
 
     ax.set_yticks(range(n_sg))
     ax.set_yticklabels(sg_names, fontsize=10)
@@ -309,14 +313,10 @@ def _stacked_hbar(
     ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
     ax.set_xlim(0, max_total * 1.12)
 
-    # Legend — limit to top 20 terms by count to avoid clutter
-    MAX_LEGEND = 20
-    legend_patches_dedup = list({p.get_label(): p for p in legend_patches}.values())
-    legend_patches_dedup = legend_patches_dedup[:MAX_LEGEND]
-    if legend_patches_dedup:
-        ax.legend(handles=legend_patches_dedup, loc="lower right",
-                  fontsize=7, ncol=2, framealpha=0.8,
-                  title="Terms", title_fontsize=8)
+    if legend_patches:
+        ax.legend(handles=legend_patches, loc="lower right",
+                  fontsize=8, framealpha=0.8,
+                  title="Subgroup", title_fontsize=9)
 
     fig.tight_layout()
     return fig
@@ -505,12 +505,18 @@ def generate(
     title: str,
     pipeline_config: dict | None = None,
     subgroup_key: str | None = None,
+    subset_sql: str | None = None,
 ) -> bytes:
     """
     Run *sql* against *db_path*, render a matplotlib chart, return PNG bytes.
 
     chart_type: 'bar' | 'hbar' | 'stacked_hbar' | 'pie' | 'cooccurrence' | 'cooccurrence_3d'
+    subset_sql: optional CTE — replaces filtered_records with a user-defined subset
     """
+    if subset_sql:
+        # Rename the real table reference in chart SQL to avoid SQLite CTE self-reference
+        patched = sql.replace("filtered_records", "_fr_subset")
+        sql = f"WITH _fr_subset AS (\n{subset_sql}\n)\n{patched}"
     cfg = pipeline_config or {}
 
     # ── Co-occurrence charts (multi-column SQL, special renderers) ────────────

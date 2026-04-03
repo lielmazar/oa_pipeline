@@ -7,11 +7,13 @@ function LLMStage({ pipeline, pipelineStatus }) {
   const [launchError, setLaunchError] = useState('');
   const [liveBatchState, setLiveBatchState] = useState(null);
   const [cancelling, setCancelling] = useState(false);
+  const [subsets, setSubsets] = useState([]);
+  const [activeSubsetIdx, setActiveSubsetIdx] = useState(null); // null = all records
   const { lines, status: jobStatus } = useJobStream(activeJobId);
 
   const isJobRunning = !!(activeJobId && (jobStatus === null || jobStatus === 'running'));
 
-  // On mount, auto-connect to the most recent llm_classify job
+  // On mount, auto-connect to the most recent llm_classify job + load subsets
   useEffect(() => {
     apiFetch(`/api/jobs?pipeline_id=${pipeline.id}`)
       .then(r => r.json())
@@ -21,6 +23,10 @@ function LLMStage({ pipeline, pipelineStatus }) {
           .sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
         if (llmJobs.length > 0) setActiveJobId(llmJobs[0].id);
       })
+      .catch(() => {});
+    apiFetch(`/api/subsets?pipeline_id=${pipeline.id}`)
+      .then(r => r.json())
+      .then(data => setSubsets(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, [pipeline.id]);
 
@@ -81,6 +87,9 @@ function LLMStage({ pipeline, pipelineStatus }) {
         ? pipeline.batch_state_path.replace('/state.json', '')
         : undefined,
     };
+    if (activeSubsetIdx != null && subsets[activeSubsetIdx]) {
+      mainArgs['--subset-sql'] = subsets[activeSubsetIdx].sql;
+    }
     const subArgs = {};
     if (limit && ['prepare', 'run'].includes(phase)) subArgs['--limit'] = limit;
     if (['poll', 'run'].includes(phase)) subArgs['--interval'] = pollInterval;
@@ -250,6 +259,30 @@ function LLMStage({ pipeline, pipelineStatus }) {
                 ))}
               </div>
             </details>
+
+            {/* Subset selector */}
+            {subsets.length > 0 && (
+              <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Dataset</label>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => setActiveSubsetIdx(null)}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition ${activeSubsetIdx === null ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-600 border-gray-300 hover:border-purple-400'}`}>
+                    All records
+                  </button>
+                  {subsets.map((s, i) => (
+                    <button key={i}
+                      onClick={() => setActiveSubsetIdx(i === activeSubsetIdx ? null : i)}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition ${activeSubsetIdx === i ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-600 border-gray-300 hover:border-purple-400'}`}>
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+                {activeSubsetIdx != null && (
+                  <p className="text-xs text-gray-400 mt-1">LLM will process only records in this subset.</p>
+                )}
+              </div>
+            )}
 
             {/* Options */}
             <div className="grid grid-cols-2 gap-3">
