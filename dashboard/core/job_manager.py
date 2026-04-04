@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from pathlib import Path
 from typing import Generator, Optional
 
 
@@ -32,6 +33,7 @@ class JobManager:
         label: str,
         pipeline_id: int | None = None,
         workers: int = 1,
+        log_file: str | None = None,
     ) -> dict:
         """Launch a script as a subprocess. Returns job summary dict."""
         with self._global_lock:
@@ -91,6 +93,7 @@ class JobManager:
                 "_seq": 0,
                 "_cond": cond,
                 "_process": proc,
+                "_log_file": log_file,
             }
 
             t = threading.Thread(target=self._reader, args=(job,), daemon=True)
@@ -102,13 +105,34 @@ class JobManager:
     # ── Reader thread ─────────────────────────────────────────────────────────
 
     def _reader(self, job: dict) -> None:
-        """Background thread: read subprocess lines, append to deque."""
+        """Background thread: read subprocess lines, append to deque, optionally tee to log file."""
+        log_fh = None
+        if job.get("_log_file"):
+            try:
+                log_path = Path(job["_log_file"])
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_fh = open(log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+                log_fh.write(
+                    f"\n{'='*60}\n"
+                    f"Job {job['id']} — {job['label']}\n"
+                    f"Started: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(job['started_at']))}\n"
+                    f"Cmd: {' '.join(str(a) for a in job['cmd'])}\n"
+                    f"{'='*60}\n"
+                )
+            except Exception:
+                log_fh = None
         try:
             for line in job["_process"].stdout:
+                clean = line.rstrip("\n\r")
                 with job["_cond"]:
-                    job["output"].append((job["_seq"], line.rstrip("\n\r")))
+                    job["output"].append((job["_seq"], clean))
                     job["_seq"] += 1
                     job["_cond"].notify_all()
+                if log_fh:
+                    try:
+                        log_fh.write(clean + "\n")
+                    except Exception:
+                        pass
         except Exception:
             pass
         finally:
@@ -124,6 +148,15 @@ class JobManager:
                     job["status"] = "done" if (rc is not None and rc == 0) else "error"
                 job["ended_at"] = time.time()
                 job["_cond"].notify_all()
+
+            if log_fh:
+                try:
+                    log_fh.write(
+                        f"\n--- Job ended: {job['status']} (rc={job['returncode']}) ---\n"
+                    )
+                    log_fh.close()
+                except Exception:
+                    pass
 
     # ── Kill ──────────────────────────────────────────────────────────────────
 

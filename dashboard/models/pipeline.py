@@ -11,27 +11,29 @@ from models.db import get_meta_db
 STAGES = [
     "keyword_selection",
     "openalex_search",
-    "report",
+    "analysis",
     "llm_classification",
-    "llm_report",
+    "llm_analysis",
     "summary",
 ]
 
 STAGE_LABELS = {
     "keyword_selection":  "Keyword Selection",
     "openalex_search":    "OpenAlex Search",
-    "report":             "Report",
+    "analysis":           "Analysis",
     "llm_classification": "LLM Classification",
-    "llm_report":         "LLM Report",
+    "llm_analysis":       "LLM Analysis",
     "summary":            "Summary",
 }
 
-# Map removed stage names to their new equivalents (DB migration)
+# Map removed/renamed stage IDs to their current equivalents (applied on DB read)
 _STAGE_MIGRATION: dict[str, str] = {
-    "results_review":        "report",
-    "report_generation":     "report",
-    "llm_results_review":    "llm_report",
-    "llm_report_generation": "llm_report",
+    "results_review":        "analysis",
+    "report_generation":     "analysis",
+    "report":                "analysis",
+    "llm_results_review":    "llm_analysis",
+    "llm_report_generation": "llm_analysis",
+    "llm_report":            "llm_analysis",
 }
 
 
@@ -250,7 +252,7 @@ def fork_pipeline(
 ) -> int:
     """
     Fork a pipeline: copy config + duplicate the output SQLite.
-    The fork starts at 'report' since the DB is already populated.
+    The fork starts at 'analysis' since the DB is already populated.
 
     Returns the new pipeline id.
     """
@@ -263,7 +265,7 @@ def fork_pipeline(
     cur = db.execute(
         """INSERT INTO pipelines
                (user_id, forked_from_id, name, description, current_stage, config)
-           VALUES (?, ?, ?, ?, 'report', ?)""",
+           VALUES (?, ?, ?, ?, 'analysis', ?)""",
         (new_user_id, source_id, new_name, f"Forked from: {source['name']}", cfg_json),
     )
     db.commit()

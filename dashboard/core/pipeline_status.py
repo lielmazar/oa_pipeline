@@ -80,12 +80,4 @@ def build_stage_status(pipeline: dict) -> dict:
     else:
         status["batch_state"] = None
 
-    # Report exists?
-    status["has_report"] = bool(
-        pipeline.get("report_path") and Path(pipeline["report_path"]).exists()
-    )
-    status["has_llm_report"] = bool(
-        pipeline.get("llm_report_path") and Path(pipeline["llm_report_path"]).exists()
-    )
-
     return status

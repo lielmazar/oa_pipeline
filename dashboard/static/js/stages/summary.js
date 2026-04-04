@@ -10,12 +10,21 @@ const SUMMARY_CHART_IDS = [
   'oa_status',
 ];
 
+const DB_FORMAT_OPTIONS = [
+  { value: 'csv',           label: 'CSV files' },
+  { value: 'sqlite',        label: 'SQLite database' },
+  { value: 'both',          label: 'CSV + SQLite' },
+  { value: 'csv_chunks',    label: 'CSV chunks' },
+];
+
 function SummaryStage({ pipeline, pipelineStatus }) {
   const [downloading, setDownloading]   = useState(false);
   const [downloadErr, setDownloadErr]   = useState('');
   const [chartConfigs, setChartConfigs] = useState(null);
   const [logLines, setLogLines]         = useState(null);   // null = not loaded
   const [logLoading, setLogLoading]     = useState(false);
+  const [dbFormat, setDbFormat]         = useState('csv');
+  const [chunkMb, setChunkMb]           = useState('50');
 
   useEffect(() => {
     apiFetch('/api/charts/configs')
@@ -58,8 +67,11 @@ function SummaryStage({ pipeline, pipelineStatus }) {
   const downloadZip = async () => {
     setDownloadErr('');
     setDownloading(true);
+    const fmt = dbFormat === 'csv_chunks'
+      ? `csv_chunks_${parseInt(chunkMb, 10) || 50}`
+      : dbFormat;
     try {
-      const res = await apiFetch(`/api/pipelines/${pipeline.id}/export-zip`);
+      const res = await apiFetch(`/api/pipelines/${pipeline.id}/export-zip?db_format=${fmt}`);
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         setDownloadErr(d.error || `Export failed (${res.status})`);
@@ -104,7 +116,25 @@ function SummaryStage({ pipeline, pipelineStatus }) {
               Pipeline results overview. Download all data, charts and logs as a single ZIP.
             </p>
           </div>
-          <div className="flex flex-col items-end gap-1">
+          <div className="flex flex-col items-end gap-2">
+            {/* DB format selector */}
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              <span className="text-xs text-gray-500 whitespace-nowrap">DB export:</span>
+              <select value={dbFormat} onChange={e => setDbFormat(e.target.value)}
+                className="text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-teal-400">
+                {DB_FORMAT_OPTIONS.map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              {dbFormat === 'csv_chunks' && (
+                <div className="flex items-center gap-1">
+                  <input type="number" min="10" max="500" value={chunkMb}
+                    onChange={e => setChunkMb(e.target.value)}
+                    className="w-16 text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-teal-400" />
+                  <span className="text-xs text-gray-400">MB/chunk</span>
+                </div>
+              )}
+            </div>
             <button onClick={downloadZip} disabled={downloading}
               className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 text-white rounded-lg font-semibold
                          hover:bg-teal-700 transition disabled:opacity-50 whitespace-nowrap">
@@ -137,7 +167,7 @@ function SummaryStage({ pipeline, pipelineStatus }) {
         {/* ── ZIP contents legend ── */}
         <div className="mt-5 px-4 py-3 bg-teal-50 rounded-xl border border-teal-100 text-xs text-teal-800">
           <span className="font-semibold mr-2">ZIP includes:</span>
-          All charts (PNG) · All DB tables (CSV) · Pipeline logs · HTML reports · SQL queries · Pipeline metadata · Manifest
+          Per-stage HTML reports · Chart PNGs · SQL queries · Database export · Pipeline logs · Keywords config · Batch state · Pipeline metadata · Manifest
         </div>
       </div>
 

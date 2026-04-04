@@ -47,13 +47,13 @@ function PipelineView({ initialPipeline, onBack, onNavigateTo }) {
             onJobStart={() => setJobRunning(true)}
             onJobDone={() => { setJobRunning(false); fetchStatus(); }} />
         )}
-        {stage === 'report' && (
+        {stage === 'analysis' && (
           <ReportStage pipeline={pipeline} isLLM={false} pipelineStatus={pipelineStatus} />
         )}
         {stage === 'llm_classification' && (
           <LLMStage pipeline={pipeline} pipelineStatus={pipelineStatus} />
         )}
-        {stage === 'llm_report' && (
+        {stage === 'llm_analysis' && (
           <ReportStage pipeline={pipeline} isLLM={true} pipelineStatus={pipelineStatus} />
         )}
         {stage === 'summary' && (

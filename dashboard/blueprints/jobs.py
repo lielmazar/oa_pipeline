@@ -99,17 +99,32 @@ def api_launch_job():
     script_cfg = SCRIPTS[script_key]
     script_path = script_cfg["path"]
 
-    # For run_pipeline / filter_dataset, always inject --keyword-config from the
-    # pipeline's keywords.json when it exists — overrides any null/absent value
-    # the frontend may have placed in args.
-    if pipeline and script_key in ('run_pipeline', 'filter_dataset', 'generate_report'):
-        db_path = pipeline.get("output_db_path")
-        if db_path:
-            keywords_path = str(Path(db_path).parent / "keywords.json")
-            if Path(keywords_path).exists():
-                raw_args["--keyword-config"] = keywords_path
+    # Resolve the pipeline's data directory for log injection and keyword-config.
+    pipeline_dir: Path | None = None
+    if pipeline and pipeline.get("output_db_path"):
+        pipeline_dir = Path(pipeline["output_db_path"]).parent
+        pipeline_dir.mkdir(parents=True, exist_ok=True)
+
+    # Inject --keyword-config from the pipeline's keywords.json when it exists.
+    if pipeline_dir and script_key in ('run_pipeline', 'filter_dataset'):
+        keywords_path = pipeline_dir / "keywords.json"
+        if keywords_path.exists():
+            raw_args["--keyword-config"] = str(keywords_path)
+
+    # run_pipeline has its own structured file logger — point it to the
+    # pipeline data directory so logs land in the right place.
+    if pipeline_dir and script_key == 'run_pipeline':
+        raw_args.setdefault("--log-file", str(pipeline_dir / "pipeline.log"))
 
     args = _build_args(script_key, raw_args, pipeline)
+
+    # Tee stdout for scripts without their own --log-file support (llm_classify,
+    # filter_dataset) so all activity lands in the same pipeline.log.
+    tee_log_file = (
+        str(pipeline_dir / "pipeline.log")
+        if pipeline_dir and script_key != 'run_pipeline'
+        else None
+    )
     # Build a readable label: prefer positional subcommands (e.g. "estimate", "run"),
     # fall back to non-path non-True values.
     phase_tokens = [str(k) for k, v in raw_args.items() if not str(k).startswith("--") and v is True]
@@ -135,6 +150,7 @@ def api_launch_job():
             label=label.strip(),
             pipeline_id=pipeline_id,
             workers=workers,
+            log_file=tee_log_file,
         )
     except (ValueError, RuntimeError) as e:
         return jsonify({"error": str(e)}), 409

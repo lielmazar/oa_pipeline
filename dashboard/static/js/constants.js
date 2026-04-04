@@ -1,24 +1,24 @@
 // ── Stage constants ───────────────────────────────────────────────────────────
 
 const STAGE_IDS = [
-  'keyword_selection', 'openalex_search', 'report', 'llm_classification', 'llm_report', 'summary',
+  'keyword_selection', 'openalex_search', 'analysis', 'llm_classification', 'llm_analysis', 'summary',
 ];
 
 const STAGE_LABELS_MAP = {
   keyword_selection:  '① Keywords',
   openalex_search:    '② Search',
-  report:             '③ Report',
+  analysis:           '③ Analysis',
   llm_classification: '④ LLM',
-  llm_report:         '⑤ LLM Report',
+  llm_analysis:       '⑤ LLM Analysis',
   summary:            '⑥ Summary',
 };
 
 const STAGE_COLORS = {
   keyword_selection:  'bg-gray-200 text-gray-700',
   openalex_search:    'bg-blue-100 text-blue-800',
-  report:             'bg-emerald-100 text-emerald-800',
+  analysis:           'bg-emerald-100 text-emerald-800',
   llm_classification: 'bg-purple-100 text-purple-800',
-  llm_report:         'bg-green-100 text-green-800',
+  llm_analysis:       'bg-green-100 text-green-800',
   summary:            'bg-teal-100 text-teal-800',
 };
 

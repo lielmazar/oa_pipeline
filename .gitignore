@@ -1,5 +1,9 @@
 .claude/
+.troubleshoot/
+troubleshoot/
+troableshoot/
 .env
 *.db
 *.sqlite
 *.sqlite3
+*.pyc

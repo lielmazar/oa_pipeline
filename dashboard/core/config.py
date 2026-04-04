@@ -25,21 +25,15 @@ PIPELINE_SCRIPTS_DIR = REPO_ROOT / "pipeline"
 # Script registry — maps script_key → absolute path inside pipeline/
 SCRIPTS = {
     "run_pipeline": {
-        "path": str(PIPELINE_SCRIPTS_DIR / "run_pipeline.py"),
-        "label": "run_pipeline.py",
+        "path": str(PIPELINE_SCRIPTS_DIR / "pipeline.py"),
+        "label": "pipeline.py",
         "description": "Parallel OpenAlex search — processes all .gz partition files",
         "no_color_flag": "--no-color",
     },
     "filter_dataset": {
-        "path": str(PIPELINE_SCRIPTS_DIR / "filter_dataset.py"),
-        "label": "filter_dataset.py",
+        "path": str(PIPELINE_SCRIPTS_DIR / "pipeline.py"),
+        "label": "pipeline.py filter",
         "description": "Single-file processor — filters one .gz partition",
-        "no_color_flag": None,
-    },
-    "generate_report": {
-        "path": str(PIPELINE_SCRIPTS_DIR / "generate_report.py"),
-        "label": "generate_report.py",
-        "description": "Generate HTML report with charts from SQLite database",
         "no_color_flag": None,
     },
     "llm_classify": {
