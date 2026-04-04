@@ -400,16 +400,81 @@ function computeRowSubgroups(matchedJson, subgroupDefs) {
   return [...matched];
 }
 
+// ── Chart image concurrency queue + dedup cache ──────────────────────────────
+
+const _chartQueue = [];
+const _chartInFlight = new Map();   // url -> Promise<blobUrl>
+const _chartBlobCache = new Map();  // url (without _r) -> blobUrl
+const CHART_CONCURRENCY = 4;
+let _chartRunning = 0;
+
+function _drainChartQueue() {
+  while (_chartRunning < CHART_CONCURRENCY && _chartQueue.length > 0) {
+    const { url, resolve, reject } = _chartQueue.shift();
+    _chartRunning++;
+    fetch(url)
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.blob(); })
+      .then(blob => {
+        const blobUrl = URL.createObjectURL(blob);
+        // Cache with the base URL (strip _r= param)
+        const baseUrl = url.replace(/&_r=\d+/, '');
+        _chartBlobCache.set(baseUrl, blobUrl);
+        resolve(blobUrl);
+      })
+      .catch(reject)
+      .finally(() => { _chartRunning--; _chartInFlight.delete(url); _drainChartQueue(); });
+  }
+}
+
+function fetchChartImage(url) {
+  // Check blob cache first (keyed without the _r= refresh param)
+  const baseUrl = url.replace(/&_r=\d+/, '');
+  const cached = _chartBlobCache.get(baseUrl);
+  if (cached) return Promise.resolve(cached);
+
+  // Deduplicate in-flight requests for the exact same URL
+  if (_chartInFlight.has(url)) return _chartInFlight.get(url);
+
+  const p = new Promise((resolve, reject) => {
+    _chartQueue.push({ url, resolve, reject });
+  });
+  _chartInFlight.set(url, p);
+  _drainChartQueue();
+  return p;
+}
+
+// ── Lazy-load hook (IntersectionObserver) ─────────────────────────────────────
+
+function useInView(rootMargin = '200px') {
+  const ref = useRef(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setInView(true); obs.disconnect(); } },
+      { rootMargin }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [rootMargin]);
+  return [ref, inView];
+}
+
 // ── Chart panels (server-rendered images) ─────────────────────────────────────
 
 function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, onOpenRecords, chartSql }) {
   const [imgErr, setImgErr]     = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [blobUrl, setBlobUrl]   = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showParams, setShowParams] = useState(false);
   const [localTopN, setLocalTopN]       = useState('');   // '' = use global topN
   const [cutoffYear, setCutoffYear]     = useState(2000);
   const [termsPerSg, setTermsPerSg]     = useState('');   // '' = show all terms
+
+  // Lazy loading: only fetch when the card scrolls into view
+  const [sentinelRef, inView] = useInView('300px');
 
   const hasCutoffYear  = (chartParams || []).includes('cutoff_year');
   const hasTopN        = (chartParams || []).includes('top_n');
@@ -425,10 +490,28 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, 
     (hasCutoffYear ? `&cutoff_year=${cutoffYear}` : '') +
     (hasTermsPerSg && effectiveTermsPerSg != null ? `&terms_per_subgroup=${effectiveTermsPerSg}` : '');
 
-  useEffect(() => { setImgLoaded(false); setImgErr(false); }, [chartId, pipelineId, effectiveTopN, refreshKey, subsetIdx, cutoffYear, effectiveTermsPerSg]);
+  // Fetch chart image through the concurrency-limited queue
+  useEffect(() => {
+    if (!inView) return;
+    setImgLoaded(false); setImgErr(false); setBlobUrl(null);
+    let cancelled = false;
+    fetchChartImage(imgUrl).then(url => {
+      if (!cancelled) { setBlobUrl(url); setImgLoaded(true); }
+    }).catch(() => {
+      if (!cancelled) setImgErr(true);
+    });
+    return () => { cancelled = true; };
+  }, [imgUrl, inView]);
+
+  // Force refresh: evict from blob cache
+  const handleRefresh = useCallback(() => {
+    const baseUrl = imgUrl.replace(/&_r=\d+/, '');
+    _chartBlobCache.delete(baseUrl);
+    setRefreshKey(k => k + 1);
+  }, [imgUrl]);
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+    <div ref={sentinelRef} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
         <span className="text-sm font-semibold text-gray-800">{title || chartId}</span>
         <div className="flex items-center gap-2">
@@ -447,7 +530,7 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, 
               ⚙
             </button>
           )}
-          <button onClick={() => setRefreshKey(k => k + 1)} title="Refresh chart"
+          <button onClick={handleRefresh} title="Refresh chart"
             className="text-gray-300 hover:text-gray-500 transition text-xs px-1">
             ↻
           </button>
@@ -482,20 +565,19 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, 
         </div>
       )}
       <div className="p-3 relative">
-        {!imgLoaded && !imgErr && (
+        {!inView ? (
+          <div className="h-48" />
+        ) : !imgLoaded && !imgErr ? (
           <div className="flex items-center justify-center h-48 text-gray-300">
             <span className="w-6 h-6 border-2 border-gray-200 border-t-blue-400 rounded-full animate-spin" />
           </div>
-        )}
-        {imgErr ? (
+        ) : imgErr ? (
           <div className="flex items-center justify-center h-32 text-gray-400 text-sm">
             Could not render chart
           </div>
         ) : (
-          <img src={imgUrl} alt={title}
-            className={`w-full h-auto transition-opacity duration-300 ${imgLoaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
-            onError={() => { setImgErr(true); setImgLoaded(false); }}
-            onLoad={() => setImgLoaded(true)} />
+          <img src={blobUrl} alt={title}
+            className="w-full h-auto transition-opacity duration-300 opacity-100" />
         )}
       </div>
     </div>

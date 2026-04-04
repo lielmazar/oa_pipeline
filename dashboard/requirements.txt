@@ -1,4 +1,5 @@
 flask>=2.3.0
+flask-compress>=1.13
 gunicorn>=21.0.0
 werkzeug>=2.3.0
 matplotlib>=3.7.0

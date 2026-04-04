@@ -309,8 +309,13 @@ def api_chart_image():
         subset_sql=subset_sql,
         terms_per_subgroup=terms_per_subgroup,
     )
+    import hashlib as _hl
+    etag = _hl.md5(png).hexdigest()
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304)
     return Response(png, mimetype="image/png",
-                    headers={"Cache-Control": "no-store"})
+                    headers={"Cache-Control": "public, max-age=120",
+                             "ETag": etag})
 
 
 # ── Log tail ──────────────────────────────────────────────────────────────────

@@ -17,7 +17,13 @@
   <div id="app-root"></div>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  {% if bundle_compiled %}
+  <!-- Pre-compiled bundle (no Babel needed) -->
+  <script src="/js/bundle.js"></script>
+  {% else %}
+  <!-- Dev mode: runtime JSX transpilation via Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script type="text/babel" data-presets="react" src="/js/bundle.js"></script>
+  {% endif %}
 </body>
 </html>

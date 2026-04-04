@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import os
 from pathlib import Path
 
 from flask import Flask, Response, render_template, request
+from flask_compress import Compress
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Ordered list of JS modules that make up the frontend bundle.
@@ -44,6 +46,9 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
 
+    # Enable gzip/brotli compression for all responses > 500 bytes
+    Compress(app)
+
     # Session cookie config — compatible with Cloudflare Flexible SSL
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -74,28 +79,51 @@ def create_app(config_overrides: dict | None = None) -> Flask:
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        js_dir = Path(app.root_path) / "static" / "js"
+        compiled = (js_dir / "bundle.compiled.js").exists()
+        return render_template("index.html", bundle_compiled=compiled)
 
     @app.route("/js/bundle.js")
     def js_bundle():
         """Serve all frontend JS modules concatenated as a single script."""
         js_dir = Path(app.root_path) / "static" / "js"
-        parts = []
-        for module in _JS_MODULES:
-            path = js_dir / module
-            if path.exists():
-                parts.append(f"// ═══ {module} ═══\n" + path.read_text(encoding="utf-8"))
+        # Check for pre-compiled bundle first (produced by esbuild)
+        compiled = js_dir / "bundle.compiled.js"
+        if compiled.exists():
+            body = compiled.read_text(encoding="utf-8")
+        else:
+            parts = []
+            for module in _JS_MODULES:
+                path = js_dir / module
+                if path.exists():
+                    parts.append(f"// ═══ {module} ═══\n" + path.read_text(encoding="utf-8"))
+            body = "\n\n".join(parts)
+        etag = hashlib.md5(body.encode()).hexdigest()
+        if request.headers.get("If-None-Match") == etag:
+            return Response(status=304)
         return Response(
-            "\n\n".join(parts),
+            body,
             mimetype="application/javascript",
-            headers={"Cache-Control": "no-store"},
+            headers={"Cache-Control": "public, max-age=60", "ETag": etag},
         )
 
     @app.after_request
-    def _no_cache_api(response):
-        """Prevent Cloudflare (and any CDN) from caching API responses."""
-        if request.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    def _cache_headers(response):
+        """Set appropriate caching headers.
+
+        - Chart images: allow short browser cache (ETag-based revalidation
+          is handled inside the chart endpoint).
+        - Other API responses: prevent Cloudflare / CDN caching but allow
+          short browser caching for non-mutating GETs.
+        """
+        if request.path.startswith("/api/charts/"):
+            # Chart images are cached server-side; let the browser keep
+            # them for 2 minutes to avoid duplicate fetches during
+            # normal browsing.  The _r= cache-buster handles manual
+            # refreshes.
+            pass  # each endpoint sets its own headers
+        elif request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
             response.headers["Pragma"] = "no-cache"
         return response
 

@@ -13,9 +13,13 @@ Architecture
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import sqlite3
+import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -951,6 +955,42 @@ _RENDERERS: dict[str, Callable[[_RenderContext], plt.Figure | None]] = {
     "cooccurrence_3d": lambda ctx: _render_cooccurrence(ctx, is_3d=True),
 }
 
+# ── Chart cache ───────────────────────────────────────────────────────────────
+
+_CACHE_MAX   = 128          # max cached chart PNGs
+_CACHE_TTL   = 300          # seconds before a cached entry is stale
+_cache: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
+_cache_lock  = threading.Lock()
+
+
+def _cache_key(
+    db_path: Path, chart_id: str, pipeline_config: dict | None,
+    top_n: int, cutoff_year: int, subset_sql: str | None,
+    terms_per_subgroup: int | None,
+) -> str:
+    """Deterministic hash of all parameters that affect the chart output.
+
+    Also includes the DB file mtime so the cache auto-invalidates when
+    the underlying data changes.
+    """
+    try:
+        db_mtime = str(db_path.stat().st_mtime_ns)
+    except OSError:
+        db_mtime = "0"
+    raw = "|".join([
+        str(db_path), chart_id, json.dumps(pipeline_config, sort_keys=True, default=str),
+        str(top_n), str(cutoff_year), str(subset_sql), str(terms_per_subgroup),
+        db_mtime,
+    ])
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def invalidate_chart_cache() -> None:
+    """Clear chart cache (e.g. after a pipeline run finishes)."""
+    with _cache_lock:
+        _cache.clear()
+
+
 def generate(
     db_path: Path,
     chart_id: str,
@@ -964,10 +1004,20 @@ def generate(
     """
     Render *chart_id* as a PNG and return the bytes.
 
-    Looks up the chart definition, interpolates SQL,
-    parameters, optionally narrows to *subset_sql*, then dispatches to
-    the appropriate renderer.
+    Results are cached in-memory keyed by a hash of all parameters plus
+    the DB file mtime.  Cache entries expire after ``_CACHE_TTL`` seconds.
     """
+    key = _cache_key(db_path, chart_id, pipeline_config,
+                     top_n, cutoff_year, subset_sql, terms_per_subgroup)
+
+    with _cache_lock:
+        if key in _cache:
+            ts, png = _cache[key]
+            if time.monotonic() - ts < _CACHE_TTL:
+                _cache.move_to_end(key)
+                return png
+            else:
+                del _cache[key]
     spec = get_chart_definition(chart_id)
     if spec is None:
         return _empty_png(chart_id)
@@ -996,6 +1046,13 @@ def generate(
 
     try:
         fig = renderer(ctx)
-        return _to_png(fig) if fig else _empty_png(title)
+        png = _to_png(fig) if fig else _empty_png(title)
     except Exception:
-        return _empty_png(title)
+        png = _empty_png(title)
+
+    with _cache_lock:
+        _cache[key] = (time.monotonic(), png)
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
+
+    return png

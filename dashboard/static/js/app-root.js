@@ -31,8 +31,8 @@ function App() {
       .catch(() => setView('login'));
   }, []);
 
-  // Refresh badge periodically when not on jobs page
-  useInterval(refreshGlobal, me && view !== 'jobs' ? 10000 : null);
+  // Refresh badge periodically when not on jobs page (30s idle vs 10s active)
+  useInterval(refreshGlobal, me && view !== 'jobs' ? 30000 : null);
 
   const handleLogin = d => {
     setMe({ username: d.username });
