@@ -121,6 +121,11 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
     if (isNarrow) setNarrowTab('records');
   }, [activeSubsetIdx, subsets, isNarrow]);
 
+  const openChartRecords = useCallback((sql, chartTitle) => {
+    setRecordViewer({ sql, title: chartTitle });
+    if (isNarrow) setNarrowTab('records');
+  }, [isNarrow]);
+
   const groupDataFull = useMemo(() => {
     const groups = _migrateGroups(pipeline.config || {});
     return groups.map(g => ({
@@ -247,7 +252,9 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
                 topN={TOP_N}
                 title={cfgMap[id]?.title || id}
                 subsetIdx={activeSubsetIdx}
-                chartParams={cfgMap[id]?.params || []} />
+                chartParams={cfgMap[id]?.params || []}
+                chartSql={cfgMap[id]?.sql || null}
+                onOpenRecords={openChartRecords} />
             </div>
           ))}
         </div>

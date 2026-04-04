@@ -1,14 +1,41 @@
 """core/charts.py — Chart query definitions for the dashboard."""
 from __future__ import annotations
 
-# Each entry: title, sql (may contain {top_n}), type, x_key, y_key
-# type values: bar | hbar | stacked_hbar | pie | cooccurrence | cooccurrence_3d
-# llm_only=True means only meaningful when LLM columns are populated.
-# subgroup_key: 'fuel' | 'impact' — which config group to use for stacked/co-occurrence charts
-CHART_QUERIES: dict[str, dict] = {
-    "publications_by_year": {
-        "title": "Publications by Year",
-        "sql": (
+from dataclasses import dataclass
+from typing import Literal
+
+
+ChartRenderer = Literal["bar", "hbar", "stacked_hbar", "pie", "subgroup_pie", "cooccurrence_3d_bar", "cooccurrence_3d"]
+
+
+@dataclass(frozen=True)
+class ChartDefinition:
+    """Declarative chart specification independent of rendering implementation."""
+
+    id: str
+    title: str
+    sql_template: str
+    renderer: ChartRenderer
+    x_key: str
+    y_key: str
+    llm_only: bool = False
+    params: tuple[str, ...] = ()
+    subgroup_key: str | None = None
+    default_top_n: int | None = None
+
+    def format_sql(self, top_n: int = 20, cutoff_year: int = 2000) -> str:
+        return (
+            self.sql_template
+            .replace("{top_n}", str(top_n))
+            .replace("{cutoff_year}", str(cutoff_year))
+        )
+
+# Typed chart registry. Keep this as the single source of truth.
+_CHART_DEFINITIONS: dict[str, ChartDefinition] = {
+    "publications_by_year": ChartDefinition(
+        id="publications_by_year",
+        title="Publications by Year",
+        sql_template=(
             "SELECT "
             "  CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} "
             "       THEN 'Unknown/≤{cutoff_year}' "
@@ -18,129 +45,145 @@ CHART_QUERIES: dict[str, dict] = {
             "GROUP BY year "
             "ORDER BY MIN(COALESCE(publication_year, 0))"
         ),
-        "type": "bar", "x_key": "year", "y_key": "count",
-        "params": ["cutoff_year"],
-    },
-    "top_fuel_terms": {
-        "title": "Top Fuel Terms by Subgroup",
-        "sql": (
-            "SELECT value AS term, COUNT(*) AS count "
-            "FROM filtered_records, json_each(matched_fuel_terms) "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        renderer="bar", x_key="year", y_key="count",
+        params=("cutoff_year",),
+    ),
+    "fuel_subgroup_pie": ChartDefinition(
+        id="fuel_subgroup_pie",
+        title="Papers by Fuel Subgroup",
+        sql_template=(
+            "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, json_each(matched_fuel_subgroups) "
+            "WHERE matched_fuel_subgroups IS NOT NULL "
+            "  AND matched_fuel_subgroups != '[]' "
+            "GROUP BY subgroup ORDER BY count DESC"
         ),
-        "type": "stacked_hbar", "x_key": "term", "y_key": "count",
-        "subgroup_key": "fuel",
-        "params": ["top_n", "terms_per_subgroup"],
-    },
-    "top_impact_terms": {
-        "title": "Top Impact Terms by Subgroup",
-        "sql": (
-            "SELECT value AS term, COUNT(*) AS count "
-            "FROM filtered_records, json_each(matched_impact_terms) "
-            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        renderer="subgroup_pie", x_key="subgroup", y_key="count",
+    ),
+    "impact_subgroup_pie": ChartDefinition(
+        id="impact_subgroup_pie",
+        title="Papers by Impact Subgroup",
+        sql_template=(
+            "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, json_each(matched_impact_subgroups) "
+            "WHERE matched_impact_subgroups IS NOT NULL "
+            "  AND matched_impact_subgroups != '[]' "
+            "GROUP BY subgroup ORDER BY count DESC"
         ),
-        "type": "stacked_hbar", "x_key": "term", "y_key": "count",
-        "subgroup_key": "impact",
-        "params": ["top_n", "terms_per_subgroup"],
-    },
-    "fuel_impact_cooccurrence": {
-        "title": "Fuel × Impact Subgroup Co-occurrence",
-        "sql": (
-            "SELECT DISTINCT openalex_id, ft.value AS fuel_term, it.value AS impact_term "
+        renderer="subgroup_pie", x_key="subgroup", y_key="count",
+    ),
+    "fuel_impact_cooccurrence": ChartDefinition(
+        id="fuel_impact_cooccurrence",
+        title="Fuel × Impact Subgroup Co-occurrence",
+        sql_template=(
+            "SELECT DISTINCT openalex_id, "
+            "  REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, "
+            "  REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup "
             "FROM filtered_records, "
-            "  json_each(matched_fuel_terms) ft, json_each(matched_impact_terms) it "
-            "WHERE matched_fuel_terms IS NOT NULL AND matched_fuel_terms != '[]' "
-            "  AND matched_impact_terms IS NOT NULL AND matched_impact_terms != '[]' "
+            "  json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg "
+            "WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' "
+            "  AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' "
         ),
-        "type": "cooccurrence", "x_key": "fuel_term", "y_key": "openalex_id",
-    },
-    "top_countries": {
-        "title": "Top Contributing Countries",
-        "sql": (
+        renderer="cooccurrence_3d_bar", x_key="fuel_subgroup", y_key="openalex_id",
+    ),
+    "top_countries": ChartDefinition(
+        id="top_countries",
+        title="Top Contributing Countries",
+        sql_template=(
             "SELECT value AS country, COUNT(*) AS count "
             "FROM filtered_records, json_each(authors_countries) "
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "country", "y_key": "count",
-        "params": ["top_n"],
-    },
-    "top_journals": {
-        "title": "Top Journals / Sources",
-        "sql": (
+        renderer="hbar", x_key="country", y_key="count",
+        params=("top_n",),
+    ),
+    "top_journals": ChartDefinition(
+        id="top_journals",
+        title="Top Journals / Sources",
+        sql_template=(
             "SELECT primary_location_source_display_name AS journal, COUNT(*) AS count "
             "FROM filtered_records "
             "WHERE primary_location_source_display_name IS NOT NULL "
             "GROUP BY journal ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "journal", "y_key": "count",
-        "params": ["top_n"],
-    },
-    "oa_status": {
-        "title": "Open Access Status",
-        "sql": (
+        renderer="hbar", x_key="journal", y_key="count",
+        params=("top_n",),
+    ),
+    "oa_status": ChartDefinition(
+        id="oa_status",
+        title="Open Access Status",
+        sql_template=(
             "SELECT COALESCE(open_access_oa_status, 'unknown') AS status, COUNT(*) AS count "
             "FROM filtered_records GROUP BY status ORDER BY count DESC"
         ),
-        "type": "pie", "x_key": "status", "y_key": "count",
-    },
-    "work_types": {
-        "title": "Work Types",
-        "sql": (
+        renderer="pie", x_key="status", y_key="count",
+    ),
+    "work_types": ChartDefinition(
+        id="work_types",
+        title="Work Types",
+        sql_template=(
             "SELECT COALESCE(type, 'unknown') AS type, COUNT(*) AS count "
             "FROM filtered_records GROUP BY type ORDER BY count DESC LIMIT 10"
         ),
-        "type": "bar", "x_key": "type", "y_key": "count",
-    },
-    "top_institutions": {
-        "title": "Top Institutions",
-        "sql": (
+        renderer="bar", x_key="type", y_key="count",
+    ),
+    "top_institutions": ChartDefinition(
+        id="top_institutions",
+        title="Top Institutions",
+        sql_template=(
             "SELECT value AS institution, COUNT(*) AS count "
             "FROM filtered_records, json_each(authors_institutions) "
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "institution", "y_key": "count",
-        "params": ["top_n"],
-    },
-    "llm_scope": {
-        "title": "Fuel Classification (LLM)",
-        "sql": (
+        renderer="hbar", x_key="institution", y_key="count",
+        params=("top_n",),
+    ),
+    "llm_scope": ChartDefinition(
+        id="llm_scope",
+        title="Fuel Classification (LLM)",
+        sql_template=(
             "SELECT value AS fuel_type, COUNT(*) AS count "
             "FROM filtered_records, json_each(llm_fuel_classification) "
             "WHERE value IS NOT NULL AND value != '' "
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "fuel_type", "y_key": "count",
-        "llm_only": True,
-        "params": ["top_n"],
-    },
-    "llm_ml_role": {
-        "title": "ML/AI Functional Role (LLM)",
-        "sql": (
+        renderer="hbar", x_key="fuel_type", y_key="count",
+        llm_only=True,
+        params=("top_n",),
+    ),
+    "llm_ml_role": ChartDefinition(
+        id="llm_ml_role",
+        title="ML/AI Functional Role (LLM)",
+        sql_template=(
             "SELECT value AS role, COUNT(*) AS count "
             "FROM filtered_records, json_each(llm_ml_role) "
             "WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' "
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "role", "y_key": "count",
-        "llm_only": True,
-        "params": ["top_n"],
-    },
-    "llm_ml_algorithm": {
-        "title": "ML/AI Algorithm Family (LLM)",
-        "sql": (
+        renderer="hbar", x_key="role", y_key="count",
+        llm_only=True,
+        params=("top_n",),
+    ),
+    "llm_ml_algorithm": ChartDefinition(
+        id="llm_ml_algorithm",
+        title="ML/AI Algorithm Family (LLM)",
+        sql_template=(
             "SELECT value AS algorithm, COUNT(*) AS count "
             "FROM filtered_records, json_each(llm_ml_algorithm) "
             "WHERE value IS NOT NULL AND value != '' "
             "  AND LOWER(value) NOT IN ('none', 'other_ml') "
             "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
         ),
-        "type": "hbar", "x_key": "algorithm", "y_key": "count",
-        "llm_only": True,
-        "params": ["top_n"],
-    },
-    "llm_ml_usage": {
-        "title": "ML/AI Usage Rate (LLM)",
-        "sql": (
+        renderer="hbar", x_key="algorithm", y_key="count",
+        llm_only=True,
+        params=("top_n",),
+    ),
+    "llm_ml_usage": ChartDefinition(
+        id="llm_ml_usage",
+        title="ML/AI Usage Rate (LLM)",
+        sql_template=(
             "SELECT "
             "  CASE WHEN llm_ml_role IS NOT NULL "
             "            AND llm_ml_role NOT IN ('[]', 'null', '') "
@@ -149,12 +192,13 @@ CHART_QUERIES: dict[str, dict] = {
             "  COUNT(*) AS count "
             "FROM filtered_records GROUP BY uses_ml"
         ),
-        "type": "pie", "x_key": "uses_ml", "y_key": "count",
-        "llm_only": True,
-    },
-    "fuel_impact_model_cooccurrence": {
-        "title": "Fuel × Impact × LLM Model Co-occurrence",
-        "sql": (
+        renderer="pie", x_key="uses_ml", y_key="count",
+        llm_only=True,
+    ),
+    "fuel_impact_model_cooccurrence": ChartDefinition(
+        id="fuel_impact_model_cooccurrence",
+        title="Fuel × Impact × LLM Model Co-occurrence",
+        sql_template=(
             "SELECT ft.value AS fuel_term, it.value AS impact_term, "
             "  m.value AS model_raw, r.value AS ml_role, COUNT(*) AS count "
             "FROM filtered_records, "
@@ -167,35 +211,59 @@ CHART_QUERIES: dict[str, dict] = {
             "  AND LOWER(r.value) != 'none' "
             "GROUP BY ft.value, it.value, model_raw, ml_role"
         ),
-        "type": "cooccurrence_3d", "x_key": "fuel_term", "y_key": "count",
-        "llm_only": True,
-    },
+        renderer="cooccurrence_3d", x_key="fuel_term", y_key="count",
+        llm_only=True,
+    ),
 }
+
+
+# Backward-compatible raw map used by older callsites.
+CHART_QUERIES: dict[str, dict] = {
+    cid: {
+        "title": spec.title,
+        "sql": spec.sql_template,
+        "type": spec.renderer,
+        "x_key": spec.x_key,
+        "y_key": spec.y_key,
+        "llm_only": spec.llm_only,
+        "params": list(spec.params),
+        **({"subgroup_key": spec.subgroup_key} if spec.subgroup_key else {}),
+    }
+    for cid, spec in _CHART_DEFINITIONS.items()
+}
+
+
+def get_chart_definition(chart_id: str) -> ChartDefinition | None:
+    return _CHART_DEFINITIONS.get(chart_id)
+
+
+def has_chart(chart_id: str) -> bool:
+    return chart_id in _CHART_DEFINITIONS
 
 
 def get_chart_configs(top_n: int = 20, cutoff_year: int = 2000) -> list[dict]:
     """Return all chart configs with {top_n} and {cutoff_year} interpolated."""
-    configs = []
-    for cid, cfg in CHART_QUERIES.items():
+    configs: list[dict] = []
+    for cid, spec in _CHART_DEFINITIONS.items():
         entry = {
             "id": cid,
-            "title": cfg["title"],
-            "sql": cfg["sql"].replace("{top_n}", str(top_n)).replace("{cutoff_year}", str(cutoff_year)),
-            "type": cfg["type"],
-            "x_key": cfg["x_key"],
-            "y_key": cfg["y_key"],
-            "llm_only": cfg.get("llm_only", False),
-            "params": cfg.get("params", []),
+            "title": spec.title,
+            "sql": spec.format_sql(top_n=top_n, cutoff_year=cutoff_year),
+            "type": spec.renderer,
+            "x_key": spec.x_key,
+            "y_key": spec.y_key,
+            "llm_only": spec.llm_only,
+            "params": list(spec.params),
         }
-        if "subgroup_key" in cfg:
-            entry["subgroup_key"] = cfg["subgroup_key"]
+        if spec.subgroup_key:
+            entry["subgroup_key"] = spec.subgroup_key
         configs.append(entry)
     return configs
 
 
 def get_chart_sql(chart_id: str, top_n: int = 20, cutoff_year: int = 2000) -> str | None:
     """Return the interpolated SQL for a single chart, or None if unknown."""
-    cfg = CHART_QUERIES.get(chart_id)
-    if cfg is None:
+    spec = get_chart_definition(chart_id)
+    if spec is None:
         return None
-    return cfg["sql"].replace("{top_n}", str(top_n)).replace("{cutoff_year}", str(cutoff_year))
+    return spec.format_sql(top_n=top_n, cutoff_year=cutoff_year)

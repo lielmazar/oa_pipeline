@@ -1,10 +1,24 @@
-"""chart_gen.py — Server-side matplotlib chart generation for the dashboard API."""
+"""chart_gen.py — Server-side chart generation for the dashboard API.
+
+Architecture
+------------
+1. Theme        — palette, matplotlib rcParams, DPI
+2. Country map  — ISO 3166-1 lookup
+3. Subgroup     — config extraction, term→subgroup mapping
+4. SQL helpers  — _run_sql, _apply_subset_cte, _fetch_sg_counts
+5. Figure utils — _to_png, _empty_png
+6. Renderers    — pure Figure factories (_vbar, _hbar, _pie,
+                  _stacked_hbar, _cooccurrence_heatmap, _cooccurrence_3d)
+7. Public API   — generate(db_path, chart_id, ...)
+"""
 from __future__ import annotations
 
 import io
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import matplotlib
 matplotlib.use("Agg")
@@ -13,7 +27,10 @@ import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 import numpy as np
 
-# ── Style (matches generate_report.py) ────────────────────────────────────────
+from core.charts import ChartDefinition, get_chart_definition
+
+
+# ── 1. Theme ──────────────────────────────────────────────────────────────────
 
 PALETTE = [
     "#2563EB", "#059669", "#D97706", "#DC2626", "#7C3AED",
@@ -26,29 +43,29 @@ TEXT_COLOR = "#1F2937"
 MUTED      = "#6B7280"
 
 plt.rcParams.update({
-    "figure.facecolor": BG_COLOR,
-    "axes.facecolor": "#FFFFFF",
-    "axes.edgecolor": GRID_COLOR,
-    "axes.grid": True,
-    "axes.grid.axis": "y",
-    "grid.color": GRID_COLOR,
-    "grid.linewidth": 0.5,
-    "text.color": TEXT_COLOR,
-    "axes.labelcolor": TEXT_COLOR,
-    "xtick.color": MUTED,
-    "ytick.color": MUTED,
-    "font.family": "sans-serif",
-    "font.size": 11,
-    "axes.titlesize": 13,
-    "axes.titleweight": "bold",
-    "axes.spines.top": False,
+    "figure.facecolor":  BG_COLOR,
+    "axes.facecolor":    "#FFFFFF",
+    "axes.edgecolor":    GRID_COLOR,
+    "axes.grid":         True,
+    "axes.grid.axis":    "y",
+    "grid.color":        GRID_COLOR,
+    "grid.linewidth":    0.5,
+    "text.color":        TEXT_COLOR,
+    "axes.labelcolor":   TEXT_COLOR,
+    "xtick.color":       MUTED,
+    "ytick.color":       MUTED,
+    "font.family":       "sans-serif",
+    "font.size":         11,
+    "axes.titlesize":    13,
+    "axes.titleweight":  "bold",
+    "axes.spines.top":   False,
     "axes.spines.right": False,
 })
 
-DPI = 180   # high-resolution output
+DPI = 180
 
 
-# ── ISO 3166-1 alpha-2 → full country name ────────────────────────────────────
+# ── 2. Country map ────────────────────────────────────────────────────────────
 
 _COUNTRY_NAMES: dict[str, str] = {
     "AD": "Andorra", "AE": "United Arab Emirates", "AF": "Afghanistan",
@@ -88,25 +105,18 @@ _COUNTRY_NAMES: dict[str, str] = {
 
 
 def _country_name(code: str) -> str:
-    """Translate an ISO 3166-1 alpha-2 code to a full country name."""
-    if not code:
-        return code
-    return _COUNTRY_NAMES.get(code.upper(), code.upper())
+    return _COUNTRY_NAMES.get(code.upper(), code.upper()) if code else code
 
 
-# ── Subgroup config helpers ───────────────────────────────────────────────────
+# ── 3. Subgroup helpers ───────────────────────────────────────────────────────
 
 def _extract_subgroups(config: dict, key: str) -> list[dict]:
-    """
-    Extract subgroup list for 'fuel' (index 0) or 'impact' (index 1) from
-    the pipeline config dict.  Always returns at least one subgroup.
-    """
+    """Extract subgroup list for 'fuel' (index 0) or 'impact' (index 1)."""
     if not config:
         return [{"name": "Others", "terms": [], "is_others": True}]
 
     groups = config.get("groups", [])
     if not groups:
-        # Legacy flat format
         terms = config.get("fuel_terms" if key == "fuel" else "impact_terms", [])
         return [{"name": "Others", "terms": terms, "is_others": True}]
 
@@ -122,20 +132,84 @@ def _extract_subgroups(config: dict, key: str) -> list[dict]:
     return subgroups
 
 
-def _build_term_sg_map(subgroups: list[dict]) -> dict[str, str]:
-    """Return {term_lower: subgroup_name} from a subgroup list."""
-    m: dict[str, str] = {}
+def _build_term_sg_map(subgroups: list[dict]) -> tuple[dict[str, str], str]:
+    """Return ({term_lower: subgroup_name}, others_name) from a subgroup list."""
+    term_map: dict[str, str] = {}
     others_name = "Others"
     for sg in subgroups:
         if sg.get("is_others"):
             others_name = sg.get("name", "Others")
             continue
         for t in sg.get("terms", []):
-            m[t.lower()] = sg["name"]
-    return m, others_name
+            term_map[t.lower()] = sg["name"]
+    return term_map, others_name
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
+# ── 4. SQL helpers ────────────────────────────────────────────────────────────
+
+def _run_sql(db_path: Path, sql: str) -> tuple[list[str], list[tuple]]:
+    with sqlite3.connect(db_path) as conn:
+        cur = conn.execute(sql)
+        return [d[0] for d in cur.description], cur.fetchall()
+
+
+def _apply_subset_cte(sql: str, subset_sql: str) -> str:
+    """Wrap *sql* in a CTE that shadows filtered_records with *subset_sql*."""
+    return f"WITH _fr_subset AS (\n{subset_sql}\n)\n{sql.replace('filtered_records', '_fr_subset')}"
+
+
+def _fetch_sg_counts(
+    db_path: Path,
+    subgroups: list[dict],
+    subgroup_key: str,
+    subset_sql: str | None,
+) -> dict[str, int]:
+    """
+    Return {subgroup_name: distinct_paper_count} using the same dual-condition
+    as the records viewer: matched_*_subgroups contains the name OR
+    matched_*_terms contains any of the subgroup's terms.
+    """
+    sg_col    = f"matched_{subgroup_key}_subgroups"
+    terms_col = f"matched_{subgroup_key}_terms"
+
+    parts: list[str] = []
+    for sg in subgroups:
+        if sg.get("is_others"):
+            continue
+        safe_name  = sg["name"].replace("'", "''")
+        sg_terms   = sg.get("terms", [])
+        conditions = [
+            f"EXISTS (SELECT 1 FROM json_each({sg_col}) WHERE value = '{safe_name}')"
+        ]
+        if sg_terms:
+            quoted = ", ".join("'" + t.replace("'", "''") + "'" for t in sg_terms)
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM json_each({terms_col}) WHERE value IN ({quoted}))"
+            )
+        where = " OR ".join(conditions)
+        parts.append(
+            f"SELECT '{safe_name}' AS sg, COUNT(DISTINCT openalex_id) AS cnt "
+            f"FROM filtered_records WHERE {where}"
+        )
+
+    if parts:
+        base_sql = " UNION ALL ".join(parts)
+    else:
+        base_sql = (
+            f"SELECT value AS sg, COUNT(DISTINCT openalex_id) AS cnt "
+            f"FROM filtered_records, json_each({sg_col}) "
+            f"WHERE {sg_col} IS NOT NULL AND {sg_col} != '[]' GROUP BY value"
+        )
+
+    sql = _apply_subset_cte(base_sql, subset_sql) if subset_sql else base_sql
+    try:
+        _, rows = _run_sql(db_path, sql)
+        return {str(r[0]): int(r[1]) for r in rows}
+    except Exception:
+        return {}
+
+
+# ── 5. Figure utilities ───────────────────────────────────────────────────────
 
 def _to_png(fig: plt.Figure) -> bytes:
     buf = io.BytesIO()
@@ -154,23 +228,12 @@ def _empty_png(title: str) -> bytes:
     return _to_png(fig)
 
 
-def _run_sql(db_path: Path, sql: str) -> tuple[list[str], list[tuple]]:
-    conn = sqlite3.connect(db_path)
-    try:
-        cur = conn.execute(sql)
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
-    finally:
-        conn.close()
-    return cols, rows
+# ── 6. Renderers ──────────────────────────────────────────────────────────────
 
-
-# ── Chart type renderers ──────────────────────────────────────────────────────
-
-def _vbar(labels: list, values: list, title: str, color: str = PALETTE[0]) -> plt.Figure:
+def _vbar(labels: list[str], values: list[int], title: str) -> plt.Figure:
     n = len(labels)
     fig, ax = plt.subplots(figsize=(max(8, n * 0.5), 5))
-    ax.bar(range(n), values, color=color, width=0.72, zorder=3)
+    ax.bar(range(n), values, color=PALETTE[0], width=0.72, zorder=3)
     ax.set_xticks(range(n))
     ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=9)
     ax.set_ylabel("Papers")
@@ -180,18 +243,17 @@ def _vbar(labels: list, values: list, title: str, color: str = PALETTE[0]) -> pl
         pk = max(range(n), key=lambda i: values[i])
         ax.annotate(str(values[pk]), (pk, values[pk]),
                     textcoords="offset points", xytext=(0, 6),
-                    ha="center", fontsize=9, color=color, fontweight="bold")
+                    ha="center", fontsize=9, color=PALETTE[0], fontweight="bold")
     fig.tight_layout()
     return fig
 
 
-def _hbar(labels: list, values: list, title: str, color: str = PALETTE[0]) -> plt.Figure:
-    pairs = sorted(zip(labels, values), key=lambda p: p[1])
+def _hbar(labels: list[str], values: list[int], title: str) -> plt.Figure:
+    pairs  = sorted(zip(labels, values), key=lambda p: p[1])
     labels = [p[0] for p in pairs]
     values = [p[1] for p in pairs]
-    h = max(3.5, len(labels) * 0.38)
-    fig, ax = plt.subplots(figsize=(9, h))
-    bars = ax.barh(range(len(labels)), values, color=color, height=0.65, zorder=3)
+    fig, ax = plt.subplots(figsize=(9, max(3.5, len(labels) * 0.38)))
+    bars = ax.barh(range(len(labels)), values, color=PALETTE[0], height=0.65, zorder=3)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels, fontsize=9)
     ax.set_xlabel("Papers")
@@ -205,7 +267,7 @@ def _hbar(labels: list, values: list, title: str, color: str = PALETTE[0]) -> pl
     return fig
 
 
-def _pie(labels: list, values: list, title: str) -> plt.Figure:
+def _pie(labels: list[str], values: list[int], title: str) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(7, 4.5))
     wedges, _, autotexts = ax.pie(
         values, labels=None, autopct="%1.1f%%",
@@ -214,8 +276,7 @@ def _pie(labels: list, values: list, title: str) -> plt.Figure:
     )
     for t in autotexts:
         t.set_fontsize(9)
-    total = sum(values)
-    ax.text(0, 0, f"{total:,}\npapers", ha="center", va="center",
+    ax.text(0, 0, f"{sum(values):,}\npapers", ha="center", va="center",
             fontsize=11, fontweight="bold", color=TEXT_COLOR)
     ax.legend(wedges, [f"{l}  ({v:,})" for l, v in zip(labels, values)],
               loc="center left", bbox_to_anchor=(1, 0.5), fontsize=9)
@@ -225,213 +286,351 @@ def _pie(labels: list, values: list, title: str) -> plt.Figure:
 
 
 def _stacked_hbar(
-    labels: list, values: list, title: str, subgroups: list[dict],
-    sg_counts: dict | None = None,
-    terms_per_subgroup: int | None = None,
-) -> plt.Figure:
+    labels: list[str],
+    values: list[int],
+    title: str,
+    subgroups: list[dict],
+    sg_counts: dict[str, int],
+    terms_per_subgroup: int | None,
+) -> plt.Figure | None:
     """
-    Stacked horizontal bar chart.
-    Major bars = subgroups (sorted by total count descending).
-    Stacked segments = individual terms, shaded within each subgroup's base PALETTE color.
-    Count numbers are shown inside segments (not term names).
+    Stacked horizontal bar chart: major bars = subgroups, segments = terms.
+    Segments are shaded within the subgroup's palette colour.
 
-    When terms_per_subgroup is set:
-      - Each subgroup shows at most that many individual term segments.
-      - Remaining terms collapse into an "Others (N)" segment.
-      - Legend lists individual term names per segment and enumerates "Other" terms.
-    When not set: legend shows only subgroup names (original behaviour).
+    When *terms_per_subgroup* is set, each subgroup is capped at that many
+    term segments; the remainder collapse into an "Others (N)" segment.
+    The legend switches from subgroup names to per-term names in that mode.
     """
     import matplotlib.colors as mcolors
+
+    # 1. Default terms_per_subgroup to 5
+    if terms_per_subgroup is None:
+        terms_per_subgroup = 5
 
     term_sg_map, others_name = _build_term_sg_map(subgroups)
     label_lower = [l.lower() for l in labels]
 
-    # Group terms by subgroup, preserving data-order (already sorted by count desc)
+    # Group terms by subgroup (SQL order = count desc is preserved)
     sg_items: dict[str, list[tuple[str, int]]] = {}
     assigned: set[str] = set()
 
     for sg in subgroups:
         if sg.get("is_others"):
             continue
-        name = sg["name"]
-        items = []
+        name  = sg["name"]
+        items: list[tuple[str, int]] = []
         for orig, val, low in zip(labels, values, label_lower):
-            if low in term_sg_map and term_sg_map[low] == name and low not in assigned:
+            if term_sg_map.get(low) == name and low not in assigned:
                 items.append((orig, val))
                 assigned.add(low)
         if items:
             sg_items[name] = items
 
-    others_items = [
-        (orig, val) for orig, val, low in zip(labels, values, label_lower)
-        if low not in assigned
-    ]
-    if others_items:
-        sg_items[others_name] = others_items
+    others = [(orig, val) for orig, val, low in zip(labels, values, label_lower)
+              if low not in assigned]
+    if others:
+        sg_items[others_name] = others
 
     if not sg_items:
         return None
 
-    # Apply terms-per-subgroup cap
-    # other_terms_map[sg_name] = list of term names that were collapsed into "Others"
+    # Cap terms per subgroup and track the collapsed names for the legend
     other_terms_map: dict[str, list[str]] = {}
-    if terms_per_subgroup is not None and terms_per_subgroup > 0:
-        capped: dict[str, list[tuple[str, int]]] = {}
-        for sg_name, items in sg_items.items():
-            if len(items) > terms_per_subgroup:
-                top  = items[:terms_per_subgroup]
-                rest = items[terms_per_subgroup:]
-                rest_count = sum(c for _, c in rest)
-                other_terms_map[sg_name] = [t for t, _ in rest]
-                capped[sg_name] = top + [(f"Others ({len(rest)})", rest_count)]
-            else:
-                capped[sg_name] = items
-        sg_items = capped
+    capped: dict[str, list[tuple[str, int]]] = {}
+    for sg_name, items in sg_items.items():
+        if len(items) > terms_per_subgroup:
+            rest = items[terms_per_subgroup:]
+            other_terms_map[sg_name] = [t for t, _ in rest]
+            capped[sg_name] = items[:terms_per_subgroup] + [
+                (f"Others ({len(rest)})", sum(c for _, c in rest))
+            ]
+        else:
+            capped[sg_name] = items
+    sg_items = capped
 
-    # Sort subgroups by total count descending (largest bar at top for hbar)
-    ordered = sorted(sg_items.items(), key=lambda x: sum(c for _, c in x[1]))
-
-    # Each subgroup gets a distinct base PALETTE color
-    sg_names = [name for name, _ in ordered]
+    ordered     = sorted(sg_items.items(), key=lambda x: sum(c for _, c in x[1]))
+    sg_names    = [name for name, _ in ordered]
     sg_base_hex = {name: PALETTE[i % len(PALETTE)] for i, name in enumerate(sg_names)}
+    max_total   = max((sum(c for _, c in items) for _, items in ordered), default=1)
 
-    n_sg = len(ordered)
-    h = max(4, n_sg * 0.7 + 1.5)
-    fig, ax = plt.subplots(figsize=(10, h))
+    fig, ax = plt.subplots(figsize=(12, max(4.5, len(ordered) * 0.9 + 1.5)))
+    legend_patches: list[mpatches.Patch] = []
 
-    legend_patches = []
-    totals = [sum(c for _, c in items) for _, items in ordered]
-    max_total = max(totals) if totals else 1
+    # Threshold: segments narrower than this fraction of max_total get arrow labels
+    narrow_threshold = max_total * 0.07
 
     for sg_i, (sg_name, items) in enumerate(ordered):
-        n_terms = len(items)
         base_rgb = mcolors.hex2color(sg_base_hex[sg_name])
-        left = 0
+        n_terms  = len(items)
+        left     = 0
+        # Collect narrow-segment annotations to stagger vertically
+        arrow_annotations: list[tuple[float, int, str, tuple]] = []
+
         for ti, (term, count) in enumerate(items):
-            # Shade range: ti=0 → base color; ti=n-1 → lightened 45% max (avoid near-white)
             blend = (0.45 * ti / (n_terms - 1)) if n_terms > 1 else 0.0
             color = tuple(c * (1 - blend) + blend for c in base_rgb)
+            ax.barh(sg_i, count, left=left, color=color, height=0.6,
+                    zorder=3, edgecolor="white", linewidth=0.8)
 
-            ax.barh(sg_i, count, left=left, color=color, height=0.65, zorder=3,
-                    edgecolor="white", linewidth=0.5)
-
-            # Show count number inside segment if wide enough (>= 4% of max bar)
-            if count >= max_total * 0.04:
-                luminance = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
-                text_color = "white" if luminance < 0.55 else TEXT_COLOR
+            if count >= narrow_threshold:
+                # Wide segment — place count text inside
+                lum = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
                 ax.text(left + count / 2, sg_i, f"{count:,}",
-                        ha="center", va="center", fontsize=7.5, color=text_color,
-                        fontweight="bold", clip_on=True)
+                        ha="center", va="center", fontsize=8, fontweight="bold",
+                        color="white" if lum < 0.55 else TEXT_COLOR, clip_on=True)
+            else:
+                # Narrow segment — queue for arrow annotation
+                arrow_annotations.append((left + count / 2, sg_i, f"{count:,}", color))
 
-            # Per-term legend entries when terms_per_subgroup is active
-            if terms_per_subgroup is not None:
-                is_others_seg = term.startswith("Others (")
-                if is_others_seg:
-                    rest = other_terms_map.get(sg_name, [])
-                    rest_str = ", ".join(rest)
-                    if len(rest_str) > 72:
-                        rest_str = rest_str[:69] + "…"
-                    lbl = f"[{sg_name}] Other terms: {rest_str}"
-                else:
-                    lbl = f"[{sg_name}] {term}"
-                legend_patches.append(mpatches.Patch(color=mcolors.to_hex(color), label=lbl))
+            if term.startswith("Others ("):
+                rest_str = ", ".join(other_terms_map.get(sg_name, []))
+                if len(rest_str) > 72:
+                    rest_str = rest_str[:69] + "…"
+                lbl = f"[{sg_name}] Other terms: {rest_str} ({count:,})"
+            else:
+                lbl = f"[{sg_name}] {term} ({count:,})"
+            legend_patches.append(mpatches.Patch(color=mcolors.to_hex(color), label=lbl))
 
             left += count
 
-        # Total label: use actual distinct-record count from sg_counts when available,
-        # falling back to the summed term count (which double-counts multi-term records)
-        display_total = (sg_counts or {}).get(sg_name, left)
-        ax.text(left + max_total * 0.015, sg_i, f"{display_total:,}",
-                va="center", fontsize=9, color=MUTED)
+        # Draw staggered arrow annotations for narrow segments
+        for ai, (ax_x, ax_y, txt, clr) in enumerate(arrow_annotations):
+            # Alternate above/below the bar to avoid overlap
+            y_offset = 22 + ai * 14 if ai % 2 == 0 else -(22 + ai * 14)
+            ax.annotate(
+                txt, xy=(ax_x, ax_y),
+                xytext=(0, y_offset), textcoords="offset points",
+                fontsize=7, fontweight="bold", color=MUTED,
+                ha="center", va="bottom" if y_offset > 0 else "top",
+                arrowprops=dict(arrowstyle="-|>", color=MUTED, lw=0.8),
+                zorder=5,
+            )
 
-        # Subgroup-level legend entry when not in per-term mode
-        if terms_per_subgroup is None:
-            legend_patches.append(mpatches.Patch(color=sg_base_hex[sg_name], label=sg_name))
+        # Use the accurate distinct-paper count when available
+        ax.text(left + max_total * 0.015, sg_i, f"{sg_counts.get(sg_name, left):,}",
+                va="center", fontsize=9.5, fontweight="bold", color=MUTED)
 
-    ax.set_yticks(range(n_sg))
-    ax.set_yticklabels(sg_names, fontsize=10)
+    ax.set_yticks(range(len(ordered)))
+    ax.set_yticklabels(sg_names, fontsize=10, fontweight="bold")
     ax.set_xlabel("Papers")
-    ax.set_title(title)
+    ax.set_title(title, fontsize=14, pad=12)
     ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-    # Extra 18% headroom so the total labels never clip (they sit at bar_end + 1.5%)
-    ax.set_xlim(0, max_total * 1.18)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+    ax.set_xlim(0, max_total * 1.15)
+    ax.set_ylim(-0.6, len(ordered) - 0.4)
 
     if legend_patches:
-        if terms_per_subgroup is not None:
-            # Legend outside the axes to avoid overlap with (potentially many) entries
-            ax.legend(handles=legend_patches, loc="upper left",
-                      bbox_to_anchor=(1.02, 1), fontsize=7.5, framealpha=0.8,
-                      title="Terms per bar", title_fontsize=8, borderaxespad=0)
-        else:
-            ax.legend(handles=legend_patches, loc="lower right",
-                      fontsize=8, framealpha=0.8,
-                      title="Subgroup", title_fontsize=9)
+        n_cols = max(1, len(legend_patches) // 6)
+        ax.legend(handles=legend_patches, loc="upper center",
+                  bbox_to_anchor=(0.5, -0.08), fontsize=7.5, framealpha=0.9,
+                  ncol=n_cols, columnspacing=1.2,
+                  title="Segments", title_fontsize=8.5, borderaxespad=0)
 
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
+    return fig
+
+
+def _cooccurrence_3d_bar(
+    rows: list[tuple],
+    title: str,
+) -> plt.Figure | None:
+    """
+    3D bar chart: fuel subgroup (X) × impact subgroup (Y), bar height = distinct papers.
+    *rows* is (openalex_id, fuel_subgroup, impact_subgroup) — already at subgroup level.
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    import matplotlib.colors as mcolors
+
+    # Count distinct papers per (fuel_subgroup, impact_subgroup) cell
+    cell_ids: dict[tuple[str, str], set[str]] = {}
+    for oid, fuel_sg, impact_sg in rows:
+        cell_ids.setdefault((str(fuel_sg), str(impact_sg)), set()).add(str(oid or ""))
+
+    matrix = {k: len(v) for k, v in cell_ids.items()}
+    if not matrix:
+        return None
+
+    # Subgroup names ordered by total count (descending)
+    fuel_totals: dict[str, int] = {}
+    impact_totals: dict[str, int] = {}
+    for (fsg, isg), cnt in matrix.items():
+        fuel_totals[fsg] = fuel_totals.get(fsg, 0) + cnt
+        impact_totals[isg] = impact_totals.get(isg, 0) + cnt
+
+    fuel_names = sorted(fuel_totals, key=lambda k: -fuel_totals[k])
+    impact_names = sorted(impact_totals, key=lambda k: -impact_totals[k])
+    if not fuel_names or not impact_names:
+        return None
+
+    nf, ni = len(fuel_names), len(impact_names)
+    data = np.zeros((ni, nf), dtype=float)
+    for (fsg, isg), count in matrix.items():
+        data[impact_names.index(isg), fuel_names.index(fsg)] = count
+
+    vmax = data.max() or 1
+
+    # ── Figure & 3-D axis ────────────────────────────────────────────────
+    fig = plt.figure(
+        figsize=(max(11, nf * 2.4), max(8, ni * 1.6)),
+        facecolor=BG_COLOR,
+    )
+    ax = fig.add_subplot(111, projection="3d", computed_zorder=False)
+    ax.set_facecolor("#FFFFFF")
+
+    # Transparent panes + subtle grid
+    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+        pane.fill = False
+        pane.set_edgecolor(GRID_COLOR)
+    ax.zaxis._axinfo["grid"].update(linewidth=0.4, color=GRID_COLOR)
+
+    # ── Bars (draw back-to-front for correct occlusion) ────────────────
+    bar_w, bar_d = 0.52, 0.52
+    # Camera direction vector for azim=-45, elev=25
+    import math
+    azim_rad = math.radians(-45)
+    cam_dx, cam_dy = math.cos(azim_rad), math.sin(azim_rad)
+
+    # Collect all bars, then sort by distance from camera (farthest first)
+    bars_to_draw: list[tuple[float, int, int]] = []
+    for fi in range(nf):
+        for ii in range(ni):
+            if data[ii, fi] > 0:
+                dist = fi * cam_dx + ii * cam_dy
+                bars_to_draw.append((dist, fi, ii))
+    bars_to_draw.sort(key=lambda t: t[0])  # farthest (most negative) first
+
+    zorder_counter = 0
+    for _, fi, ii in bars_to_draw:
+        val = data[ii, fi]
+        base_rgb = mcolors.hex2color(PALETTE[fi % len(PALETTE)])
+        # Slight intensity gradient by value for depth cue
+        t = 0.45 + 0.55 * (val / vmax)
+        color = tuple(c * t + (1 - t) for c in base_rgb)
+        bar_col = ax.bar3d(
+            fi - bar_w / 2, ii - bar_d / 2, 0,
+            bar_w, bar_d, val,
+            color=color, edgecolor="white", linewidth=0.35,
+            alpha=0.90,
+        )
+        bar_col.set_zorder(zorder_counter)
+        zorder_counter += 1
+        txt = ax.text(
+            fi, ii, val + vmax * 0.018,
+            f"{int(val):,}",
+            ha="center", va="bottom",
+            fontsize=7.5, fontweight="bold", color=TEXT_COLOR,
+        )
+        txt.set_zorder(zorder_counter)
+        zorder_counter += 1
+
+    # ── Axes labels & ticks ──────────────────────────────────────────────
+    ax.set_xticks(range(nf))
+    ax.set_xticklabels(fuel_names, fontsize=8, rotation=30, ha="right")
+    ax.set_yticks(range(ni))
+    ax.set_yticklabels(impact_names, fontsize=8)
+    ax.set_xlabel("Fuel Subgroup", fontsize=10, labelpad=18, fontweight="bold")
+    ax.set_ylabel("Impact Subgroup", fontsize=10, labelpad=18, fontweight="bold")
+    ax.set_zlabel("Distinct Papers", fontsize=10, labelpad=12, fontweight="bold")
+    ax.zaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"{int(x):,}")
+    )
+    ax.tick_params(axis="z", labelsize=8)
+
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=22)
+
+    # ── Legend for fuel subgroups ─────────────────────────────────────────
+    legend_patches = [
+        mpatches.Patch(color=PALETTE[i % len(PALETTE)], label=n)
+        for i, n in enumerate(fuel_names)
+    ]
+    ax.legend(
+        handles=legend_patches, loc="upper left", fontsize=8,
+        title="Fuel Subgroup", title_fontsize=9,
+        framealpha=0.92, edgecolor=GRID_COLOR,
+    )
+
+    ax.view_init(elev=25, azim=-45)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def _subgroup_pie(
+    labels: list[str],
+    values: list[int],
+    title: str,
+) -> plt.Figure | None:
+    """
+    Donut chart showing distinct paper counts per subgroup.
+    SQL provides pre-aggregated subgroup-level data (COUNT DISTINCT).
+    """
+    if not labels or not any(values):
+        return None
+
+    colors = [PALETTE[i % len(PALETTE)] for i in range(len(labels))]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    wedges, _, autotexts = ax.pie(
+        values, labels=None, autopct="%1.1f%%",
+        colors=colors, startangle=90, pctdistance=0.78,
+        wedgeprops={"linewidth": 1.5, "edgecolor": "white", "width": 0.5},
+    )
+    for t in autotexts:
+        t.set_fontsize(9)
+    ax.text(0, 0, f"{sum(values):,}\npapers", ha="center", va="center",
+            fontsize=12, fontweight="bold", color=TEXT_COLOR)
+    ax.legend(wedges, [f"{l}  ({v:,})" for l, v in zip(labels, values)],
+              loc="center left", bbox_to_anchor=(1, 0.5), fontsize=9)
+    ax.set_title(title, fontsize=13, fontweight="bold")
     fig.tight_layout()
     return fig
 
 
+# Keep old heatmap for backward compat (unused in main report now)
 def _cooccurrence_heatmap(
-    rows: list[tuple], title: str,
-    fuel_sgs: list[dict], impact_sgs: list[dict],
-) -> plt.Figure:
+    rows: list[tuple],
+    title: str,
+    fuel_sgs: list[dict],
+    impact_sgs: list[dict],
+) -> plt.Figure | None:
     """
-    2D heatmap: fuel subgroups (X) × impact subgroups (Y).
-    rows: (openalex_id, fuel_term, impact_term) — DISTINCT rows, one per paper×term pair.
-    Counts distinct papers per subgroup cell to avoid double-counting multi-term papers.
+    2D heatmap: fuel subgroup (X) × impact subgroup (Y).
+    *rows* is (openalex_id, fuel_term, impact_term) — one distinct row per paper/term pair.
+    Counts distinct papers per cell to avoid double-counting multi-term papers.
     """
-    fuel_map, fuel_others = _build_term_sg_map(fuel_sgs)
+    fuel_map,   fuel_others   = _build_term_sg_map(fuel_sgs)
     impact_map, impact_others = _build_term_sg_map(impact_sgs)
 
-    # Aggregate to subgroup level: collect distinct openalex_ids per cell
-    matrix_sets: dict[tuple[str, str], set] = {}
-    for row in rows:
-        oid         = str(row[0] or "")
-        fuel_term   = str(row[1] or "")
-        impact_term = str(row[2] or "")
-        fsig = fuel_map.get(fuel_term.lower(), fuel_others)
-        isig = impact_map.get(impact_term.lower(), impact_others)
-        key = (fsig, isig)
-        if key not in matrix_sets:
-            matrix_sets[key] = set()
-        matrix_sets[key].add(oid)
+    # Collect distinct openalex_ids per (fuel_sg, impact_sg) cell
+    cell_ids: dict[tuple[str, str], set[str]] = {}
+    for oid, fuel_term, impact_term in rows:
+        fsig = fuel_map.get(str(fuel_term or "").lower(), fuel_others)
+        isig = impact_map.get(str(impact_term or "").lower(), impact_others)
+        cell_ids.setdefault((fsig, isig), set()).add(str(oid or ""))
 
-    matrix: dict[tuple[str, str], int] = {k: len(v) for k, v in matrix_sets.items()}
-
+    matrix = {k: len(v) for k, v in cell_ids.items()}
     if not matrix:
         return None
 
-    # Ordered axis labels — config order, then fill from data
-    def _sg_names(sgs: list[dict], others: str) -> list[str]:
-        names = [sg["name"] for sg in sgs if not sg.get("is_others")]
-        extra = {k for k in {r[0] for r in matrix} | {r[1] for r in matrix}
-                 if k not in names and k != others}
-        return names + sorted(extra) + ([others] if any(k == others for k in matrix) else [])
+    def _axis_names(sgs: list[dict], others: str, dim: int) -> list[str]:
+        configured = [sg["name"] for sg in sgs if not sg.get("is_others")]
+        extra      = sorted(k[dim] for k in matrix if k[dim] not in configured and k[dim] != others)
+        has_others = any(k[dim] == others for k in matrix)
+        names      = configured + extra + ([others] if has_others else [])
+        return [n for n in names if any(k[dim] == n for k in matrix)]
 
-    fuel_names   = _sg_names(fuel_sgs,   fuel_others)
-    impact_names = _sg_names(impact_sgs, impact_others)
-
-    # Filter to axes that have data
-    fuel_names   = [n for n in fuel_names   if any(k[0] == n for k in matrix)]
-    impact_names = [n for n in impact_names if any(k[1] == n for k in matrix)]
-
+    fuel_names   = _axis_names(fuel_sgs,   fuel_others,   0)
+    impact_names = _axis_names(impact_sgs, impact_others, 1)
     if not fuel_names or not impact_names:
         return None
 
     data = np.zeros((len(impact_names), len(fuel_names)), dtype=float)
     for (fsig, isig), count in matrix.items():
         if fsig in fuel_names and isig in impact_names:
-            fi = fuel_names.index(fsig)
-            ii = impact_names.index(isig)
-            data[ii, fi] = count
+            data[impact_names.index(isig), fuel_names.index(fsig)] = count
 
-    w = max(7, len(fuel_names) * 1.4)
-    h = max(4, len(impact_names) * 0.9)
-    fig, ax = plt.subplots(figsize=(w, h))
-
+    fig, ax = plt.subplots(figsize=(max(7, len(fuel_names) * 1.4), max(4, len(impact_names) * 0.9)))
     im = ax.imshow(data, cmap="YlOrRd", aspect="auto", vmin=0)
     plt.colorbar(im, ax=ax, label="Papers", shrink=0.8)
-
     ax.set_xticks(range(len(fuel_names)))
     ax.set_xticklabels(fuel_names, rotation=35, ha="right", fontsize=9)
     ax.set_yticks(range(len(impact_names)))
@@ -440,249 +639,239 @@ def _cooccurrence_heatmap(
     ax.set_ylabel("Impact Subgroup", fontsize=10)
     ax.set_title(title)
 
-    vmax = data.max() if data.max() > 0 else 1
+    vmax = data.max() or 1
     for i in range(len(impact_names)):
         for j in range(len(fuel_names)):
             val = int(data[i, j])
             if val > 0:
-                text_color = "white" if val > vmax * 0.55 else TEXT_COLOR
                 ax.text(j, i, f"{val:,}", ha="center", va="center",
-                        fontsize=8, color=text_color, fontweight="bold")
+                        fontsize=8, fontweight="bold",
+                        color="white" if val > vmax * 0.55 else TEXT_COLOR)
 
     fig.tight_layout()
     return fig
 
 
 def _cooccurrence_3d(
-    rows: list[tuple], title: str,
-    fuel_sgs: list[dict], impact_sgs: list[dict],
-) -> plt.Figure:
+    rows: list[tuple],
+    title: str,
+    fuel_sgs: list[dict],
+    impact_sgs: list[dict],
+) -> plt.Figure | None:
     """
     3D bubble chart: fuel subgroup (X) × impact subgroup (Y) × LLM model (Z).
-    Color = ML paradigm.
-    rows: (fuel_term, impact_term, model_raw, paradigm, count)
+    Bubble colour = ML role.
+    *rows* is (fuel_term, impact_term, model_raw, ml_role, count).
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-    fuel_map, fuel_others   = _build_term_sg_map(fuel_sgs)
+    fuel_map,   fuel_others   = _build_term_sg_map(fuel_sgs)
     impact_map, impact_others = _build_term_sg_map(impact_sgs)
 
     def _parse_model(raw: str) -> str:
-        if not raw:
-            return "Unknown"
         try:
             obj = json.loads(raw)
             if isinstance(obj, dict):
                 return str(obj.get("name") or raw)
         except Exception:
             pass
-        return str(raw)
+        return str(raw) if raw else "Unknown"
 
-    # Aggregate to (fuel_sg, impact_sg, model, paradigm) → count
-    data: dict[tuple[str, str, str, str], int] = {}
-    for row in rows:
-        fuel_term  = str(row[0] or "")
-        impact_term = str(row[1] or "")
-        model_raw  = str(row[2] or "")
-        paradigm   = str(row[3] or "Unknown")
-        count      = int(row[4] or 0)
-        fsig   = fuel_map.get(fuel_term.lower(), fuel_others)
-        isig   = impact_map.get(impact_term.lower(), impact_others)
-        model  = _parse_model(model_raw)
-        key = (fsig, isig, model, paradigm)
-        data[key] = data.get(key, 0) + count
+    # Aggregate to (fuel_sg, impact_sg, model, role) → count
+    agg: dict[tuple[str, str, str, str], int] = {}
+    for fuel_term, impact_term, model_raw, role, count in rows:
+        fsig  = fuel_map.get(str(fuel_term or "").lower(), fuel_others)
+        isig  = impact_map.get(str(impact_term or "").lower(), impact_others)
+        model = _parse_model(str(model_raw or ""))
+        key   = (fsig, isig, model, str(role or "Unknown"))
+        agg[key] = agg.get(key, 0) + int(count or 0)
 
-    if not data:
+    if not agg:
         return None
 
-    # Collect unique axis values
-    fuel_names   = sorted({k[0] for k in data})
-    impact_names = sorted({k[1] for k in data})
-    # Top-15 models by total count to keep the Z axis readable
-    model_counts: dict[str, int] = {}
-    for (_, _, model, _), cnt in data.items():
-        model_counts[model] = model_counts.get(model, 0) + cnt
-    models = [m for m, _ in sorted(model_counts.items(), key=lambda x: -x[1])[:15]]
-    paradigms = sorted({k[3] for k in data})
-
-    paradigm_colors = {p: PALETTE[i % len(PALETTE)] for i, p in enumerate(paradigms)}
+    fuel_names   = sorted({k[0] for k in agg})
+    impact_names = sorted({k[1] for k in agg})
+    model_totals: dict[str, int] = {}
+    for (_, _, model, _), cnt in agg.items():
+        model_totals[model] = model_totals.get(model, 0) + cnt
+    top_models  = [m for m, _ in sorted(model_totals.items(), key=lambda x: -x[1])[:15]]
+    roles       = sorted({k[3] for k in agg})
+    role_colors = {r: PALETTE[i % len(PALETTE)] for i, r in enumerate(roles)}
 
     fig = plt.figure(figsize=(13, 8), facecolor=BG_COLOR)
-    ax = fig.add_subplot(111, projection="3d")
+    ax  = fig.add_subplot(111, projection="3d")
     ax.set_facecolor("#FFFFFF")
 
-    size_scale = 120
-
-    for (fsig, isig, model, paradigm), count in data.items():
-        if model not in models:
+    for (fsig, isig, model, role), count in agg.items():
+        if model not in top_models:
             continue
-        x = fuel_names.index(fsig)
-        y = impact_names.index(isig)
-        z = models.index(model)
-        color = paradigm_colors.get(paradigm, PALETTE[0])
-        ax.scatter(x, y, z, c=[color], s=min(count * size_scale, 1200),
-                   alpha=0.75, depthshade=True, edgecolors="white", linewidths=0.4)
+        ax.scatter(
+            fuel_names.index(fsig), impact_names.index(isig), top_models.index(model),
+            c=[role_colors.get(role, PALETTE[0])],
+            s=min(count * 120, 1200), alpha=0.75, depthshade=True,
+            edgecolors="white", linewidths=0.4,
+        )
 
-    # Axis labels
     ax.set_xticks(range(len(fuel_names)))
     ax.set_xticklabels(fuel_names, fontsize=7, rotation=20, ha="right")
     ax.set_yticks(range(len(impact_names)))
     ax.set_yticklabels(impact_names, fontsize=7)
-    ax.set_zticks(range(len(models)))
-    ax.set_zticklabels(models, fontsize=7)
-    ax.set_xlabel("Fuel Subgroup", fontsize=9, labelpad=12)
+    ax.set_zticks(range(len(top_models)))
+    ax.set_zticklabels(top_models, fontsize=7)
+    ax.set_xlabel("Fuel Subgroup",   fontsize=9, labelpad=12)
     ax.set_ylabel("Impact Subgroup", fontsize=9, labelpad=12)
-    ax.set_zlabel("LLM Model", fontsize=9, labelpad=12)
+    ax.set_zlabel("LLM Model",       fontsize=9, labelpad=12)
     ax.set_title(title, pad=14)
-
-    # Paradigm color legend
-    legend_patches = [
-        mpatches.Patch(color=paradigm_colors[p], label=p) for p in paradigms
-    ]
-    ax.legend(handles=legend_patches, loc="upper left", fontsize=8,
-              title="ML Paradigm", title_fontsize=9, framealpha=0.8)
-
-    # Bubble size note
+    ax.legend(
+        handles=[mpatches.Patch(color=role_colors[r], label=r) for r in roles],
+        loc="upper left", fontsize=8, title="ML Role", title_fontsize=9, framealpha=0.8,
+    )
     fig.text(0.02, 0.02, "Bubble size ∝ paper count", fontsize=8, color=MUTED)
-
     fig.tight_layout()
     return fig
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── 7. Public API ─────────────────────────────────────────────────────────────
 
-def generate(
-    db_path: Path,
-    sql: str,
-    x_key: str,
-    y_key: str,
-    chart_type: str,
-    title: str,
-    pipeline_config: dict | None = None,
-    subgroup_key: str | None = None,
-    subset_sql: str | None = None,
-    terms_per_subgroup: int | None = None,
-) -> bytes:
-    """
-    Run *sql* against *db_path*, render a matplotlib chart, return PNG bytes.
+@dataclass(frozen=True)
+class _RenderContext:
+    db_path: Path
+    spec: ChartDefinition
+    sql: str
+    title: str
+    pipeline_config: dict
+    subset_sql: str | None
+    terms_per_subgroup: int | None
 
-    chart_type: 'bar' | 'hbar' | 'stacked_hbar' | 'pie' | 'cooccurrence' | 'cooccurrence_3d'
-    subset_sql: optional CTE — replaces filtered_records with a user-defined subset
-    """
-    if subset_sql:
-        # Rename the real table reference in chart SQL to avoid SQLite CTE self-reference
-        patched = sql.replace("filtered_records", "_fr_subset")
-        sql = f"WITH _fr_subset AS (\n{subset_sql}\n)\n{patched}"
-    cfg = pipeline_config or {}
 
-    # ── Co-occurrence charts (multi-column SQL, special renderers) ────────────
-    if chart_type in ("cooccurrence", "cooccurrence_3d"):
-        try:
-            _, rows = _run_sql(db_path, sql)
-        except Exception:
-            return _empty_png(title)
-        if not rows:
-            return _empty_png(title)
-        fuel_sgs   = _extract_subgroups(cfg, "fuel")
-        impact_sgs = _extract_subgroups(cfg, "impact")
-        try:
-            if chart_type == "cooccurrence":
-                fig = _cooccurrence_heatmap(rows, title, fuel_sgs, impact_sgs)
-            else:
-                fig = _cooccurrence_3d(rows, title, fuel_sgs, impact_sgs)
-            return _to_png(fig) if fig else _empty_png(title)
-        except Exception:
-            return _empty_png(title)
-
-    # ── Standard charts ───────────────────────────────────────────────────────
+def _render_cooccurrence(ctx: _RenderContext, *, is_3d: bool) -> plt.Figure | None:
     try:
-        cols, rows = _run_sql(db_path, sql)
+        _, rows = _run_sql(ctx.db_path, ctx.sql)
     except Exception:
-        return _empty_png(title)
-
+        return None
     if not rows:
-        return _empty_png(title)
+        return None
 
-    xi = cols.index(x_key) if x_key in cols else 0
-    yi = cols.index(y_key) if y_key in cols else 1
+    fuel_sgs = _extract_subgroups(ctx.pipeline_config, "fuel")
+    impact_sgs = _extract_subgroups(ctx.pipeline_config, "impact")
+    renderer = _cooccurrence_3d if is_3d else _cooccurrence_heatmap
+    return renderer(rows, ctx.title, fuel_sgs, impact_sgs)
 
+
+def _render_cooccurrence_3d_bar(ctx: _RenderContext) -> plt.Figure | None:
+    try:
+        _, rows = _run_sql(ctx.db_path, ctx.sql)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return _cooccurrence_3d_bar(rows, ctx.title)
+
+
+def _render_subgroup_pie(ctx: _RenderContext) -> plt.Figure | None:
+    try:
+        cols, rows = _run_sql(ctx.db_path, ctx.sql)
+    except Exception:
+        return None
+    if not rows:
+        return None
+
+    xi = cols.index(ctx.spec.x_key) if ctx.spec.x_key in cols else 0
+    yi = cols.index(ctx.spec.y_key) if ctx.spec.y_key in cols else 1
     labels = [str(r[xi] if r[xi] is not None else "") for r in rows]
     values = [int(r[yi] if r[yi] is not None else 0) for r in rows]
 
     if not any(values):
-        return _empty_png(title)
+        return None
+    return _subgroup_pie(labels, values, ctx.title)
 
-    # Translate ISO country codes to full names for the countries chart
-    if x_key == "country":
+
+def _render_series(ctx: _RenderContext) -> plt.Figure | None:
+    try:
+        cols, rows = _run_sql(ctx.db_path, ctx.sql)
+    except Exception:
+        return None
+    if not rows:
+        return None
+
+    xi = cols.index(ctx.spec.x_key) if ctx.spec.x_key in cols else 0
+    yi = cols.index(ctx.spec.y_key) if ctx.spec.y_key in cols else 1
+    labels = [str(r[xi] if r[xi] is not None else "") for r in rows]
+    values = [int(r[yi] if r[yi] is not None else 0) for r in rows]
+
+    if not any(values):
+        return None
+    if ctx.spec.x_key == "country":
         labels = [_country_name(l) for l in labels]
 
+    if ctx.spec.renderer == "stacked_hbar":
+        subgroup_key = ctx.spec.subgroup_key or "fuel"
+        subgroups = _extract_subgroups(ctx.pipeline_config, subgroup_key)
+        sg_counts = _fetch_sg_counts(ctx.db_path, subgroups, subgroup_key, ctx.subset_sql)
+        return _stacked_hbar(labels, values, ctx.title, subgroups, sg_counts, ctx.terms_per_subgroup)
+    if ctx.spec.renderer == "hbar":
+        return _hbar(labels, values, ctx.title)
+    if ctx.spec.renderer == "pie":
+        return _pie(labels, values, ctx.title)
+    return _vbar(labels, values, ctx.title)
+
+
+_RENDERERS: dict[str, Callable[[_RenderContext], plt.Figure | None]] = {
+    "bar": _render_series,
+    "hbar": _render_series,
+    "pie": _render_series,
+    "stacked_hbar": _render_series,
+    "subgroup_pie": _render_subgroup_pie,
+    "cooccurrence_3d_bar": _render_cooccurrence_3d_bar,
+    "cooccurrence": lambda ctx: _render_cooccurrence(ctx, is_3d=False),
+    "cooccurrence_3d": lambda ctx: _render_cooccurrence(ctx, is_3d=True),
+}
+
+def generate(
+    db_path: Path,
+    chart_id: str,
+    pipeline_config: dict | None = None,
+    *,
+    top_n: int = 20,
+    cutoff_year: int = 2000,
+    subset_sql: str | None = None,
+    terms_per_subgroup: int | None = None,
+) -> bytes:
+    """
+    Render *chart_id* as a PNG and return the bytes.
+
+    Looks up the chart definition, interpolates SQL,
+    parameters, optionally narrows to *subset_sql*, then dispatches to
+    the appropriate renderer.
+    """
+    spec = get_chart_definition(chart_id)
+    if spec is None:
+        return _empty_png(chart_id)
+
+    effective_top_n = spec.default_top_n if spec.default_top_n is not None else top_n
+    sql = spec.format_sql(top_n=effective_top_n, cutoff_year=cutoff_year)
+    title = spec.title
+    pcfg  = pipeline_config or {}
+
+    if subset_sql:
+        sql = _apply_subset_cte(sql, subset_sql)
+
+    renderer = _RENDERERS.get(spec.renderer)
+    if renderer is None:
+        return _empty_png(title)
+
+    ctx = _RenderContext(
+        db_path=db_path,
+        spec=spec,
+        sql=sql,
+        title=title,
+        pipeline_config=pcfg,
+        subset_sql=subset_sql,
+        terms_per_subgroup=terms_per_subgroup,
+    )
+
     try:
-        if chart_type == "stacked_hbar":
-            subgroups = _extract_subgroups(cfg, subgroup_key or "fuel")
-            # Fetch distinct record counts per subgroup so the total label is accurate.
-            # Uses the same dual-condition as the records viewer:
-            #   matched_*_subgroups contains the subgroup name
-            #   OR matched_*_terms contains any of the subgroup's terms
-            # This ensures records where subgroups is null/empty but terms match are counted.
-            sg_col = (
-                "matched_fuel_subgroups"
-                if (subgroup_key or "fuel") == "fuel"
-                else "matched_impact_subgroups"
-            )
-            terms_col = (
-                "matched_fuel_terms"
-                if (subgroup_key or "fuel") == "fuel"
-                else "matched_impact_terms"
-            )
-            # Build one SELECT per named subgroup and UNION ALL them
-            sg_count_parts: list[str] = []
-            for sg in subgroups:
-                if sg.get("is_others"):
-                    continue
-                sg_name = sg["name"]
-                sg_terms = sg.get("terms", [])
-                safe_name = sg_name.replace("'", "''")
-                cond_parts = [
-                    f"EXISTS (SELECT 1 FROM json_each({sg_col}) WHERE value = '{safe_name}')"
-                ]
-                if sg_terms:
-                    safe_terms = ", ".join("'" + t.replace("'", "''") + "'" for t in sg_terms)
-                    cond_parts.append(
-                        f"EXISTS (SELECT 1 FROM json_each({terms_col}) WHERE value IN ({safe_terms}))"
-                    )
-                where_clause = " OR ".join(cond_parts)
-                sg_count_parts.append(
-                    f"SELECT '{safe_name}' AS sg, COUNT(DISTINCT openalex_id) AS cnt "
-                    f"FROM filtered_records WHERE {where_clause}"
-                )
-            if sg_count_parts:
-                _sg_base = " UNION ALL ".join(sg_count_parts)
-            else:
-                # Fallback when no named subgroups defined
-                _sg_base = (
-                    f"SELECT value AS sg, COUNT(DISTINCT openalex_id) AS cnt "
-                    f"FROM filtered_records, json_each({sg_col}) "
-                    f"WHERE {sg_col} IS NOT NULL AND {sg_col} != '[]' "
-                    f"GROUP BY value"
-                )
-            if subset_sql:
-                _sg_patched = _sg_base.replace("filtered_records", "_fr_subset")
-                _sg_sql = f"WITH _fr_subset AS (\n{subset_sql}\n)\n{_sg_patched}"
-            else:
-                _sg_sql = _sg_base
-            try:
-                _, sg_rows = _run_sql(db_path, _sg_sql)
-                sg_counts = {str(r[0]): int(r[1]) for r in sg_rows}
-            except Exception:
-                sg_counts = {}
-            fig = _stacked_hbar(labels, values, title, subgroups, sg_counts, terms_per_subgroup)
-            return _to_png(fig) if fig else _empty_png(title)
-        elif chart_type == "hbar":
-            fig = _hbar(labels, values, title)
-        elif chart_type == "pie":
-            fig = _pie(labels, values, title)
-        else:
-            fig = _vbar(labels, values, title)
-        return _to_png(fig)
+        fig = renderer(ctx)
+        return _to_png(fig) if fig else _empty_png(title)
     except Exception:
         return _empty_png(title)

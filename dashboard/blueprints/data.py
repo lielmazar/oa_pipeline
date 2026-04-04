@@ -10,7 +10,12 @@ from core import chart_gen as _chart_gen
 
 from blueprints.auth import require_auth, get_current_user_id
 from core import db_api
-from core.charts import CHART_QUERIES, get_chart_configs, get_chart_sql
+from core.charts import (
+    get_chart_configs,
+    get_chart_definition,
+    get_chart_sql,
+    has_chart,
+)
 from core.config import DB_PAGE_SIZE, DB_QUERY_MAX_ROWS
 from core.utils import tail as _tail
 from models.pipeline import get_pipeline
@@ -227,25 +232,27 @@ def api_chart_data():
 
     if not pipeline_id:
         return jsonify({"error": "pipeline_id required"}), 400
-    if chart_id not in CHART_QUERIES:
+    if not has_chart(chart_id):
         return jsonify({"error": f"unknown chart '{chart_id}'"}), 400
 
     db_path, err_msg = _get_pipeline_db(pipeline_id, uid)
     if err_msg:
         return jsonify({"error": err_msg}), 404
 
-    cfg = CHART_QUERIES[chart_id]
+    cfg = get_chart_definition(chart_id)
+    if cfg is None:
+        return jsonify({"error": f"unknown chart '{chart_id}'"}), 400
     sql = get_chart_sql(chart_id, top_n)
     result = db_api.run_query(db_path, sql, max_rows=500)
 
     return jsonify({
         "id": chart_id,
-        "title": cfg["title"],
+        "title": cfg.title,
         "sql": sql,
-        "type": cfg["type"],
-        "x_key": cfg["x_key"],
-        "y_key": cfg["y_key"],
-        "llm_only": cfg.get("llm_only", False),
+        "type": cfg.renderer,
+        "x_key": cfg.x_key,
+        "y_key": cfg.y_key,
+        "llm_only": cfg.llm_only,
         "data": result.get("rows", []),
         "columns": result.get("columns", []),
         "error": result.get("error"),
@@ -265,7 +272,7 @@ def api_chart_image():
 
     if not pipeline_id:
         return jsonify({"error": "pipeline_id required"}), 400
-    if chart_id not in CHART_QUERIES:
+    if not has_chart(chart_id):
         return jsonify({"error": f"unknown chart '{chart_id}'"}), 400
 
     db_path, err_msg = _get_pipeline_db(pipeline_id, uid)
@@ -275,12 +282,9 @@ def api_chart_image():
     pipeline = get_pipeline(pipeline_id, uid)
     pipeline_config = (pipeline.get("config") or {}) if pipeline else {}
 
-    cfg = CHART_QUERIES[chart_id]
-    cutoff_year = request.args.get("cutoff_year", 2000, type=int)
+    cutoff_year        = request.args.get("cutoff_year",        2000, type=int)
     terms_per_subgroup = request.args.get("terms_per_subgroup", None, type=int)
-    sql = get_chart_sql(chart_id, top_n, cutoff_year)
 
-    # Optional: render chart over a saved subset instead of all records
     subset_idx = request.args.get("subset_idx", type=int)
     subset_sql = None
     if subset_idx is not None:
@@ -291,14 +295,11 @@ def api_chart_image():
                 subset_sql = subsets[subset_idx].get("sql")
 
     png = _chart_gen.generate(
-        db_path=db_path,
-        sql=sql,
-        x_key=cfg["x_key"],
-        y_key=cfg["y_key"],
-        chart_type=cfg["type"],
-        title=cfg["title"],
-        pipeline_config=pipeline_config,
-        subgroup_key=cfg.get("subgroup_key"),
+        db_path,
+        chart_id,
+        pipeline_config,
+        top_n=top_n,
+        cutoff_year=cutoff_year,
         subset_sql=subset_sql,
         terms_per_subgroup=terms_per_subgroup,
     )

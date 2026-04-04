@@ -752,6 +752,30 @@ def backfill_subgroups(
     return len(updates)
 
 
+# Subgroup name renames: old_name → new_name
+_SUBGROUP_RENAMES = {
+    "Feedstocks and Processed": "Feedstocks and Processes",
+}
+
+
+def apply_subgroup_renames(conn: sqlite3.Connection) -> int:
+    """Rename subgroup values in matched_*_subgroups JSON arrays.
+    Returns number of rows updated."""
+    updated = 0
+    for old, new in _SUBGROUP_RENAMES.items():
+        for col in ("matched_fuel_subgroups", "matched_impact_subgroups"):
+            cur = conn.execute(
+                f"UPDATE filtered_records "
+                f"SET {col} = REPLACE({col}, ?, ?) "
+                f"WHERE {col} LIKE ?",
+                (f'"{old}"', f'"{new}"', f'%"{old}"%'),
+            )
+            updated += cur.rowcount
+    if updated:
+        conn.commit()
+    return updated
+
+
 def ensure_db(conn: sqlite3.Connection) -> None:
     conn.execute(_CREATE_TABLE_SQL)
     # Add columns if upgrading from an older schema
@@ -1009,6 +1033,10 @@ def process_records(
         n_backfilled = backfill_subgroups(conn, FUEL_SUBGROUP_MAP, IMPACT_SUBGROUP_MAP)
         if n_backfilled:
             print(f"Backfilled subgroups for {n_backfilled:,} records.")
+
+    n_renamed = apply_subgroup_renames(conn)
+    if n_renamed:
+        print(f"Renamed subgroups in {n_renamed:,} cells.")
 
     conn.close()
 

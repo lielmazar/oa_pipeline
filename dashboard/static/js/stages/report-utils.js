@@ -402,7 +402,7 @@ function computeRowSubgroups(matchedJson, subgroupDefs) {
 
 // ── Chart panels (server-rendered images) ─────────────────────────────────────
 
-function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams }) {
+function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, onOpenRecords, chartSql }) {
   const [imgErr, setImgErr]     = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -432,6 +432,15 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams }
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
         <span className="text-sm font-semibold text-gray-800">{title || chartId}</span>
         <div className="flex items-center gap-2">
+          {onOpenRecords && chartSql && (
+            <button onClick={() => onOpenRecords(chartSql, title || chartId)} title="View records for this chart"
+              className="text-xs px-2 py-0.5 rounded border border-blue-200 text-blue-500 hover:bg-blue-50 hover:text-blue-700 transition flex items-center gap-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+              </svg>
+              Records
+            </button>
+          )}
           {hasAnyParams && (
             <button onClick={() => setShowParams(s => !s)} title="Chart settings"
               className={`text-xs px-1.5 py-0.5 rounded border transition ${showParams ? 'bg-gray-100 text-gray-700 border-gray-300' : 'text-gray-400 border-gray-200 hover:text-gray-600'}`}>

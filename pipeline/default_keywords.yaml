@@ -57,7 +57,7 @@ groups:
     - marine fuel
     - marine diesel
     - bunker fuel
-  - name: Feedstocks and Processed
+  - name: Feedstocks and Processes
     terms:
     - biofuel
     - advanced biofuel
