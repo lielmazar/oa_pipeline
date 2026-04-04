@@ -56,6 +56,9 @@ function PipelineView({ initialPipeline, onBack, onNavigateTo }) {
         {stage === 'llm_report' && (
           <ReportStage pipeline={pipeline} isLLM={true} pipelineStatus={pipelineStatus} />
         )}
+        {stage === 'summary' && (
+          <SummaryStage pipeline={pipeline} pipelineStatus={pipelineStatus} />
+        )}
         {!STAGE_IDS.includes(stage) && (
           <div className="text-gray-500 text-sm">Unknown stage: {stage}</div>
         )}

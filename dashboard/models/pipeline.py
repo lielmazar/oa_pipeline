@@ -14,14 +14,16 @@ STAGES = [
     "report",
     "llm_classification",
     "llm_report",
+    "summary",
 ]
 
 STAGE_LABELS = {
-    "keyword_selection": "Keyword Selection",
-    "openalex_search":   "OpenAlex Search",
-    "report":            "Report",
+    "keyword_selection":  "Keyword Selection",
+    "openalex_search":    "OpenAlex Search",
+    "report":             "Report",
     "llm_classification": "LLM Classification",
-    "llm_report":        "LLM Report",
+    "llm_report":         "LLM Report",
+    "summary":            "Summary",
 }
 
 # Map removed stage names to their new equivalents (DB migration)

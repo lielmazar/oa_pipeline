@@ -655,79 +655,102 @@ def _cooccurrence_heatmap(
 def _cooccurrence_3d(
     rows: list[tuple],
     title: str,
-    fuel_sgs: list[dict],
-    impact_sgs: list[dict],
 ) -> plt.Figure | None:
     """
-    3D bubble chart: fuel subgroup (X) × impact subgroup (Y) × LLM model (Z).
-    Bubble colour = ML role.
-    *rows* is (fuel_term, impact_term, model_raw, ml_role, count).
+    3D bubble chart: fuel subgroup (X) × impact subgroup (Y) × model type (Z).
+    Bubble size = distinct paper count, colour = model type.
+    *rows* is (openalex_id, fuel_subgroup, impact_subgroup, model_type, model_name).
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    import matplotlib.colors as mcolors
 
-    fuel_map,   fuel_others   = _build_term_sg_map(fuel_sgs)
-    impact_map, impact_others = _build_term_sg_map(impact_sgs)
+    # Aggregate distinct papers per (fuel_sg, impact_sg, model_type)
+    cell_ids: dict[tuple[str, str, str], set[str]] = {}
+    for oid, fsg, isg, mtype, mname in rows:
+        mtype_clean = str(mtype or "Other").strip()
+        if not mtype_clean:
+            mtype_clean = "Other"
+        key = (str(fsg), str(isg), mtype_clean)
+        cell_ids.setdefault(key, set()).add(str(oid or ""))
 
-    def _parse_model(raw: str) -> str:
-        try:
-            obj = json.loads(raw)
-            if isinstance(obj, dict):
-                return str(obj.get("name") or raw)
-        except Exception:
-            pass
-        return str(raw) if raw else "Unknown"
-
-    # Aggregate to (fuel_sg, impact_sg, model, role) → count
-    agg: dict[tuple[str, str, str, str], int] = {}
-    for fuel_term, impact_term, model_raw, role, count in rows:
-        fsig  = fuel_map.get(str(fuel_term or "").lower(), fuel_others)
-        isig  = impact_map.get(str(impact_term or "").lower(), impact_others)
-        model = _parse_model(str(model_raw or ""))
-        key   = (fsig, isig, model, str(role or "Unknown"))
-        agg[key] = agg.get(key, 0) + int(count or 0)
-
+    agg = {k: len(v) for k, v in cell_ids.items()}
     if not agg:
         return None
 
-    fuel_names   = sorted({k[0] for k in agg})
-    impact_names = sorted({k[1] for k in agg})
-    model_totals: dict[str, int] = {}
-    for (_, _, model, _), cnt in agg.items():
-        model_totals[model] = model_totals.get(model, 0) + cnt
-    top_models  = [m for m, _ in sorted(model_totals.items(), key=lambda x: -x[1])[:15]]
-    roles       = sorted({k[3] for k in agg})
-    role_colors = {r: PALETTE[i % len(PALETTE)] for i, r in enumerate(roles)}
+    # Axis labels sorted by total count
+    fuel_totals: dict[str, int] = {}
+    impact_totals: dict[str, int] = {}
+    type_totals: dict[str, int] = {}
+    for (fsg, isg, mt), cnt in agg.items():
+        fuel_totals[fsg] = fuel_totals.get(fsg, 0) + cnt
+        impact_totals[isg] = impact_totals.get(isg, 0) + cnt
+        type_totals[mt] = type_totals.get(mt, 0) + cnt
 
-    fig = plt.figure(figsize=(13, 8), facecolor=BG_COLOR)
-    ax  = fig.add_subplot(111, projection="3d")
+    fuel_names = sorted(fuel_totals, key=lambda k: -fuel_totals[k])
+    impact_names = sorted(impact_totals, key=lambda k: -impact_totals[k])
+    type_names = sorted(type_totals, key=lambda k: -type_totals[k])[:10]
+
+    if not fuel_names or not impact_names or not type_names:
+        return None
+
+    nf, ni, nt = len(fuel_names), len(impact_names), len(type_names)
+    type_colors = {t: PALETTE[i % len(PALETTE)] for i, t in enumerate(type_names)}
+    max_cnt = max(agg.values()) or 1
+
+    fig = plt.figure(
+        figsize=(max(12, nf * 2), max(8, nt * 1.2)),
+        facecolor=BG_COLOR,
+    )
+    ax = fig.add_subplot(111, projection="3d")
     ax.set_facecolor("#FFFFFF")
 
-    for (fsig, isig, model, role), count in agg.items():
-        if model not in top_models:
+    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+        pane.fill = False
+        pane.set_edgecolor(GRID_COLOR)
+
+    for (fsg, isg, mt), cnt in agg.items():
+        if mt not in type_names:
             continue
         ax.scatter(
-            fuel_names.index(fsig), impact_names.index(isig), top_models.index(model),
-            c=[role_colors.get(role, PALETTE[0])],
-            s=min(count * 120, 1200), alpha=0.75, depthshade=True,
-            edgecolors="white", linewidths=0.4,
+            fuel_names.index(fsg),
+            impact_names.index(isg),
+            type_names.index(mt),
+            c=[type_colors[mt]],
+            s=max(40, min(cnt / max_cnt * 800, 1200)),
+            alpha=0.78, depthshade=True,
+            edgecolors="white", linewidths=0.5,
         )
+        if cnt >= max_cnt * 0.08:
+            ax.text(
+                fuel_names.index(fsg), impact_names.index(isg),
+                type_names.index(mt) + 0.15,
+                f"{cnt:,}", ha="center", va="bottom",
+                fontsize=6.5, fontweight="bold", color=TEXT_COLOR,
+            )
 
-    ax.set_xticks(range(len(fuel_names)))
-    ax.set_xticklabels(fuel_names, fontsize=7, rotation=20, ha="right")
-    ax.set_yticks(range(len(impact_names)))
-    ax.set_yticklabels(impact_names, fontsize=7)
-    ax.set_zticks(range(len(top_models)))
-    ax.set_zticklabels(top_models, fontsize=7)
-    ax.set_xlabel("Fuel Subgroup",   fontsize=9, labelpad=12)
-    ax.set_ylabel("Impact Subgroup", fontsize=9, labelpad=12)
-    ax.set_zlabel("LLM Model",       fontsize=9, labelpad=12)
-    ax.set_title(title, pad=14)
+    ax.set_xticks(range(nf))
+    ax.set_xticklabels(fuel_names, fontsize=7.5, rotation=25, ha="right")
+    ax.set_yticks(range(ni))
+    ax.set_yticklabels(impact_names, fontsize=7.5)
+    ax.set_zticks(range(nt))
+    ax.set_zticklabels(type_names, fontsize=7.5)
+    ax.set_xlabel("Fuel Subgroup", fontsize=10, labelpad=16, fontweight="bold")
+    ax.set_ylabel("Impact Subgroup", fontsize=10, labelpad=16, fontweight="bold")
+    ax.set_zlabel("Model Type", fontsize=10, labelpad=14, fontweight="bold")
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=18)
+
+    legend_patches = [
+        mpatches.Patch(color=type_colors[t], label=f"{t} ({type_totals[t]:,})")
+        for t in type_names
+    ]
     ax.legend(
-        handles=[mpatches.Patch(color=role_colors[r], label=r) for r in roles],
-        loc="upper left", fontsize=8, title="ML Role", title_fontsize=9, framealpha=0.8,
+        handles=legend_patches, loc="upper left", fontsize=7.5,
+        title="Model Type", title_fontsize=9,
+        framealpha=0.9, edgecolor=GRID_COLOR,
     )
-    fig.text(0.02, 0.02, "Bubble size ∝ paper count", fontsize=8, color=MUTED)
-    fig.tight_layout()
+    fig.text(0.02, 0.02, "Bubble size \u221d paper count", fontsize=8, color=MUTED)
+    ax.view_init(elev=22, azim=-40)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
     return fig
 
 
@@ -752,10 +775,12 @@ def _render_cooccurrence(ctx: _RenderContext, *, is_3d: bool) -> plt.Figure | No
     if not rows:
         return None
 
+    if is_3d:
+        return _cooccurrence_3d(rows, ctx.title)
+
     fuel_sgs = _extract_subgroups(ctx.pipeline_config, "fuel")
     impact_sgs = _extract_subgroups(ctx.pipeline_config, "impact")
-    renderer = _cooccurrence_3d if is_3d else _cooccurrence_heatmap
-    return renderer(rows, ctx.title, fuel_sgs, impact_sgs)
+    return _cooccurrence_heatmap(rows, ctx.title, fuel_sgs, impact_sgs)
 
 
 def _render_cooccurrence_3d_bar(ctx: _RenderContext) -> plt.Figure | None:
@@ -784,6 +809,104 @@ def _render_subgroup_pie(ctx: _RenderContext) -> plt.Figure | None:
     if not any(values):
         return None
     return _subgroup_pie(labels, values, ctx.title)
+
+
+# ── Generic annotated heatmap renderer ────────────────────────────────────────
+
+def _generic_heatmap(
+    rows: list[tuple],
+    title: str,
+    x_col: str,
+    y_col: str,
+) -> plt.Figure | None:
+    """
+    Annotated heatmap from (x_label, y_label, count) rows.
+    X on the horizontal axis, Y on the vertical axis.
+    Cells show distinct paper counts; zero-cells are left blank.
+    """
+    import matplotlib.colors as mcolors
+
+    # Build matrix
+    counts: dict[tuple[str, str], int] = {}
+    x_totals: dict[str, int] = {}
+    y_totals: dict[str, int] = {}
+    for row in rows:
+        x_val, y_val, cnt = str(row[0]), str(row[1]), int(row[2] or 0)
+        if cnt <= 0:
+            continue
+        counts[(x_val, y_val)] = counts.get((x_val, y_val), 0) + cnt
+        x_totals[x_val] = x_totals.get(x_val, 0) + cnt
+        y_totals[y_val] = y_totals.get(y_val, 0) + cnt
+
+    if not counts:
+        return None
+
+    # Sort axes by total count (highest first)
+    x_names = sorted(x_totals, key=lambda k: -x_totals[k])
+    y_names = sorted(y_totals, key=lambda k: -y_totals[k])
+
+    nx, ny = len(x_names), len(y_names)
+    data = np.zeros((ny, nx), dtype=float)
+    for (xv, yv), cnt in counts.items():
+        if xv in x_names and yv in y_names:
+            data[y_names.index(yv), x_names.index(xv)] = cnt
+
+    vmax = data.max() or 1
+
+    # ── Prettify labels (underscores → spaces, title case) ───────────
+    def _pretty(s: str) -> str:
+        return s.replace("_", " ").title()
+
+    x_labels = [_pretty(n) for n in x_names]
+    y_labels = [_pretty(n) for n in y_names]
+
+    # ── Figure with controlled size ──────────────────────────────────
+    cell_w, cell_h = 1.1, 0.55
+    fig_w = max(8, nx * cell_w + 3)
+    fig_h = max(4, ny * cell_h + 2.5)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    # Custom colormap: white → palette blue
+    base_blue = mcolors.hex2color(PALETTE[0])
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "hm", ["#FFFFFF", mcolors.rgb2hex(base_blue)], N=256
+    )
+
+    im = ax.imshow(data, cmap=cmap, aspect="auto", vmin=0, vmax=vmax)
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label("Distinct Papers", fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+
+    ax.set_xticks(range(nx))
+    ax.set_xticklabels(x_labels, rotation=40, ha="right", fontsize=8)
+    ax.set_yticks(range(ny))
+    ax.set_yticklabels(y_labels, fontsize=8)
+
+    # Cell annotations
+    for i in range(ny):
+        for j in range(nx):
+            val = int(data[i, j])
+            if val > 0:
+                txt_color = "white" if val > vmax * 0.55 else TEXT_COLOR
+                ax.text(j, i, f"{val:,}", ha="center", va="center",
+                        fontsize=8, fontweight="bold", color=txt_color)
+
+    ax.set_xlabel(_pretty(x_col), fontsize=10, fontweight="bold", labelpad=8)
+    ax.set_ylabel(_pretty(y_col), fontsize=10, fontweight="bold", labelpad=8)
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+
+    fig.tight_layout()
+    return fig
+
+
+def _render_heatmap(ctx: _RenderContext) -> plt.Figure | None:
+    try:
+        cols, rows = _run_sql(ctx.db_path, ctx.sql)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return _generic_heatmap(rows, ctx.title, ctx.spec.x_key, ctx.spec.y_key)
 
 
 def _render_series(ctx: _RenderContext) -> plt.Figure | None:
@@ -822,6 +945,7 @@ _RENDERERS: dict[str, Callable[[_RenderContext], plt.Figure | None]] = {
     "pie": _render_series,
     "stacked_hbar": _render_series,
     "subgroup_pie": _render_subgroup_pie,
+    "heatmap": _render_heatmap,
     "cooccurrence_3d_bar": _render_cooccurrence_3d_bar,
     "cooccurrence": lambda ctx: _render_cooccurrence(ctx, is_3d=False),
     "cooccurrence_3d": lambda ctx: _render_cooccurrence(ctx, is_3d=True),

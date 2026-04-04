@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-ChartRenderer = Literal["bar", "hbar", "stacked_hbar", "pie", "subgroup_pie", "cooccurrence_3d_bar", "cooccurrence_3d"]
+ChartRenderer = Literal["bar", "hbar", "stacked_hbar", "pie", "subgroup_pie", "cooccurrence_3d_bar", "cooccurrence_3d", "heatmap"]
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,32 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "GROUP BY subgroup ORDER BY count DESC"
         ),
         renderer="subgroup_pie", x_key="subgroup", y_key="count",
+    ),
+    "top_fuel_terms": ChartDefinition(
+        id="top_fuel_terms",
+        title="Top Fuel Terms by Subgroup",
+        sql_template=(
+            "SELECT value AS term, COUNT(*) AS count "
+            "FROM filtered_records, json_each(matched_fuel_terms) "
+            "WHERE matched_fuel_terms IS NOT NULL AND matched_fuel_terms != '[]' "
+            "GROUP BY term ORDER BY count DESC LIMIT {top_n}"
+        ),
+        renderer="stacked_hbar", x_key="term", y_key="count",
+        subgroup_key="fuel",
+        params=("top_n", "terms_per_subgroup"),
+    ),
+    "top_impact_terms": ChartDefinition(
+        id="top_impact_terms",
+        title="Top Impact Terms by Subgroup",
+        sql_template=(
+            "SELECT value AS term, COUNT(*) AS count "
+            "FROM filtered_records, json_each(matched_impact_terms) "
+            "WHERE matched_impact_terms IS NOT NULL AND matched_impact_terms != '[]' "
+            "GROUP BY term ORDER BY count DESC LIMIT {top_n}"
+        ),
+        renderer="stacked_hbar", x_key="term", y_key="count",
+        subgroup_key="impact",
+        params=("top_n", "terms_per_subgroup"),
     ),
     "fuel_impact_cooccurrence": ChartDefinition(
         id="fuel_impact_cooccurrence",
@@ -197,21 +223,118 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
     ),
     "fuel_impact_model_cooccurrence": ChartDefinition(
         id="fuel_impact_model_cooccurrence",
-        title="Fuel × Impact × LLM Model Co-occurrence",
+        title="Fuel × Impact × Model Type Co-occurrence",
         sql_template=(
-            "SELECT ft.value AS fuel_term, it.value AS impact_term, "
-            "  m.value AS model_raw, r.value AS ml_role, COUNT(*) AS count "
+            "SELECT DISTINCT openalex_id, "
+            "  REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, "
+            "  REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup, "
+            "  json_extract(m.value, '$.type') AS model_type, "
+            "  json_extract(m.value, '$.name') AS model_name "
             "FROM filtered_records, "
-            "  json_each(matched_fuel_terms) ft, json_each(matched_impact_terms) it, "
-            "  json_each(llm_models) m, json_each(llm_ml_role) r "
-            "WHERE matched_fuel_terms IS NOT NULL AND matched_fuel_terms != '[]' "
-            "  AND matched_impact_terms IS NOT NULL AND matched_impact_terms != '[]' "
+            "  json_each(matched_fuel_subgroups) fs, "
+            "  json_each(matched_impact_subgroups) isg, "
+            "  json_each(llm_models) m "
+            "WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' "
+            "  AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' "
             "  AND llm_models IS NOT NULL AND llm_models != '[]' AND llm_models != 'null' "
-            "  AND llm_ml_role IS NOT NULL AND llm_ml_role != '[]' "
-            "  AND LOWER(r.value) != 'none' "
-            "GROUP BY ft.value, it.value, model_raw, ml_role"
+            "  AND json_extract(m.value, '$.type') IS NOT NULL "
         ),
-        renderer="cooccurrence_3d", x_key="fuel_term", y_key="count",
+        renderer="cooccurrence_3d", x_key="fuel_subgroup", y_key="impact_subgroup",
+        llm_only=True,
+    ),
+    # ── ML/AI Co-occurrence matrices (LLM classification) ───────────────
+    "fuel_subgroup_ml_cooccurrence": ChartDefinition(
+        id="fuel_subgroup_ml_cooccurrence",
+        title="Fuel Subgroup × Impact Subgroup (ML/AI Papers Only)",
+        sql_template=(
+            "SELECT DISTINCT openalex_id, "
+            "  REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, "
+            "  REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup "
+            "FROM filtered_records, "
+            "  json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg "
+            "WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' "
+            "  AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' "
+            "  AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') "
+            "  AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' "
+        ),
+        renderer="cooccurrence_3d_bar", x_key="fuel_subgroup", y_key="openalex_id",
+        llm_only=True,
+    ),
+    "fuelclass_x_mlrole": ChartDefinition(
+        id="fuelclass_x_mlrole",
+        title="Fuel Classification × ML Role",
+        sql_template=(
+            "SELECT f.value AS x_label, r.value AS y_label, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, "
+            "  json_each(llm_fuel_classification) f, json_each(llm_ml_role) r "
+            "WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL "
+            "  AND LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL "
+            "GROUP BY f.value, r.value"
+        ),
+        renderer="heatmap", x_key="x_label", y_key="y_label",
+        llm_only=True,
+    ),
+    "mlrole_x_algorithm": ChartDefinition(
+        id="mlrole_x_algorithm",
+        title="ML Role × Algorithm Family",
+        sql_template=(
+            "SELECT r.value AS x_label, a.value AS y_label, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, "
+            "  json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a "
+            "WHERE LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL "
+            "  AND LOWER(a.value) NOT IN ('none', 'other_ml', '') AND a.value IS NOT NULL "
+            "GROUP BY r.value, a.value"
+        ),
+        renderer="heatmap", x_key="x_label", y_key="y_label",
+        llm_only=True,
+    ),
+    "fuelclass_x_algorithm": ChartDefinition(
+        id="fuelclass_x_algorithm",
+        title="Fuel Classification × Algorithm Family",
+        sql_template=(
+            "SELECT f.value AS x_label, a.value AS y_label, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, "
+            "  json_each(llm_fuel_classification) f, json_each(llm_ml_algorithm) a "
+            "WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL "
+            "  AND LOWER(a.value) NOT IN ('none', 'other_ml', '') AND a.value IS NOT NULL "
+            "GROUP BY f.value, a.value"
+        ),
+        renderer="heatmap", x_key="x_label", y_key="y_label",
+        llm_only=True,
+    ),
+    "fuelclass_x_datasource": ChartDefinition(
+        id="fuelclass_x_datasource",
+        title="Fuel Classification × ML Data Source",
+        sql_template=(
+            "SELECT f.value AS x_label, "
+            "  CASE WHEN llm_ml_data_source IS NULL OR llm_ml_data_source IN ('', 'none', 'null') "
+            "       THEN 'none' ELSE llm_ml_data_source END AS y_label, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, json_each(llm_fuel_classification) f "
+            "WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL "
+            "  AND llm_ml_data_source IS NOT NULL "
+            "  AND LOWER(llm_ml_data_source) NOT IN ('none', '', 'null') "
+            "GROUP BY f.value, y_label"
+        ),
+        renderer="heatmap", x_key="x_label", y_key="y_label",
+        llm_only=True,
+    ),
+    "llm_ml_datasource": ChartDefinition(
+        id="llm_ml_datasource",
+        title="ML Data Source Distribution (LLM)",
+        sql_template=(
+            "SELECT CASE WHEN llm_ml_data_source IS NULL OR llm_ml_data_source IN ('', 'none', 'null') "
+            "            THEN 'none' ELSE llm_ml_data_source END AS source, "
+            "  COUNT(*) AS count "
+            "FROM filtered_records "
+            "WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') "
+            "  AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' "
+            "GROUP BY source ORDER BY count DESC"
+        ),
+        renderer="pie", x_key="source", y_key="count",
         llm_only=True,
     ),
 }

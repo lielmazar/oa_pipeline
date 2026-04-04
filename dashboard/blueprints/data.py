@@ -1,7 +1,13 @@
-"""Data blueprint — /api/db/*, /api/charts/*, /api/subsets, /api/report, /api/log"""
+"""Data blueprint — /api/db/*, /api/charts/*, /api/subsets, /api/report, /api/log, /api/export-zip"""
 from __future__ import annotations
 
+import csv
+import io
 import json
+import sqlite3
+import struct
+import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -362,3 +368,174 @@ def api_log():
         return jsonify({"lines": []})
 
     return jsonify({"lines": _tail(log_path, lines)})
+
+
+# ── Export ZIP ────────────────────────────────────────────────────────────────
+
+# Charts included in the ZIP (non-LLM primary charts only for speed/reliability)
+def _png_add_watermark(png_bytes: bytes, text: str = "cservices.online") -> bytes:
+    """Inject a hidden tEXt metadata chunk into a PNG byte string."""
+    PNG_SIG = b"\x89PNG\r\n\x1a\n"
+    if not png_bytes.startswith(PNG_SIG):
+        return png_bytes
+    kw      = b"Comment"
+    payload = kw + b"\x00" + text.encode("latin-1")
+    crc_val = zlib.crc32(b"tEXt" + payload) & 0xFFFFFFFF
+    chunk   = struct.pack(">I", len(payload)) + b"tEXt" + payload + struct.pack(">I", crc_val)
+    ihdr_end = 33
+    return png_bytes[:ihdr_end] + chunk + png_bytes[ihdr_end:]
+
+
+def _dump_table_csv(conn: sqlite3.Connection, table: str) -> str:
+    """Return a CSV string for the given table, empty string on error."""
+    try:
+        cur  = conn.execute(f"SELECT * FROM [{table}]")  # noqa: S608
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+    except Exception:
+        return ""
+    buf = io.StringIO()
+    w   = csv.writer(buf)
+    w.writerow(cols)
+    w.writerows(rows)
+    return buf.getvalue()
+
+
+@data_bp.route("/api/pipelines/<int:pipeline_id>/export-zip")
+def api_export_zip(pipeline_id: int):
+    """Build and stream a ZIP with all charts, all DB tables, logs, reports, SQL, and metadata."""
+    err = require_auth()
+    if err:
+        return err
+    uid      = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id, uid)
+    if not pipeline:
+        return jsonify({"error": "pipeline not found"}), 404
+
+    db_path_str     = pipeline.get("output_db_path")
+    db_path         = Path(db_path_str) if db_path_str else None
+    pipeline_dir    = Path(db_path_str).parent if db_path_str else None
+    pipeline_config = pipeline.get("config") or {}
+    ts              = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe_name       = "".join(
+        c if c.isalnum() or c in "-_" else "_"
+        for c in (pipeline.get("name") or f"pipeline_{pipeline_id}")
+    )
+    prefix = f"{safe_name}/"
+
+    # Collect all chart definitions, split into non-LLM and LLM groups
+    from core.charts import _CHART_DEFINITIONS
+    non_llm_charts = [c for c in _CHART_DEFINITIONS.values() if not c.llm_only]
+    llm_charts     = [c for c in _CHART_DEFINITIONS.values() if c.llm_only]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+
+        # ── 1. Charts (all, watermarked PNGs) ────────────────────────────────
+        if db_path and db_path.exists():
+            for subfolder, chart_list in [("charts", non_llm_charts), ("charts_llm", llm_charts)]:
+                for spec in chart_list:
+                    try:
+                        png = _chart_gen.generate(
+                            db_path, spec.id, pipeline_config, top_n=20
+                        )
+                        zf.writestr(
+                            f"{prefix}{subfolder}/{spec.id}.png",
+                            _png_add_watermark(png),
+                        )
+                    except Exception:
+                        pass
+
+        # ── 2. Chart SQL queries ──────────────────────────────────────────────
+        sql_lines: list[str] = []
+        for spec in list(non_llm_charts) + list(llm_charts):
+            sql_lines.append(f"-- {spec.title} ({spec.id})")
+            sql_lines.append(spec.format_sql(top_n=20))
+            sql_lines.append("")
+        zf.writestr(f"{prefix}chart_queries.sql", "\n".join(sql_lines))
+
+        # ── 3. All DB tables as CSV ───────────────────────────────────────────
+        if db_path and db_path.exists():
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    tables = [
+                        r[0] for r in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                        ).fetchall()
+                    ]
+                    for table in tables:
+                        csv_text = _dump_table_csv(conn, table)
+                        if csv_text:
+                            zf.writestr(f"{prefix}data/{table}.csv", csv_text)
+            except Exception:
+                pass
+
+        # ── 4. Logs (pipeline.log + any *.log in pipeline dir) ───────────────
+        if pipeline_dir and pipeline_dir.exists():
+            for log_file in sorted(pipeline_dir.glob("*.log")):
+                zf.write(str(log_file), f"{prefix}logs/{log_file.name}")
+
+        # ── 5. Pipeline metadata JSON ─────────────────────────────────────────
+        meta = {k: v for k, v in pipeline.items() if k != "config"}
+        meta["config"] = pipeline_config
+        zf.writestr(
+            f"{prefix}pipeline_metadata.json",
+            json.dumps(meta, indent=2, default=str),
+        )
+
+        # ── 6. HTML reports ───────────────────────────────────────────────────
+        for path_key, fname in [("report_path", "report.html"), ("llm_report_path", "llm_report.html")]:
+            rp = pipeline.get(path_key)
+            if rp and Path(rp).exists():
+                zf.write(rp, f"{prefix}reports/{fname}")
+
+        # ── 7. Manifest ───────────────────────────────────────────────────────
+        record_count = 0
+        table_sizes: list[str] = []
+        if db_path and db_path.exists():
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    record_count = conn.execute(
+                        "SELECT COUNT(*) FROM filtered_records"
+                    ).fetchone()[0]
+                    for tbl in tables:  # type: ignore[possibly-undefined]
+                        n = conn.execute(f"SELECT COUNT(*) FROM [{tbl}]").fetchone()[0]  # noqa: S608
+                        table_sizes.append(f"  {tbl}: {n:,} rows")
+            except Exception:
+                pass
+
+        db_size_str = (
+            f"{round(db_path.stat().st_size / 1024**2, 1)} MB"
+            if db_path and db_path.exists() else "n/a"
+        )
+        table_summary = "\n".join(table_sizes) if table_sizes else "  (no tables)"
+        manifest = (
+            f"Pipeline:    {pipeline.get('name', '')}\n"
+            f"Pipeline ID: {pipeline_id}\n"
+            f"Exported:    {ts} UTC\n"
+            f"Stage:       {pipeline.get('current_stage', 'unknown')}\n"
+            f"Records:     {record_count:,}\n"
+            f"DB size:     {db_size_str}\n"
+            f"\nDB tables:\n{table_summary}\n"
+            f"\nCharts exported: {len(non_llm_charts)} standard, {len(llm_charts)} LLM\n"
+            f"\nZIP contents:\n"
+            f"  charts/          Standard chart PNGs\n"
+            f"  charts_llm/      LLM-only chart PNGs\n"
+            f"  data/            All DB tables as CSV\n"
+            f"  logs/            Pipeline log files\n"
+            f"  reports/         HTML reports\n"
+            f"  chart_queries.sql  SQL used for each chart\n"
+            f"  pipeline_metadata.json  Pipeline configuration and metadata\n"
+        )
+        zf.writestr(f"{prefix}manifest.txt", manifest)
+
+    buf.seek(0)
+    filename = f"{safe_name}_{ts}.zip"
+    return Response(
+        buf.read(),
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )

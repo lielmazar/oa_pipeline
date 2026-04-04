@@ -23,6 +23,7 @@ _JS_MODULES = [
     "stages/record-viewer.js",
     "stages/report-stage.js",
     "stages/llm.js",
+    "stages/summary.js",
     "views/pipeline.js",
     "views/jobs.js",
     "app-root.js",
