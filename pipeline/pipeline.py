@@ -1353,8 +1353,9 @@ def _worker_s3(
         downloaded = 0
         chunk_size = 8 * 1024 * 1024
         dl_start   = time.time()
+        body = client.get_object(Bucket=S3_BUCKET, Key=s3_key)["Body"]
         with local_path.open("wb") as fout:
-            for chunk in iter(lambda: client.get_object(Bucket=S3_BUCKET, Key=s3_key)["Body"].read(chunk_size), b""):
+            for chunk in iter(lambda: body.read(chunk_size), b""):
                 fout.write(chunk)
                 downloaded += len(chunk)
                 elapsed = time.time() - dl_start

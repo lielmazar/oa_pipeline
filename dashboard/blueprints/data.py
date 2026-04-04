@@ -350,6 +350,40 @@ def api_log():
 
 # ── Export ZIP ────────────────────────────────────────────────────────────────
 
+# LLM columns that llm_classify.py adds via ALTER TABLE.
+# Inlined here so the export always includes them (even if the LLM collect
+# phase crashed or the WAL wasn't checkpointed when the user last ran it).
+_LLM_EXPORT_COLUMNS = [
+    ("llm_is_hydrocarbon",      "INTEGER"),
+    ("llm_fuel_classification", "TEXT"),
+    ("llm_ml_paradigm",         "TEXT"),
+    ("llm_ml_method",           "TEXT"),
+    ("llm_ml_role",             "TEXT"),
+    ("llm_ml_algorithm",        "TEXT"),
+    ("llm_ml_strategy",         "TEXT"),
+    ("llm_ml_data_source",      "TEXT"),
+    ("llm_confidence",          "TEXT"),
+    ("llm_justification",       "TEXT"),
+    ("llm_models",              "TEXT"),
+    ("llm_result_raw",          "TEXT"),
+    ("llm_batch_id",            "TEXT"),
+    ("llm_processed_at",        "TEXT"),
+    ("llm_tokens_input",        "INTEGER"),
+    ("llm_tokens_output",       "INTEGER"),
+    ("llm_tokens_reasoning",    "INTEGER"),
+]
+
+
+def _ensure_llm_columns(conn: sqlite3.Connection) -> None:
+    """Add LLM result columns if they don't already exist (no-op when present)."""
+    for col, typedef in _LLM_EXPORT_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE filtered_records ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass  # already exists
+    conn.commit()
+
+
 # Charts included in the ZIP (non-LLM primary charts only for speed/reliability)
 def _png_add_watermark(png_bytes: bytes, text: str = "cservices.online") -> bytes:
     """Inject a hidden tEXt metadata chunk into a PNG byte string."""
@@ -600,6 +634,15 @@ def api_export_zip(pipeline_id: int):
 
         # ── 7. Database export (data/ at root level) ──────────────────────────
         if db_path and db_path.exists() and tables:
+            # Guarantee LLM columns exist before any export format.
+            # Also checkpoint WAL so the main DB file includes all committed data.
+            try:
+                with sqlite3.connect(db_path) as _wal_conn:
+                    _ensure_llm_columns(_wal_conn)
+                    _wal_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+
             if db_format in ("sqlite", "both"):
                 zf.write(str(db_path), f"{prefix}data/output.sqlite")
 
