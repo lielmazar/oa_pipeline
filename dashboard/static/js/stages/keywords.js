@@ -65,8 +65,8 @@ function KeywordStage({ pipeline, onUpdate }) {
   const [dropTarget, setDropTarget] = useState(null);// {gi, si}
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [yamlMsg, setYamlMsg] = useState(null); // { ok, text }
-  const yamlUploadRef = useRef(null);
+  const [jsonMsg, setJsonMsg] = useState(null); // { ok, text }
+  const jsonUploadRef = useRef(null);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -160,39 +160,37 @@ function KeywordStage({ pipeline, onUpdate }) {
     finally { setLoading(false); }
   };
 
-  const downloadYaml = async () => {
-    const res = await apiFetch(`/api/pipelines/${pipeline.id}/keywords/yaml`);
-    if (!res.ok) { alert('Download failed'); return; }
-    const text = await res.text();
+  const downloadJson = () => {
     const a = document.createElement('a');
-    a.href = 'data:text/yaml;charset=utf-8,' + encodeURIComponent(text);
-    a.download = `keywords_pipeline_${pipeline.id}.yaml`;
+    a.href = `/api/pipelines/${pipeline.id}/keywords/json`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
   };
 
-  const uploadYaml = async (file) => {
+  const uploadJson = async (file) => {
     if (!file) return;
     let text;
     try { text = await file.text(); }
-    catch (e) { setYamlMsg({ ok: false, text: 'Could not read file' }); return; }
+    catch (e) { setJsonMsg({ ok: false, text: 'Could not read file' }); return; }
     let res, data;
     try {
-      res = await apiFetch(`/api/pipelines/${pipeline.id}/keywords/yaml`, {
+      res = await apiFetch(`/api/pipelines/${pipeline.id}/keywords/json`, {
         method: 'POST',
-        body: JSON.stringify({ yaml: text }),
+        body: JSON.stringify({ json: text }),
       });
       data = await res.json();
     } catch (e) {
-      setYamlMsg({ ok: false, text: 'Upload failed: ' + (e.message || 'network error') });
+      setJsonMsg({ ok: false, text: 'Upload failed: ' + (e.message || 'network error') });
       return;
     }
-    if (!res.ok) { setYamlMsg({ ok: false, text: data.error || 'Upload failed' }); return; }
+    if (!res.ok) { setJsonMsg({ ok: false, text: data.error || 'Upload failed' }); return; }
     const newGroups = _migrateGroups(data.config || {});
     setGroups(newGroups);
     setNewTermInput(newGroups.map(g => g.subgroups.map(() => '')));
     setNewSgName(newGroups.map(() => ''));
-    setYamlMsg({ ok: true, text: `Loaded ${data.groups} group(s) from YAML` });
-    setTimeout(() => setYamlMsg(null), 4000);
+    setJsonMsg({ ok: true, text: `Loaded ${data.groups} group(s) from JSON` });
+    setTimeout(() => setJsonMsg(null), 4000);
     if (onUpdate) onUpdate({ ...pipeline, config: data.config });
   };
 
@@ -251,27 +249,27 @@ function KeywordStage({ pipeline, onUpdate }) {
                 {loading ? 'Loading…' : '⟳ Load defaults'}
               </button>
             )}
-            <button onClick={downloadYaml}
+            <button onClick={downloadJson}
               className="text-xs px-3 py-1 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 transition"
-              title="Download keywords as YAML">
-              ↓ YAML
+              title="Download keywords as JSON">
+              ↓ JSON
             </button>
             {pipeline.is_owner && (
               <>
-                <input ref={yamlUploadRef} type="file" accept=".yaml,.yml" className="hidden"
-                  onChange={e => { uploadYaml(e.target.files?.[0]); e.target.value = ''; }} />
-                <button onClick={() => yamlUploadRef.current?.click()}
+                <input ref={jsonUploadRef} type="file" accept=".json" className="hidden"
+                  onChange={e => { uploadJson(e.target.files?.[0]); e.target.value = ''; }} />
+                <button onClick={() => jsonUploadRef.current?.click()}
                   className="text-xs px-3 py-1 border border-blue-300 rounded-lg text-blue-600 hover:bg-blue-50 transition"
-                  title="Upload keywords from YAML">
-                  ↑ Upload YAML
+                  title="Upload keywords from JSON">
+                  ↑ Upload JSON
                 </button>
               </>
             )}
           </div>
         </div>
-        {yamlMsg && (
-          <div className={`text-xs px-3 py-1.5 rounded-lg mb-2 ${yamlMsg.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
-            {yamlMsg.text}
+        {jsonMsg && (
+          <div className={`text-xs px-3 py-1.5 rounded-lg mb-2 ${jsonMsg.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+            {jsonMsg.text}
           </div>
         )}
         <p className="text-sm text-gray-500 mb-4">

@@ -677,6 +677,54 @@ def api_export_zip(pipeline_id: int):
                 zf.write(str(log_file), f"{prefix}logs/{rel}")
                 logs_written.append(str(rel))
 
+        # ── 8b. Skip-stats summary (always write when state file exists) ──────
+        state_path = pipeline_dir / "pipeline_state.json" if pipeline_dir else None
+        if state_path and state_path.exists():
+            try:
+                _state = json.loads(state_path.read_text(encoding="utf-8"))
+                _skip = _state.get("skip_stats", {})
+                _seen = _state.get("total_records_seen", 0)
+                _ins  = _state.get("total_records_inserted", 0)
+                _ferr = _state.get("file_errors", 0)
+                _rerr = _state.get("record_errors", 0)
+                lines = [
+                    "Screening funnel / skip-reason summary",
+                    "=" * 40,
+                    f"Records scanned  : {_seen:,}",
+                ]
+                _SKIP_ORDER = ["not_english", "no_doi", "no_abstract", "no_keywords",
+                               "empty_abstract", "json_error", "empty_line", "no_id",
+                               "processing_error"]
+                _SKIP_LABEL = {
+                    "not_english": "non-English (pre-screened)",
+                    "no_doi": "no DOI",
+                    "no_abstract": "no abstract",
+                    "no_keywords": "no matching keywords",
+                    "empty_abstract": "empty abstract",
+                    "json_error": "JSON parse error",
+                    "empty_line": "empty/blank line",
+                    "no_id": "no OpenAlex ID",
+                    "processing_error": "processing error",
+                }
+                for k in _SKIP_ORDER:
+                    if k in _skip:
+                        lines.append(f"  ↳ {_SKIP_LABEL.get(k, k):<30}: {_skip[k]:>12,}")
+                for k, v in sorted(_skip.items(), key=lambda x: -x[1]):
+                    if k not in _SKIP_ORDER:
+                        lines.append(f"  ↳ {k:<30}: {v:>12,}")
+                lines += [
+                    f"Saved (matched)  : {_ins:,}",
+                    f"Match rate       : {_ins/_seen*100:.4f}%" if _seen else "Match rate       : n/a",
+                    "",
+                    f"File errors      : {_ferr:,}",
+                    f"Record errors    : {_rerr:,}",
+                    "",
+                    "See pipeline.log for per-record error details.",
+                ]
+                zf.writestr(f"{prefix}logs/skip_stats_summary.txt", "\n".join(lines))
+            except Exception:
+                pass
+
         # ── 9. Pipeline metadata JSON ─────────────────────────────────────────
         meta = {k: v for k, v in pipeline.items() if k != "config"}
         meta["config"] = pipeline_config

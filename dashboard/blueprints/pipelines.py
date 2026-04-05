@@ -6,8 +6,6 @@ import json
 import os
 from pathlib import Path
 
-import yaml
-
 from flask import Blueprint, jsonify, request, current_app, Response
 
 from blueprints.auth import get_current_user_id, require_auth
@@ -35,29 +33,13 @@ from models.pipeline import (
 pipelines_bp = Blueprint("pipelines", __name__)
 
 DEFAULT_KEYWORDS_PATH = PIPELINE_SCRIPTS_DIR / "default_keywords.json"
-DEFAULT_KEYWORDS_YAML_PATH = PIPELINE_SCRIPTS_DIR / "default_keywords.yaml"
 
 
-def _groups_to_yaml(groups: list) -> str:
-    """Convert internal groups structure to a clean YAML string."""
-    doc = []
-    for g in groups:
-        grp: dict = {"name": g["name"], "subgroups": []}
-        for sg in g.get("subgroups", []):
-            entry: dict = {"name": sg["name"], "terms": sg.get("terms", [])}
-            if sg.get("is_others"):
-                entry["is_default"] = True
-            grp["subgroups"].append(entry)
-        doc.append(grp)
-    return yaml.dump({"groups": doc}, allow_unicode=True, sort_keys=False,
-                     default_flow_style=False)
-
-
-def _yaml_to_groups(text: str) -> list:
-    """Parse YAML keyword config and return canonical groups list."""
-    data = yaml.safe_load(text)
+def _json_to_groups(text: str) -> list:
+    """Parse JSON keyword config and return canonical groups list."""
+    data = json.loads(text)
     if not isinstance(data, dict):
-        raise ValueError("YAML root must be a mapping")
+        raise ValueError("JSON root must be an object")
     raw_groups = data.get("groups", [])
     result = []
     for g in raw_groups:
@@ -66,7 +48,7 @@ def _yaml_to_groups(text: str) -> list:
             subgroups.append({
                 "name": sg["name"],
                 "terms": sg.get("terms", []),
-                **({"is_others": True} if sg.get("is_default") else {}),
+                **({"is_others": True} if sg.get("is_default") or sg.get("is_others") else {}),
             })
         if not subgroups:
             subgroups = [{"name": "Default", "is_others": True, "terms": []}]
@@ -119,45 +101,42 @@ def api_default_keywords():
     return jsonify(_load_default_keywords())
 
 
-@pipelines_bp.route("/api/default-keywords/yaml", methods=["GET"])
-def api_default_keywords_yaml_get():
-    """Download the server default keywords as YAML."""
+@pipelines_bp.route("/api/default-keywords/json", methods=["GET"])
+def api_default_keywords_json_get():
+    """Download the server default keywords as JSON."""
     err = require_auth()
     if err:
         return err
     kw = _load_default_keywords()
-    groups = kw.get("groups", [])
-    text = _groups_to_yaml(groups)
-    return Response(text, mimetype="text/yaml",
-                    headers={"Content-Disposition": 'attachment; filename="keywords.yaml"'})
+    text = json.dumps(kw, indent=2, ensure_ascii=False)
+    return Response(text, mimetype="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="keywords.json"'})
 
 
-@pipelines_bp.route("/api/default-keywords/yaml", methods=["POST"])
-def api_default_keywords_yaml_post():
-    """Upload a YAML file to replace the server default keywords (owner only — any admin)."""
+@pipelines_bp.route("/api/default-keywords/json", methods=["POST"])
+def api_default_keywords_json_post():
+    """Upload a JSON file to replace the server default keywords."""
     err = require_auth()
     if err:
         return err
     body = request.get_json(silent=True)
-    raw = ((body.get("yaml") or "") if isinstance(body, dict) else "").strip()
+    raw = ((body.get("json") or "") if isinstance(body, dict) else "").strip()
     if not raw:
         raw = (request.get_data(as_text=True) or "").strip()
     if not raw:
         return jsonify({"error": "empty body"}), 400
     try:
-        groups = _yaml_to_groups(raw)
+        groups = _json_to_groups(raw)
     except Exception as exc:
-        return jsonify({"error": f"Invalid YAML: {exc}"}), 400
+        return jsonify({"error": f"Invalid JSON: {exc}"}), 400
     kw_data = {"groups": groups}
-    DEFAULT_KEYWORDS_JSON_PATH = PIPELINE_SCRIPTS_DIR / "default_keywords.json"
-    DEFAULT_KEYWORDS_JSON_PATH.write_text(json.dumps(kw_data, indent=2, ensure_ascii=False), encoding="utf-8")
-    DEFAULT_KEYWORDS_YAML_PATH.write_text(raw, encoding="utf-8")
+    DEFAULT_KEYWORDS_PATH.write_text(json.dumps(kw_data, indent=2, ensure_ascii=False), encoding="utf-8")
     return jsonify({"ok": True, "groups": len(groups)})
 
 
-@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/keywords/yaml", methods=["GET"])
-def api_pipeline_keywords_yaml_get(pipeline_id: int):
-    """Download this pipeline's keywords as YAML."""
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/keywords/json", methods=["GET"])
+def api_pipeline_keywords_json_get(pipeline_id: int):
+    """Download this pipeline's keywords as JSON."""
     err = require_auth()
     if err:
         return err
@@ -170,14 +149,14 @@ def api_pipeline_keywords_yaml_get(pipeline_id: int):
     if not groups:
         kw = _load_default_keywords()
         groups = kw.get("groups", [])
-    text = _groups_to_yaml(groups)
-    return Response(text, mimetype="text/yaml",
-                    headers={"Content-Disposition": 'attachment; filename="keywords.yaml"'})
+    text = json.dumps({"groups": groups}, indent=2, ensure_ascii=False)
+    return Response(text, mimetype="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="keywords.json"'})
 
 
-@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/keywords/yaml", methods=["POST"])
-def api_pipeline_keywords_yaml_post(pipeline_id: int):
-    """Upload YAML to replace this pipeline's keywords (owner only)."""
+@pipelines_bp.route("/api/pipelines/<int:pipeline_id>/keywords/json", methods=["POST"])
+def api_pipeline_keywords_json_post(pipeline_id: int):
+    """Upload JSON to replace this pipeline's keywords (owner only)."""
     err = require_auth()
     if err:
         return err
@@ -188,15 +167,15 @@ def api_pipeline_keywords_yaml_post(pipeline_id: int):
     if pipeline["user_id"] != uid:
         return jsonify({"error": "not owner"}), 403
     body = request.get_json(silent=True)
-    raw = ((body.get("yaml") or "") if isinstance(body, dict) else "").strip()
+    raw = ((body.get("json") or "") if isinstance(body, dict) else "").strip()
     if not raw:
         raw = (request.get_data(as_text=True) or "").strip()
     if not raw:
         return jsonify({"error": "empty body"}), 400
     try:
-        groups = _yaml_to_groups(raw)
+        groups = _json_to_groups(raw)
     except Exception as exc:
-        return jsonify({"error": f"Invalid YAML: {exc}"}), 400
+        return jsonify({"error": f"Invalid JSON: {exc}"}), 400
     config = dict(pipeline.get("config") or {})
     config["groups"] = groups
     ok = update_pipeline(pipeline_id, uid, config=config)

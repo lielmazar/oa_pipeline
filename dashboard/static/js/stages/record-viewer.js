@@ -292,11 +292,55 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
     return () => document.removeEventListener('keydown', h);
   }, [onClose, selectedRecord, embedded]);
 
+  // ── Drill-down sub-viewer ─────────────────────────────────────────────────
+  const [drillDown, setDrillDown] = useState(null); // { sql, title }
+
+  // Build a drill-down SQL from a table row by mapping dimension columns to
+  // filtered_records WHERE conditions.
+  const buildDrillSql = useCallback((rowCols, rowData, skipCol) => {
+    const DIM_MAP = {
+      year: 'publication_year', publication_year: 'publication_year',
+      oa_status: 'open_access_oa_status', open_access_oa_status: 'open_access_oa_status',
+      type: 'type', record_type: 'type',
+    };
+    const conditions = [];
+    rowCols.forEach((col, i) => {
+      if (col === skipCol) return;
+      const val = rowData[i];
+      if (val == null || val === '' || val === 'Unknown/≤2000') return;
+      const lc = col.toLowerCase();
+      if (lc === 'subgroup' || lc.includes('subgroup')) {
+        // JSON array match
+        const safe = String(val).replace(/'/g, "''");
+        const base = lc.includes('impact') ? 'matched_impact_subgroups' : 'matched_fuel_subgroups';
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(${base}) WHERE value = '${safe}')`);
+      } else if (lc === 'term' || lc.includes('_term')) {
+        const safe = String(val).replace(/'/g, "''");
+        const base = lc.includes('impact') ? 'matched_impact_terms' : 'matched_fuel_terms';
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(${base}) WHERE LOWER(value) = LOWER('${safe}'))`);
+      } else {
+        const mapped = DIM_MAP[lc] || (DIM_MAP[col] ? DIM_MAP[col] : null);
+        if (!mapped) return;
+        const safe = String(val).replace(/'/g, "''");
+        conditions.push(`${mapped} = '${safe}'`);
+      }
+    });
+    if (!conditions.length) return null;
+    return `SELECT * FROM filtered_records WHERE ${conditions.join(' AND ')}`;
+  }, []);
+
   // ── Derived ────────────────────────────────────────────────────────────────
   const ci           = useCallback(n => cols.indexOf(n), [cols]);
   const TITLE_I      = ci('title');
   const isRecordView = TITLE_I >= 0;
   const totalPages   = totalCount != null ? Math.ceil(totalCount / RV_PER_PAGE) : null;
+
+  // Which columns are present (for dynamic filters)
+  const hasCol       = useCallback(n => cols.length === 0 || cols.includes(n), [cols]);
+  const isCountCol   = (name) => {
+    const lc = (name || '').toLowerCase();
+    return lc === 'count' || lc === 'cnt' || lc === 'total' || lc.endsWith('_count') || lc.endsWith('_total');
+  };
 
   const hasActiveFilters = !!(filterText || subgroupFilter || fuelTermFilter || impactSubgroupFilter || impactTermFilter || yearFrom || yearTo || oaStatus || recType || publisherFilter || sourceType || sortBy);
   const clearFilters = () => {
@@ -454,119 +498,150 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
           <div className="px-3 py-2.5 space-y-2 bg-white">
 
             {/* Fuel sub-group + optional term drill-down */}
-            <SubgroupPills label="Fuel" subgroups={fuelSubgroups} active={subgroupFilter} onSelect={handleFuelSubgroupChange} />
-            {subgroupFilter && (() => {
-              const terms = fuelSubgroups.find(s => s.name === subgroupFilter)?.terms || [];
-              if (!terms.length) return null;
-              return (
-                <div className="pl-2 border-l-2 border-orange-200 flex flex-wrap gap-1">
-                  <button onClick={() => setFuelTermFilter('')}
-                    className={`text-xs px-2 py-0.5 rounded-full border transition ${!fuelTermFilter ? 'bg-orange-400 text-white border-orange-400' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-300'}`}>All</button>
-                  {terms.map(t => (
-                    <button key={t} onClick={() => setFuelTermFilter(t === fuelTermFilter ? '' : t)}
-                      className={`text-xs px-2 py-0.5 rounded-full border transition ${fuelTermFilter === t ? 'bg-orange-400 text-white border-orange-400' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-300'}`}>{t}</button>
-                  ))}
-                </div>
-              );
-            })()}
+            {hasCol('matched_fuel_subgroups') && (
+              <>
+                <SubgroupPills label="Fuel" subgroups={fuelSubgroups} active={subgroupFilter} onSelect={handleFuelSubgroupChange} />
+                {subgroupFilter && (() => {
+                  const terms = fuelSubgroups.find(s => s.name === subgroupFilter)?.terms || [];
+                  if (!terms.length) return null;
+                  return (
+                    <div className="pl-2 border-l-2 border-orange-200 flex flex-wrap gap-1">
+                      <button onClick={() => setFuelTermFilter('')}
+                        className={`text-xs px-2 py-0.5 rounded-full border transition ${!fuelTermFilter ? 'bg-orange-400 text-white border-orange-400' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-300'}`}>All</button>
+                      {terms.map(t => (
+                        <button key={t} onClick={() => setFuelTermFilter(t === fuelTermFilter ? '' : t)}
+                          className={`text-xs px-2 py-0.5 rounded-full border transition ${fuelTermFilter === t ? 'bg-orange-400 text-white border-orange-400' : 'bg-white text-gray-500 border-gray-300 hover:border-orange-300'}`}>{t}</button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
 
             {/* Impact sub-group + optional term drill-down */}
-            <SubgroupPills label="Impact" subgroups={impactSubgroups} active={impactSubgroupFilter} onSelect={handleImpactSubgroupChange} />
-            {impactSubgroupFilter && (() => {
-              const terms = impactSubgroups.find(s => s.name === impactSubgroupFilter)?.terms || [];
-              if (!terms.length) return null;
-              return (
-                <div className="pl-2 border-l-2 border-teal-200 flex flex-wrap gap-1">
-                  <button onClick={() => setImpactTermFilter('')}
-                    className={`text-xs px-2 py-0.5 rounded-full border transition ${!impactTermFilter ? 'bg-teal-500 text-white border-teal-500' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-300'}`}>All</button>
-                  {terms.map(t => (
-                    <button key={t} onClick={() => setImpactTermFilter(t === impactTermFilter ? '' : t)}
-                      className={`text-xs px-2 py-0.5 rounded-full border transition ${impactTermFilter === t ? 'bg-teal-500 text-white border-teal-500' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-300'}`}>{t}</button>
-                  ))}
-                </div>
-              );
-            })()}
+            {hasCol('matched_impact_subgroups') && (
+              <>
+                <SubgroupPills label="Impact" subgroups={impactSubgroups} active={impactSubgroupFilter} onSelect={handleImpactSubgroupChange} />
+                {impactSubgroupFilter && (() => {
+                  const terms = impactSubgroups.find(s => s.name === impactSubgroupFilter)?.terms || [];
+                  if (!terms.length) return null;
+                  return (
+                    <div className="pl-2 border-l-2 border-teal-200 flex flex-wrap gap-1">
+                      <button onClick={() => setImpactTermFilter('')}
+                        className={`text-xs px-2 py-0.5 rounded-full border transition ${!impactTermFilter ? 'bg-teal-500 text-white border-teal-500' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-300'}`}>All</button>
+                      {terms.map(t => (
+                        <button key={t} onClick={() => setImpactTermFilter(t === impactTermFilter ? '' : t)}
+                          className={`text-xs px-2 py-0.5 rounded-full border transition ${impactTermFilter === t ? 'bg-teal-500 text-white border-teal-500' : 'bg-white text-gray-500 border-gray-300 hover:border-teal-300'}`}>{t}</button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
 
-            {/* Text search */}
-            <div className="relative">
-              <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-              </svg>
-              <input value={filterText} onChange={e => setFilterText(e.target.value)}
-                placeholder="Search title / abstract…"
-                className="w-full pl-7 pr-6 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400" />
-              {filterText && (
-                <button onClick={() => setFilterText('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm leading-none">×</button>
-              )}
-            </div>
-
-            {/* Year + OA + Type in one compact row */}
-            <div className="grid grid-cols-4 gap-1.5 items-end">
-              <input type="number" value={yearFrom} onChange={e => setYearFrom(e.target.value)}
-                placeholder="Year from"
-                className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-              <input type="number" value={yearTo} onChange={e => setYearTo(e.target.value)}
-                placeholder="Year to"
-                className="text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-              <select value={oaStatus} onChange={e => setOaStatus(e.target.value)}
-                className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                <option value="">OA: any</option>
-                <option value="open_any">Open</option>
-                <option value="gold">Gold</option>
-                <option value="green">Green</option>
-                <option value="hybrid">Hybrid</option>
-                <option value="bronze">Bronze</option>
-                <option value="closed">Closed</option>
-              </select>
-              <select value={recType} onChange={e => setRecType(e.target.value)}
-                className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                <option value="">Type: any</option>
-                <option value="article">Article</option>
-                <option value="proceedings-article">Conference</option>
-                <option value="review">Review</option>
-                <option value="book-chapter">Book ch.</option>
-                <option value="preprint">Preprint</option>
-                <option value="report">Report</option>
-              </select>
-            </div>
-
-            {/* Publisher + Source type */}
-            <div className="grid grid-cols-2 gap-1.5">
+            {/* Text search — show when title or abstract in cols */}
+            {(hasCol('title') || hasCol('abstract_text')) && (
               <div className="relative">
-                <input value={publisherFilter} onChange={e => setPublisherFilter(e.target.value)}
-                  placeholder="Publisher…"
-                  className="w-full text-xs border border-gray-300 rounded px-2 pr-5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
-                {publisherFilter && (
-                  <button onClick={() => setPublisherFilter('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm">×</button>
+                <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                </svg>
+                <input value={filterText} onChange={e => setFilterText(e.target.value)}
+                  placeholder="Search title / abstract…"
+                  className="w-full pl-7 pr-6 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                {filterText && (
+                  <button onClick={() => setFilterText('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm leading-none">×</button>
                 )}
               </div>
-              <select value={sourceType} onChange={e => setSourceType(e.target.value)}
-                className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
-                <option value="">Source: any</option>
-                <option value="journal">Journal</option>
-                <option value="conference">Conference</option>
-                <option value="repository">Repository</option>
-                <option value="ebook platform">eBook</option>
-                <option value="book series">Book series</option>
-              </select>
-            </div>
+            )}
 
-            {/* Sort */}
+            {/* Year + OA + Type — show only when those columns present */}
+            {(hasCol('publication_year') || hasCol('open_access_oa_status') || hasCol('type')) && (
+              <div className="flex flex-wrap gap-1.5">
+                {hasCol('publication_year') && (
+                  <>
+                    <input type="number" value={yearFrom} onChange={e => setYearFrom(e.target.value)}
+                      placeholder="Year from"
+                      className="w-24 text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                    <input type="number" value={yearTo} onChange={e => setYearTo(e.target.value)}
+                      placeholder="Year to"
+                      className="w-24 text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                  </>
+                )}
+                {hasCol('open_access_oa_status') && (
+                  <select value={oaStatus} onChange={e => setOaStatus(e.target.value)}
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                    <option value="">OA: any</option>
+                    <option value="open_any">Open</option>
+                    <option value="gold">Gold</option>
+                    <option value="green">Green</option>
+                    <option value="hybrid">Hybrid</option>
+                    <option value="bronze">Bronze</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                )}
+                {hasCol('type') && (
+                  <select value={recType} onChange={e => setRecType(e.target.value)}
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                    <option value="">Type: any</option>
+                    <option value="article">Article</option>
+                    <option value="proceedings-article">Conference</option>
+                    <option value="review">Review</option>
+                    <option value="book-chapter">Book ch.</option>
+                    <option value="preprint">Preprint</option>
+                    <option value="report">Report</option>
+                  </select>
+                )}
+              </div>
+            )}
+
+            {/* Publisher + Source type */}
+            {(hasCol('primary_location_source_host_organization_name') || hasCol('primary_location_source_type')) && (
+              <div className="flex flex-wrap gap-1.5">
+                {hasCol('primary_location_source_host_organization_name') && (
+                  <div className="relative flex-1 min-w-24">
+                    <input value={publisherFilter} onChange={e => setPublisherFilter(e.target.value)}
+                      placeholder="Publisher…"
+                      className="w-full text-xs border border-gray-300 rounded px-2 pr-5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                    {publisherFilter && (
+                      <button onClick={() => setPublisherFilter('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-sm">×</button>
+                    )}
+                  </div>
+                )}
+                {hasCol('primary_location_source_type') && (
+                  <select value={sourceType} onChange={e => setSourceType(e.target.value)}
+                    className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
+                    <option value="">Source: any</option>
+                    <option value="journal">Journal</option>
+                    <option value="conference">Conference</option>
+                    <option value="repository">Repository</option>
+                    <option value="ebook platform">eBook</option>
+                    <option value="book series">Book series</option>
+                  </select>
+                )}
+              </div>
+            )}
+
+            {/* Sort — dynamic from available columns */}
             <div className="flex items-center gap-1.5">
-              <span className="text-xs text-gray-400 flex-shrink-0">Sort</span>
+              <span className="text-xs text-gray-400 flex-shrink-0">Sort by</span>
               <select value={sortBy} onChange={e => setSortBy(e.target.value)}
                 className="flex-1 text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white">
                 <option value="">— default —</option>
-                <option value="publication_year">Year</option>
-                <option value="fwci">FWCI</option>
-                <option value="cited_by_count">Citations</option>
-                <option value="title">Title A–Z</option>
-                <option value="llm_confidence">LLM confidence</option>
+                {cols.length > 0
+                  ? cols.map(c => <option key={c} value={c}>{c.replace(/_/g, ' ')}</option>)
+                  : <>
+                      <option value="publication_year">publication year</option>
+                      <option value="fwci">fwci</option>
+                      <option value="cited_by_count">cited by count</option>
+                      <option value="title">title</option>
+                      <option value="llm_confidence">llm confidence</option>
+                    </>
+                }
               </select>
               {sortBy && (
                 <button onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
                   className="flex-shrink-0 text-xs border border-gray-300 rounded px-2 py-1 hover:bg-gray-50 transition">
-                  {sortDir === 'desc' ? '↓' : '↑'}
+                  {sortDir === 'desc' ? '↓ desc' : '↑ asc'}
                 </button>
               )}
             </div>
@@ -718,12 +793,40 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
             <div className="overflow-x-auto">
               <table className="text-xs w-full">
                 <thead className="bg-gray-50 border-b sticky top-0">
-                  <tr>{cols.map(c => <th key={c} className="px-3 py-2 text-left font-medium whitespace-nowrap">{c}</th>)}</tr>
+                  <tr>
+                    {cols.map(c => (
+                      <th key={c} className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                        {isCountCol(c)
+                          ? <span className="flex items-center gap-1">{c}<span className="text-gray-400 font-normal text-xs" title="Click counts to explore records">⊞</span></span>
+                          : c}
+                      </th>
+                    ))}
+                  </tr>
                 </thead>
                 <tbody>
                   {rows.map((r, i) => (
                     <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
-                      {r.map((v, j) => <td key={j} className="px-3 py-1.5 max-w-xs truncate">{String(v ?? '')}</td>)}
+                      {r.map((v, j) => {
+                        if (isCountCol(cols[j]) && v != null && Number(v) > 0) {
+                          const dSql = buildDrillSql(cols, r, cols[j]);
+                          const dimLabel = cols.filter((c, ci) => !isCountCol(c) && r[ci] != null).map(c => r[cols.indexOf(c)]).filter(Boolean).join(' · ');
+                          return (
+                            <td key={j} className="px-3 py-1.5">
+                              {dSql ? (
+                                <button
+                                  onClick={() => setDrillDown({ sql: dSql, title: `Records: ${dimLabel || String(v)}` })}
+                                  className="font-mono font-semibold text-blue-600 hover:text-blue-800 hover:underline decoration-dotted transition"
+                                  title="Click to view matching records">
+                                  {Number(v).toLocaleString()}
+                                </button>
+                              ) : (
+                                <span className="font-mono font-semibold text-gray-700">{Number(v).toLocaleString()}</span>
+                              )}
+                            </td>
+                          );
+                        }
+                        return <td key={j} className="px-3 py-1.5 max-w-xs truncate">{String(v ?? '')}</td>;
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -756,6 +859,35 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
       {selectedRecord && (
         <RecordModal record={selectedRecord} fuelSubgroups={fuelSubgroups}
           onClose={() => setSelectedRecord(null)} />
+      )}
+
+      {/* Drill-down modal — opened by clicking a count value in table view */}
+      {drillDown && (
+        <div className="fixed inset-0 bg-gray-900/60 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4"
+          onClick={e => e.target === e.currentTarget && setDrillDown(null)}>
+          <div className="bg-white rounded-t-2xl sm:rounded-xl shadow-2xl w-full sm:max-w-2xl flex flex-col"
+            style={{ maxHeight: 'calc(100vh - 48px)' }}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 flex-shrink-0">
+              <span className="text-sm font-semibold text-gray-800 truncate">{drillDown.title}</span>
+              <button onClick={() => setDrillDown(null)}
+                className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition ml-2 flex-shrink-0">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden min-h-0">
+              <RecordViewerPanel
+                key={drillDown.sql}
+                pipeline={pipeline}
+                initialSql={drillDown.sql}
+                title={drillDown.title}
+                onClose={() => setDrillDown(null)}
+                embedded={true}
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

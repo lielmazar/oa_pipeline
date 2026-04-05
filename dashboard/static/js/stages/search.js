@@ -9,14 +9,13 @@ const _SKIP_LABELS = {
 
 function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
   const [maxFiles, setMaxFiles] = useState('');
-  const [workers, setWorkers] = useState(() => Number(localStorage.getItem('oa_workers') || '4'));
-  const [localDir, setLocalDir] = useState(() => localStorage.getItem('oa_local_dir') || '');
-  const [editingDir, setEditingDir] = useState(false);
   const [totalFiles, setTotalFiles] = useState(null);
+  // localDir stored in localStorage but not exposed in UI (fixed per deployment)
+  const localDir = localStorage.getItem('oa_local_dir') || '';
   const [activeJobId, setActiveJobId] = useState(null);
   const [speed, setSpeed] = useState(null); // { filesPerMin, dbMBps }
-  const [cpuCount, setCpuCount] = useState(null);
   const [skipDetailOpen, setSkipDetailOpen] = useState(false);
+  const [staticSkipOpen, setStaticSkipOpen] = useState(false);
   const [recordViewer, setRecordViewer] = useState(null);
   const prevProgRef = useRef(null);
 
@@ -47,32 +46,15 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
     apiFetch(`/api/pipelines/${pipeline.id}/file-count`)
       .then(r => r.json()).then(d => { if (d.total_files) setTotalFiles(d.total_files); })
       .catch(() => {});
-    apiFetch('/api/system/info')
-      .then(r => r.json()).then(d => { if (d.cpu_count) setCpuCount(d.cpu_count); })
-      .catch(() => {});
     // Backfill subgroups for any existing records that are missing them
-    // (records inserted before subgroup config was present)
     apiFetch(`/api/pipelines/${pipeline.id}/backfill-subgroups`, { method: 'POST' })
       .catch(() => {});
   }, [pipeline.id]);
-
-  const saveDir = val => {
-    setLocalDir(val);
-    localStorage.setItem('oa_local_dir', val);
-    setEditingDir(false);
-  };
-
-  const saveWorkers = val => {
-    const n = Math.max(1, Math.min(64, Number(val) || 16));
-    setWorkers(n);
-    localStorage.setItem('oa_workers', String(n));
-  };
 
   const startSearch = async () => {
     const args = {
       '--output-db': pipeline.output_db_path,
       '--state-file': pipeline.state_file_path,
-      '--workers': workers,
     };
     if (maxFiles) args['--max-files'] = maxFiles;
     if (localDir) args['--local-dir'] = localDir;
@@ -95,42 +77,14 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
         <p className="text-sm text-gray-500 mb-4">Run the parallel pipeline to filter OpenAlex records using your keywords.</p>
         {pipeline.is_owner ? (
           <>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Max files{' '}
-                  {totalFiles && <span className="text-gray-400 font-normal text-xs">({totalFiles.toLocaleString()} total)</span>}
-                </label>
-                <input type="number" placeholder="blank = all" min="1" value={maxFiles}
-                  onChange={e => setMaxFiles(e.target.value)}
-                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Workers{' '}
-                  {cpuCount && <span className="text-gray-400 font-normal text-xs">({cpuCount} CPU cores available)</span>}
-                </label>
-                <input type="number" min="1" max="256" value={workers}
-                  onChange={e => saveWorkers(e.target.value)}
-                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-              </div>
-            </div>
-            <div className="mb-4">
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                OpenAlex snapshot dir (saved locally){' '}
-                <button onClick={() => setEditingDir(!editingDir)}
-                  className="text-blue-500 hover:underline text-xs ml-1">edit</button>
+            <div className="mb-4 w-48">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Max files{' '}
+                {totalFiles && <span className="text-gray-400 font-normal text-xs">({totalFiles.toLocaleString()} total)</span>}
               </label>
-              {editingDir ? (
-                <input type="text" defaultValue={localDir} autoFocus
-                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 mt-1"
-                  onBlur={e => saveDir(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && saveDir(e.target.value)} />
-              ) : (
-                <div className="text-xs text-gray-600 font-mono bg-gray-50 px-3 py-1.5 rounded border">
-                  {localDir || 'not set — click edit'}
-                </div>
-              )}
+              <input type="number" placeholder="blank = all" min="1" value={maxFiles}
+                onChange={e => setMaxFiles(e.target.value)}
+                className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
             </div>
             <div className="flex gap-3">
               {!isRunning ? (
@@ -320,12 +274,13 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
         const noDoi   = sk['no_doi']        || 0;
         const noAbs   = sk['no_abstract']   || 0;
         const noKw    = sk['no_keywords']   || 0;
-        const emAbs   = sk['empty_abstract']|| 0;
         const inserted = sp?.inserted || 0;
         const seen     = sp?.seen     || 0;
-        const otherSkip = seen > 0
-          ? Math.max(0, seen - notEn - noDoi - noAbs - noKw - emAbs - inserted)
-          : 0;
+        const SMAIN_KEYS = new Set(['not_english','no_doi','no_abstract','no_keywords']);
+        const otherRows = Object.entries(sk)
+          .filter(([k]) => !SMAIN_KEYS.has(k))
+          .sort((a, b) => b[1] - a[1]);
+        const otherTotal = otherRows.reduce((s, [, v]) => s + v, 0);
 
         return (
           <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
@@ -360,6 +315,17 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
                   <div className="text-base font-semibold text-gray-700">{dbSizeMb} MB</div>
                 </div>
               )}
+              {(sp?.file_errors > 0 || sp?.record_errors > 0) && (
+                <div>
+                  <div className="text-xs text-red-400 mb-0.5">Errors</div>
+                  <div className="text-sm font-semibold text-red-600">
+                    {sp.file_errors > 0 && `${sp.file_errors} file`}
+                    {sp.file_errors > 0 && sp.record_errors > 0 && ' · '}
+                    {sp.record_errors > 0 && `${sp.record_errors} record`}
+                  </div>
+                  <div className="text-xs text-gray-400">see pipeline.log in ZIP</div>
+                </div>
+              )}
             </div>
 
             {/* Screening funnel */}
@@ -370,20 +336,66 @@ function SearchStage({ pipeline, pipelineStatus, onJobStart, onJobDone }) {
                   {[
                     { label: 'records scanned', count: seen },
                     notEn > 0 && { label: '↳ non-English (pre-screened)', count: notEn, dim: true },
-                    noDoi > 0 && { label: '↳ no DOI', count: noDoi, dim: true },
-                    noAbs > 0 && { label: '↳ no abstract', count: noAbs, dim: true },
-                    noKw  > 0 && { label: '↳ no matching keywords', count: noKw, dim: true },
-                    (emAbs + otherSkip) > 0 && { label: '↳ other reasons', count: emAbs + otherSkip, dim: true },
+                    noDoi > 0 && { label: '↳ no DOI',                     count: noDoi, dim: true },
+                    noAbs > 0 && { label: '↳ no abstract',                 count: noAbs, dim: true },
+                    noKw  > 0 && { label: '↳ no matching keywords',        count: noKw,  dim: true },
+                    otherTotal > 0 && {
+                      label: (
+                        <span className="flex items-center gap-1">
+                          ↳ other skip reasons
+                          {otherRows.length > 0 && (
+                            <button onClick={() => setStaticSkipOpen(true)}
+                              className="text-blue-400 hover:text-blue-600 underline decoration-dotted font-sans">ⓘ</button>
+                          )}
+                        </span>
+                      ),
+                      count: otherTotal, dim: true,
+                    },
                     { label: '✓ saved', count: inserted, green: true },
                   ].filter(Boolean).map((row, i) => (
-                    <div key={i} className={`flex gap-3 ${row.dim ? 'pl-4 text-gray-400' : ''}`}>
-                      <span className={`w-28 text-right ${row.green ? 'text-green-700 font-bold' : row.dim ? 'text-gray-400' : 'text-gray-700 font-semibold'}`}>
-                        {row.count.toLocaleString()}
+                    <div key={i} className={`flex gap-3 ${row.dim ? 'pl-4' : ''}`}>
+                      <span className={`w-28 text-right flex-shrink-0 ${row.green ? 'text-green-700 font-bold' : row.dim ? 'text-gray-400' : 'text-gray-700 font-semibold'}`}>
+                        {typeof row.count === 'number' ? row.count.toLocaleString() : row.count}
                       </span>
-                      <span className={row.green ? 'text-green-700 font-semibold' : ''}>{row.label}</span>
+                      <span className={row.green ? 'text-green-700 font-semibold' : row.dim ? 'text-gray-400' : ''}>{row.label}</span>
                     </div>
                   ))}
                 </div>
+
+                {/* Other skip reasons popup */}
+                {staticSkipOpen && (
+                  <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4"
+                    onClick={e => e.target === e.currentTarget && setStaticSkipOpen(false)}>
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+                      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                        <h3 className="font-semibold text-sm text-gray-800">Other skip reasons — breakdown</h3>
+                        <button onClick={() => setStaticSkipOpen(false)}
+                          className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100 transition">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="px-5 py-4 space-y-1.5">
+                        {otherRows.map(([key, count]) => (
+                          <div key={key} className="flex justify-between text-xs">
+                            <span className="text-gray-600">{_SKIP_LABELS[key] || key}</span>
+                            <span className="font-mono font-semibold text-gray-700">{count.toLocaleString()}</span>
+                          </div>
+                        ))}
+                        {otherRows.length === 0 && (
+                          <p className="text-xs text-gray-400 italic">No detailed breakdown available.</p>
+                        )}
+                      </div>
+                      <div className="px-5 py-3 border-t border-gray-100 bg-gray-50/50 rounded-b-xl text-right">
+                        <button onClick={() => setStaticSkipOpen(false)}
+                          className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition">
+                          Close
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
