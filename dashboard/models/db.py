@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS qa_ratings (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(pipeline_id, openalex_id, user_id, field)
 );
+
+CREATE TABLE IF NOT EXISTS qa_annotations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+    openalex_id TEXT NOT NULL,
+    annotator_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    dimension   TEXT NOT NULL,
+    human_value TEXT NOT NULL,
+    llm_value   TEXT,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(pipeline_id, openalex_id, annotator_id, dimension)
+);
 """
 
 

@@ -29,6 +29,8 @@ _JS_MODULES = [
     "views/pipeline.js",
     "views/jobs.js",
     "views/qa.js",
+    "views/orthogonality.js",
+    "views/export.js",
     "app-root.js",
 ]
 
@@ -72,6 +74,8 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     from blueprints.data import data_bp
     from blueprints.system import system_bp
     from blueprints.qa import qa_bp
+    from blueprints.orthogonality import ortho_bp
+    from blueprints.export import export_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(pipelines_bp)
@@ -79,6 +83,8 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     app.register_blueprint(data_bp)
     app.register_blueprint(system_bp)
     app.register_blueprint(qa_bp)
+    app.register_blueprint(ortho_bp)
+    app.register_blueprint(export_bp)
 
     @app.route("/")
     def index():

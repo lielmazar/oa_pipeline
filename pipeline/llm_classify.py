@@ -77,7 +77,7 @@ def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
     STATE_FILE = BATCH_DIR / "state.json"
 
 PROMPT_ID      = "pmpt_694c136369fc81939aa9e7eb310bd3170ecd05cb5a9fb123"
-PROMPT_VERSION = "23"  # v5 prompt with fuel classification + value chain position
+PROMPT_VERSION = "25"
 MODEL          = "gpt-5.4-nano"
 BATCH_SIZE_LIMIT = 50_000   # OpenAI hard limit per batch
 

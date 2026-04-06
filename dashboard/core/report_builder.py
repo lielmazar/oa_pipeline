@@ -626,3 +626,136 @@ def build_summary_report(
         body=body,
         generated_at=ts,
     )
+
+
+# ---------------------------------------------------------------------------
+# Orthogonality & Data Quality Report Section
+# ---------------------------------------------------------------------------
+
+def build_orthogonality_section(db_path: Path) -> str:
+    """Generate HTML section with Cramér's V, entropy, tautological pair warnings, and algorithm diversity."""
+    from core.orthogonality import (
+        cramers_v_matrix, conditional_entropy_analysis,
+        tautological_pairs, pmi_analysis, data_quality_audit,
+    )
+
+    body = '<h2>Taxonomy Orthogonality Analysis</h2>'
+
+    # Cramér's V
+    try:
+        cv = cramers_v_matrix(db_path, ml_only=True)
+        dims = cv["dimensions"]
+        mat = cv["matrix"]
+        body += '<h3>Cramér\'s V Matrix (ML-Positive Papers)</h3>'
+        body += '<table><thead><tr><th></th>'
+        for d in dims:
+            body += f'<th>{_esc(d)}</th>'
+        body += '</tr></thead><tbody>'
+        for i, d in enumerate(dims):
+            body += f'<tr><th>{_esc(d)}</th>'
+            for j in range(len(dims)):
+                v = mat[i][j]
+                color = "background:#fee2e2" if v > 0.3 else ("background:#fef9c3" if v > 0.15 else "")
+                style = f' style="{color};text-align:center"' if color else ' style="text-align:center"'
+                body += f'<td{style}>{v:.3f}</td>'
+            body += '</tr>'
+        body += '</tbody></table>'
+    except Exception:
+        body += '<p>Cramér\'s V calculation unavailable.</p>'
+
+    # Conditional entropy
+    try:
+        ent = conditional_entropy_analysis(db_path, ml_only=True)
+        body += '<h3>Conditional Entropy</h3>'
+        body += '<div class="stat-grid">'
+        body += _stat_card(f"{ent['h_role']:.2f} bits", "H(ML Role)", "#6366f1")
+        body += _stat_card(f"{ent['h_role_given_fuel']:.2f} bits", "H(ML Role | Fuel Class)", "#0891b2")
+        body += _stat_card(f"{ent['mi']:.2f} bits", "Mutual Information", "#059669")
+        body += _stat_card(f"{ent['uncertainty_reduction_pct']:.1f}%", "Uncertainty Reduction", "#d97706")
+        body += '</div>'
+        body += f'<p>Knowing the fuel domain reduces role uncertainty by <strong>{ent["uncertainty_reduction_pct"]:.1f}%</strong>.</p>'
+
+        # Per-fuel entropy table
+        if ent["per_fuel"]:
+            body += '<h3>H(ML Role) per Fuel Classification</h3>'
+            body += '<table><thead><tr><th>Fuel Class</th><th>Papers</th><th>H(Role) bits</th><th>Flag</th></tr></thead><tbody>'
+            for pf in ent["per_fuel"][:20]:
+                flag = '<span class="badge badge-amber">low diversity</span>' if pf["h_role"] < 1.5 else ''
+                body += f'<tr><td>{_esc(pf["fuel_class"])}</td><td>{pf["count"]:,}</td><td>{pf["h_role"]:.3f}</td><td>{flag}</td></tr>'
+            body += '</tbody></table>'
+    except Exception:
+        body += '<p>Entropy analysis unavailable.</p>'
+
+    # Tautological pairs
+    try:
+        tp = tautological_pairs(db_path, ml_only=True)
+        flagged = [p for p in tp["pairs"] if p["flagged"]]
+        if flagged:
+            body += '<h3>Tautological Pair Warnings</h3>'
+            body += f'<p>{len(flagged)} fuel×role pairs have &gt;50% overlap:</p>'
+            body += '<table><thead><tr><th>Fuel Class</th><th>Dominant Role</th><th>Overlap</th><th>Count</th></tr></thead><tbody>'
+            for p in flagged:
+                body += f'<tr><td>{_esc(p["fuel_class"])}</td><td>{_esc(p["top_ml_role"])}</td><td>{p["overlap_pct"]}%</td><td>{p["count"]:,}</td></tr>'
+            body += '</tbody></table>'
+    except Exception:
+        pass
+
+    return body
+
+
+def build_data_quality_section(db_path: Path) -> str:
+    """Generate HTML section with data quality audit results."""
+    from core.orthogonality import data_quality_audit
+
+    body = '<h2>Data Quality Audit</h2>'
+
+    try:
+        audit = data_quality_audit(db_path)
+        body += '<div class="stat-grid">'
+        body += _stat_card(_fmt_int(audit.get("total_papers", 0)), "Total Papers", "#2563eb")
+        body += _stat_card(_fmt_int(audit.get("ml_positive_papers", 0)), "ML-Positive Papers", "#059669")
+        body += '</div>'
+
+        issues = []
+        role_no_algo = audit.get("role_without_algorithm", 0)
+        if role_no_algo:
+            issues.append(f'<tr><td>ML role without algorithm</td><td class="text-red">{role_no_algo:,}</td><td>Papers with ml_role ≠ none but ml_algorithm is empty</td></tr>')
+
+        scope_leaks = audit.get("scope_leaks", 0)
+        if scope_leaks:
+            issues.append(f'<tr><td>Scope leaks</td><td class="text-red">{scope_leaks:,}</td><td>is_hydrocarbon=0 but ml_role ≠ none</td></tr>')
+
+        multi_role = audit.get("multi_role_papers", 0)
+        if multi_role:
+            issues.append(f'<tr><td>Multi-role papers (3+)</td><td>{multi_role:,}</td><td>Potential over-labelling</td></tr>')
+
+        other_ml = audit.get("other_ml_count", 0)
+        if other_ml:
+            issues.append(f'<tr><td>"other_ml" algorithm</td><td>{other_ml:,}</td><td>Should be minimised</td></tr>')
+
+        other_fuel = audit.get("other_fuel_count", 0)
+        if other_fuel:
+            issues.append(f'<tr><td>"other" fuel classification</td><td>{other_fuel:,}</td><td>Review for specificity</td></tr>')
+
+        if issues:
+            body += '<h3>Flagged Issues</h3>'
+            body += '<table><thead><tr><th>Issue</th><th>Count</th><th>Description</th></tr></thead><tbody>'
+            body += ''.join(issues)
+            body += '</tbody></table>'
+        else:
+            body += '<p style="color:#059669">No data quality issues detected.</p>'
+
+        # Confidence distribution
+        conf = audit.get("confidence_distribution")
+        if conf:
+            body += '<h3>Confidence Distribution</h3>'
+            body += '<table><thead><tr><th>Level</th><th>All Papers</th><th>ML-Positive</th></tr></thead><tbody>'
+            ml_conf = audit.get("ml_positive_confidence", {})
+            for level in ["High", "Medium", "Low"]:
+                body += f'<tr><td>{level}</td><td>{conf.get(level, 0):,}</td><td>{ml_conf.get(level, 0):,}</td></tr>'
+            body += '</tbody></table>'
+
+    except Exception:
+        body += '<p>Data quality audit unavailable.</p>'
+
+    return body

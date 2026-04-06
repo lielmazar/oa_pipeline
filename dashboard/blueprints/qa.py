@@ -360,3 +360,332 @@ def api_qa_my_ratings(pipeline_id: int):
     return jsonify({
         "ratings": [dict(r) for r in rows],
     })
+
+
+# ── Enhanced QA: Stratified sample generator ─────────────────────────────────
+
+ANNOTATION_DIMENSIONS = [
+    {"id": "fuel_relevant",          "label": "Fuel Relevant",        "type": "binary"},
+    {"id": "fuel_classification",    "label": "Fuel Classification",  "type": "multi"},
+    {"id": "ml_role",                "label": "ML Role",              "type": "multi"},
+    {"id": "ml_algorithm",           "label": "ML Algorithm",         "type": "multi"},
+    {"id": "ml_data_source",         "label": "ML Data Source",       "type": "nominal"},
+    {"id": "confidence",             "label": "Confidence",           "type": "ordinal"},
+]
+
+
+@qa_bp.route("/api/qa/stratified-sample/<int:pipeline_id>", methods=["POST"])
+def api_qa_stratified_sample(pipeline_id: int):
+    """Generate a stratified QA sample proportional to ml_role distribution.
+
+    Body: { "size": 100 }
+    Includes fixed quotas for boundary papers.
+    """
+    auth = require_auth()
+    if auth:
+        return auth
+
+    user_id = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id)
+    if not pipeline:
+        return jsonify({"error": "pipeline not found"}), 404
+
+    db_path = _pipeline_db(pipeline)
+    if not db_path or not db_path.exists():
+        return jsonify({"error": "pipeline database not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    target_size = min(int(data.get("size", 100)), 500)
+
+    # Already annotated
+    meta_db = get_meta_db()
+    already = {
+        row["openalex_id"]
+        for row in meta_db.execute(
+            "SELECT DISTINCT openalex_id FROM qa_annotations WHERE pipeline_id=? AND annotator_id=?",
+            (pipeline_id, user_id),
+        ).fetchall()
+    }
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
+
+        # Build select columns
+        sel_cols = ["openalex_id", "title", "doi"]
+        for c in ["abstract_text", "llm_confidence", "llm_is_hydrocarbon", "llm_fuel_classification",
+                   "llm_ml_role", "llm_ml_algorithm", "llm_ml_data_source", "llm_scope"]:
+            if c in cols:
+                sel_cols.append(c)
+        sel = ", ".join(sel_cols)
+
+        # 1. Boundary: low-confidence papers
+        boundary_low = []
+        if "llm_confidence" in cols:
+            boundary_low = conn.execute(
+                f"SELECT {sel} FROM filtered_records WHERE LOWER(llm_confidence)='low' ORDER BY RANDOM() LIMIT 10"
+            ).fetchall()
+
+        # 2. Boundary: ml_role != none but is_hydrocarbon=0
+        boundary_scope = []
+        if "llm_ml_role" in cols and "llm_is_hydrocarbon" in cols:
+            boundary_scope = conn.execute(
+                f"""SELECT {sel} FROM filtered_records
+                    WHERE (llm_is_hydrocarbon = 0 OR llm_is_hydrocarbon = 0.0)
+                      AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]','null','')
+                      AND LOWER(llm_ml_role) NOT LIKE '%"none"%'
+                    ORDER BY RANDOM() LIMIT 10"""
+            ).fetchall()
+
+        boundary_ids = set()
+        results = []
+        for r in list(boundary_low) + list(boundary_scope):
+            oid = r["openalex_id"]
+            if oid in already or oid in boundary_ids:
+                continue
+            boundary_ids.add(oid)
+            results.append(dict(r))
+
+        # 3. Stratified by ml_role distribution
+        remaining = target_size - len(results)
+        if remaining > 0 and "llm_ml_role" in cols:
+            # Get role distribution
+            role_rows = conn.execute("""
+                SELECT value AS role, COUNT(DISTINCT openalex_id) AS cnt
+                FROM filtered_records, json_each(llm_ml_role)
+                WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none'
+                GROUP BY value
+            """).fetchall()
+            total = sum(r["cnt"] for r in role_rows)
+
+            if total > 0:
+                # Proportional allocation with minimum of 2 each
+                allocations = {}
+                for r in role_rows:
+                    role = r["role"]
+                    if r["cnt"] >= 5:
+                        allocations[role] = max(2, round(remaining * r["cnt"] / total))
+
+                for role, quota in allocations.items():
+                    if len(results) >= target_size:
+                        break
+                    rows = conn.execute(
+                        f"""SELECT {sel} FROM filtered_records, json_each(llm_ml_role) jr
+                            WHERE jr.value = ? ORDER BY RANDOM() LIMIT ?""",
+                        (role, quota * 3),
+                    ).fetchall()
+                    added = 0
+                    for r in rows:
+                        oid = r["openalex_id"]
+                        if oid in already or oid in boundary_ids:
+                            continue
+                        boundary_ids.add(oid)
+                        results.append(dict(r))
+                        added += 1
+                        if added >= quota or len(results) >= target_size:
+                            break
+
+        # 4. Fill remaining with random
+        if len(results) < target_size:
+            fill_rows = conn.execute(
+                f"SELECT {sel} FROM filtered_records ORDER BY RANDOM() LIMIT ?",
+                (target_size * 2,),
+            ).fetchall()
+            for r in fill_rows:
+                if len(results) >= target_size:
+                    break
+                if r["openalex_id"] not in already and r["openalex_id"] not in boundary_ids:
+                    results.append(dict(r))
+
+    return jsonify({
+        "articles": results[:target_size],
+        "dimensions": ANNOTATION_DIMENSIONS,
+        "total_sampled": len(results[:target_size]),
+    })
+
+
+# ── Save annotations (new table) ─────────────────────────────────────────────
+
+@qa_bp.route("/api/qa/annotate/<int:pipeline_id>", methods=["POST"])
+def api_qa_annotate(pipeline_id: int):
+    """Save human annotations to qa_annotations table.
+
+    Body: { "annotations": [ { "openalex_id", "dimension", "human_value", "llm_value" }, ... ] }
+    """
+    auth = require_auth()
+    if auth:
+        return auth
+
+    user_id = get_current_user_id()
+    pipeline = get_pipeline(pipeline_id)
+    if not pipeline:
+        return jsonify({"error": "pipeline not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    annotations = data.get("annotations", [])
+    if not annotations:
+        return jsonify({"error": "no annotations provided"}), 400
+
+    valid_dims = {d["id"] for d in ANNOTATION_DIMENSIONS}
+    meta_db = get_meta_db()
+    inserted = 0
+    for a in annotations:
+        oa_id = (a.get("openalex_id") or "").strip()
+        dim = (a.get("dimension") or "").strip()
+        hv = (a.get("human_value") or "").strip()
+        lv = a.get("llm_value")
+        if not oa_id or not dim or not hv:
+            continue
+        if dim not in valid_dims:
+            continue
+        meta_db.execute(
+            """INSERT INTO qa_annotations (pipeline_id, openalex_id, annotator_id, dimension, human_value, llm_value)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(pipeline_id, openalex_id, annotator_id, dimension)
+               DO UPDATE SET human_value=excluded.human_value, llm_value=excluded.llm_value,
+                             created_at=CURRENT_TIMESTAMP""",
+            (pipeline_id, oa_id, user_id, dim, hv, lv),
+        )
+        inserted += 1
+    meta_db.commit()
+    return jsonify({"ok": True, "saved": inserted})
+
+
+# ── Enhanced alpha with correct distance functions per type ───────────────────
+
+@qa_bp.route("/api/qa/alpha-detailed/<int:pipeline_id>", methods=["GET"])
+def api_qa_alpha_detailed(pipeline_id: int):
+    """Compute Krippendorff's alpha per dimension using qa_annotations table
+    with proper distance functions (nominal, ordinal, set-valued)."""
+    auth = require_auth()
+    if auth:
+        return auth
+
+    from core.qa_stats import krippendorff_alpha, interpret_alpha
+
+    pipeline = get_pipeline(pipeline_id)
+    if not pipeline:
+        return jsonify({"error": "pipeline not found"}), 404
+
+    meta_db = get_meta_db()
+    results = {}
+
+    for dim_def in ANNOTATION_DIMENSIONS:
+        dim = dim_def["id"]
+        rows = meta_db.execute(
+            "SELECT openalex_id, annotator_id, human_value, llm_value FROM qa_annotations WHERE pipeline_id=? AND dimension=?",
+            (pipeline_id, dim),
+        ).fetchall()
+        if not rows:
+            results[dim] = {"alpha": None, "n_items": 0, "n_coders": 0, "interpretation": "insufficient data"}
+            continue
+
+        # Build units: include LLM as a 'rater' (annotator_id=0)
+        units = []
+        llm_added = set()
+        for r in rows:
+            units.append({"unit": r["openalex_id"], "rater": f"human_{r['annotator_id']}", "value": r["human_value"]})
+            if r["openalex_id"] not in llm_added and r["llm_value"]:
+                units.append({"unit": r["openalex_id"], "rater": "llm", "value": r["llm_value"]})
+                llm_added.add(r["openalex_id"])
+
+        raters = len(set(u["rater"] for u in units))
+        n_items = len(set(u["unit"] for u in units))
+
+        vtype = dim_def["type"]
+        alpha_val = krippendorff_alpha(units, value_type="set" if vtype == "multi" else vtype)
+
+        results[dim] = {
+            "alpha": round(alpha_val, 4) if alpha_val is not None else None,
+            "n_items": n_items,
+            "n_coders": raters,
+            "n_ratings": len(rows),
+            "interpretation": interpret_alpha(alpha_val),
+        }
+
+    return jsonify({"dimensions": results})
+
+
+# ── Confusion matrix ─────────────────────────────────────────────────────────
+
+@qa_bp.route("/api/qa/confusion/<int:pipeline_id>", methods=["GET"])
+def api_qa_confusion(pipeline_id: int):
+    """Confusion matrices for annotated dimensions."""
+    auth = require_auth()
+    if auth:
+        return auth
+
+    from core.qa_stats import binary_confusion_matrix, multilabel_code_metrics
+
+    pipeline = get_pipeline(pipeline_id)
+    if not pipeline:
+        return jsonify({"error": "pipeline not found"}), 404
+
+    meta_db = get_meta_db()
+    target_dim = request.args.get("dimension")
+    dims_to_check = [target_dim] if target_dim else [d["id"] for d in ANNOTATION_DIMENSIONS]
+
+    results = {}
+    for dim_def in ANNOTATION_DIMENSIONS:
+        if dim_def["id"] not in dims_to_check:
+            continue
+        dim = dim_def["id"]
+        rows = meta_db.execute(
+            "SELECT llm_value, human_value FROM qa_annotations WHERE pipeline_id=? AND dimension=? AND llm_value IS NOT NULL",
+            (pipeline_id, dim),
+        ).fetchall()
+        if not rows:
+            results[dim] = {"type": dim_def["type"], "data": None}
+            continue
+
+        pairs = [(r["llm_value"], r["human_value"]) for r in rows]
+
+        if dim_def["type"] == "binary":
+            results[dim] = {"type": "binary", "data": binary_confusion_matrix(pairs)}
+        else:
+            results[dim] = {"type": "multilabel", "data": multilabel_code_metrics(pairs)}
+
+    return jsonify({"confusion": results})
+
+
+# ── Per-item disagreements ───────────────────────────────────────────────────
+
+@qa_bp.route("/api/qa/disagreements/<int:pipeline_id>", methods=["GET"])
+def api_qa_disagreements(pipeline_id: int):
+    """List papers where LLM and human annotators disagree."""
+    auth = require_auth()
+    if auth:
+        return auth
+
+    pipeline = get_pipeline(pipeline_id)
+    if not pipeline:
+        return jsonify({"error": "pipeline not found"}), 404
+
+    meta_db = get_meta_db()
+    rows = meta_db.execute(
+        """SELECT openalex_id, dimension, human_value, llm_value, annotator_id
+           FROM qa_annotations WHERE pipeline_id=? AND llm_value IS NOT NULL""",
+        (pipeline_id,),
+    ).fetchall()
+
+    disagreements = []
+    for r in rows:
+        hv = r["human_value"]
+        lv = r["llm_value"]
+        if hv != lv:
+            disagreements.append({
+                "openalex_id": r["openalex_id"],
+                "dimension": r["dimension"],
+                "human_value": hv,
+                "llm_value": lv,
+                "annotator_id": r["annotator_id"],
+            })
+
+    # Sort by dimension
+    sort_by = request.args.get("sort", "dimension")
+    if sort_by == "dimension":
+        disagreements.sort(key=lambda x: x["dimension"])
+    elif sort_by == "openalex_id":
+        disagreements.sort(key=lambda x: x["openalex_id"])
+
+    return jsonify({"disagreements": disagreements, "total": len(disagreements)})
