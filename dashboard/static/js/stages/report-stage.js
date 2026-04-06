@@ -10,6 +10,18 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
   const [recordViewer, setRecordViewer] = useState(null);
   const [expandedSg, setExpandedSg]     = useState({});
 
+  // ── Pinned charts ──────────────────────────────────────────────────────────
+  const [pinnedCharts, setPinnedCharts] = useState(new Set());     // chart IDs
+  const [cooccPinned, setCooccPinned]   = useState(false);         // co-occurrence panel
+
+  const togglePinChart = useCallback(id => {
+    setPinnedCharts(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
   // ── Saved subsets ──────────────────────────────────────────────────────────
   const [subsets, setSubsets]           = useState([]);
   const [activeSubsetIdx, setActiveSubsetIdx] = useState(null);
@@ -234,18 +246,14 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
         </div>
       )}
 
-      {/* Fuel × Impact Subgroup Co-occurrence (dynamic heatmap, fixed axes) */}
-      <FuelImpactSubgroupCooccPanel
-        pipelineId={pipeline.id}
-        onOpenRecords={openChartRecords}
-      />
-
       {/* Terms Co-occurrence (dynamic heatmap, user-selectable axes) */}
       <TermsCooccurrencePanel
         pipeline={pipeline}
         pipelineId={pipeline.id}
         isLLM={isLLM}
         onOpenRecords={openChartRecords}
+        isPinned={cooccPinned}
+        onTogglePin={() => setCooccPinned(p => !p)}
       />
 
       {/* Charts grid */}
@@ -268,7 +276,9 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
                 subsetIdx={activeSubsetIdx}
                 chartParams={cfgMap[id]?.params || []}
                 chartSql={cfgMap[id]?.sql || null}
-                onOpenRecords={openChartRecords} />
+                onOpenRecords={openChartRecords}
+                isPinned={pinnedCharts.has(id)}
+                onTogglePin={() => togglePinChart(id)} />
             </div>
           ))}
         </div>
@@ -317,9 +327,27 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
             </div>
           </div>
 
-          {/* Right pane: record viewer (embedded) */}
+          {/* Right pane: pinned charts + record viewer (embedded) */}
           <div className="flex flex-col overflow-hidden border-l border-gray-200"
             style={{ flex: 1, minWidth: 0 }}>
+            {/* Pinned charts strip */}
+            {(cooccPinned || pinnedCharts.size > 0) && (
+              <div className="flex-shrink-0 border-b border-gray-200 overflow-y-auto" style={{ maxHeight: '40%' }}>
+                <div className="p-2 space-y-2 bg-gray-50">
+                  {cooccPinned && (
+                    <TermsCooccurrencePanel pipeline={pipeline} pipelineId={pipeline.id} isLLM={isLLM}
+                      onOpenRecords={openChartRecords} isPinned={true} onTogglePin={() => setCooccPinned(false)} />
+                  )}
+                  {[...pinnedCharts].map(id => (
+                    <ChartPanel key={id} chartId={id} pipelineId={pipeline.id}
+                      topN={TOP_N} title={cfgMap[id]?.title || id}
+                      subsetIdx={activeSubsetIdx} chartParams={cfgMap[id]?.params || []}
+                      chartSql={cfgMap[id]?.sql || null} onOpenRecords={openChartRecords}
+                      isPinned={true} onTogglePin={() => togglePinChart(id)} />
+                  ))}
+                </div>
+              </div>
+            )}
             <RecordViewerPanel
               key={recordViewer.sql + (recordViewer.initialFuelSubgroup || '') + (recordViewer.initialImpactSubgroup || '')}
               pipeline={pipeline}

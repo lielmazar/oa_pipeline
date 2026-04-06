@@ -41,6 +41,18 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
     stage       TEXT NOT NULL,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS qa_ratings (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_id INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+    openalex_id TEXT NOT NULL,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    field       TEXT NOT NULL,
+    llm_value   TEXT,
+    human_value TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(pipeline_id, openalex_id, user_id, field)
+);
 """
 
 

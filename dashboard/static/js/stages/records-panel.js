@@ -128,6 +128,8 @@ function RecordsPanel({ pipeline, isLLM }) {
               <option value="llm_fuel_classification">LLM Fuel Type</option>
               <option value="llm_confidence">LLM Confidence</option>
               <option value="llm_is_hydrocarbon">Is Hydrocarbon</option>
+              <option value="llm_ml_role">ML Role</option>
+              <option value="llm_ml_algorithm">ML Algorithm</option>
             </>}
           </select>
           <button onClick={doSearch}

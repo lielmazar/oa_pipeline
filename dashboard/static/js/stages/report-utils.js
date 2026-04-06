@@ -463,7 +463,7 @@ function useInView(rootMargin = '200px') {
 
 // ── Chart panels (server-rendered images) ─────────────────────────────────────
 
-function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, onOpenRecords, chartSql }) {
+function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, onOpenRecords, chartSql, isPinned, onTogglePin }) {
   const [imgErr, setImgErr]     = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [blobUrl, setBlobUrl]   = useState(null);
@@ -515,6 +515,14 @@ function ChartPanel({ chartId, pipelineId, topN, title, subsetIdx, chartParams, 
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
         <span className="text-sm font-semibold text-gray-800">{title || chartId}</span>
         <div className="flex items-center gap-2">
+          {onTogglePin && (
+            <button onClick={onTogglePin} title={isPinned ? 'Unpin chart' : 'Pin alongside other view'}
+              className={`text-xs px-1.5 py-0.5 rounded border transition ${isPinned ? 'bg-amber-50 text-amber-600 border-amber-300' : 'text-gray-300 border-gray-200 hover:text-amber-500 hover:border-amber-300'}`}>
+              <svg className="w-3 h-3" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
+              </svg>
+            </button>
+          )}
           {onOpenRecords && chartSql && (
             <button onClick={() => onOpenRecords(chartSql, title || chartId)} title="View records for this chart"
               className="text-xs px-2 py-0.5 rounded border border-blue-200 text-blue-500 hover:bg-blue-50 hover:text-blue-700 transition flex items-center gap-1">
@@ -960,7 +968,7 @@ function FuelImpactSubgroupCooccPanel({ pipelineId, onOpenRecords }) {
 // ── TermsCooccurrencePanel ─────────────────────────────────────────────────────
 // Dynamic heatmap: user picks two axes from a wide range of dimensions.
 
-function TermsCooccurrencePanel({ pipeline, pipelineId, isLLM, onOpenRecords }) {
+function TermsCooccurrencePanel({ pipeline, pipelineId, isLLM, onOpenRecords, isPinned, onTogglePin }) {
   const axisOptions = useMemo(() => {
     const groups = _migrateGroups(pipeline.config || {});
     const opts   = [];
@@ -1052,16 +1060,46 @@ function TermsCooccurrencePanel({ pipeline, pipelineId, isLLM, onOpenRecords }) 
 
   const chartTitle = axisA && axisB ? `${axisA.label} × ${axisB.label}` : 'Co-occurrence';
 
+  // Summary stats
+  const stats = useMemo(() => {
+    if (!data) return null;
+    const { allAs, allBs, matrix } = data;
+    let totalPairs = 0, filledCells = 0, totalCount = 0;
+    allAs.forEach(a => allBs.forEach(b => {
+      const c = matrix[`${a}\x00${b}`] || 0;
+      totalPairs++;
+      if (c > 0) { filledCells++; totalCount += c; }
+    }));
+    const density = totalPairs > 0 ? (filledCells / totalPairs * 100).toFixed(1) : '0';
+    return { rows: allAs.length, cols: allBs.length, filledCells, density, totalCount };
+  }, [data]);
+
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-100">
+    <div className="bg-white rounded-xl border-2 border-blue-200 overflow-hidden shadow-md">
+      {/* Header — prominent */}
+      <div className="px-5 py-4 border-b border-blue-100 bg-gradient-to-r from-blue-50 to-white">
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div>
-            <span className="text-sm font-semibold text-gray-800">Terms Co-occurrence</span>
-            <span className="ml-2 text-xs text-gray-400">Dynamic · click cells to view records</span>
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+              </svg>
+            </div>
+            <div>
+              <span className="text-base font-bold text-gray-800">Terms Co-occurrence</span>
+              <span className="ml-2 text-xs text-gray-400">Dynamic heatmap · click cells to view records</span>
+            </div>
           </div>
           <div className="flex items-center gap-2">
+            {onTogglePin && (
+              <button onClick={onTogglePin} title={isPinned ? 'Unpin from chart grid' : 'Pin alongside charts'}
+                className={`flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border transition ${isPinned ? 'bg-amber-50 text-amber-700 border-amber-300' : 'text-gray-400 border-gray-200 hover:text-amber-600 hover:border-amber-300'}`}>
+                <svg className="w-3 h-3" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
+                </svg>
+                {isPinned ? 'Pinned' : 'Pin'}
+              </button>
+            )}
             {data && (
               <ExportDropdown
                 onCsv={() => _exportCsv(data, axisA?.label || 'X', axisB?.label || 'Y')}
@@ -1073,7 +1111,7 @@ function TermsCooccurrencePanel({ pipeline, pipelineId, isLLM, onOpenRecords }) 
           </div>
         </div>
         {/* Axis selectors */}
-        <div className="flex flex-wrap items-center gap-2 mt-2.5">
+        <div className="flex flex-wrap items-center gap-2 mt-3">
           <AxisSelect label="Rows" value={axisAId} onChange={setAxisAId} />
           <button onClick={swapAxes} title="Swap axes"
             className="text-gray-400 hover:text-gray-600 transition px-1 py-1 rounded hover:bg-gray-100 text-sm" aria-label="Swap axes">
@@ -1081,6 +1119,15 @@ function TermsCooccurrencePanel({ pipeline, pipelineId, isLLM, onOpenRecords }) 
           </button>
           <AxisSelect label="Cols" value={axisBId} onChange={setAxisBId} />
         </div>
+        {/* Summary stats bar */}
+        {stats && (
+          <div className="flex flex-wrap gap-4 mt-3 text-xs">
+            <span className="text-gray-500"><strong className="text-gray-700">{stats.rows}</strong> rows × <strong className="text-gray-700">{stats.cols}</strong> cols</span>
+            <span className="text-gray-500"><strong className="text-gray-700">{stats.filledCells.toLocaleString()}</strong> active cells</span>
+            <span className="text-gray-500">Density <strong className="text-gray-700">{stats.density}%</strong></span>
+            <span className="text-gray-500">Total <strong className="text-gray-700">{stats.totalCount.toLocaleString()}</strong> papers</span>
+          </div>
+        )}
       </div>
 
       {/* Body */}

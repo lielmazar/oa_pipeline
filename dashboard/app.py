@@ -28,6 +28,7 @@ _JS_MODULES = [
     "stages/summary.js",
     "views/pipeline.js",
     "views/jobs.js",
+    "views/qa.js",
     "app-root.js",
 ]
 
@@ -70,12 +71,14 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     from blueprints.jobs import jobs_bp
     from blueprints.data import data_bp
     from blueprints.system import system_bp
+    from blueprints.qa import qa_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(pipelines_bp)
     app.register_blueprint(jobs_bp)
     app.register_blueprint(data_bp)
     app.register_blueprint(system_bp)
+    app.register_blueprint(qa_bp)
 
     @app.route("/")
     def index():

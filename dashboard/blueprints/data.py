@@ -398,6 +398,171 @@ def _png_add_watermark(png_bytes: bytes, text: str = "cservices.online") -> byte
     return png_bytes[:ihdr_end] + chunk + png_bytes[ihdr_end:]
 
 
+# ── Co-occurrence export helper ───────────────────────────────────────────────
+
+def _cooc_axes_from_config(pipeline_config: dict) -> list[dict]:
+    """Build the same axis list the frontend TermsCooccurrencePanel uses."""
+    groups = pipeline_config.get("groups") or pipeline_config.get("keyword_groups") or []
+    if not groups and pipeline_config.get("subgroups"):
+        groups = [
+            {"name": "Fuel terms",   "subgroups": pipeline_config.get("subgroups", [])},
+            {"name": "Impact terms", "subgroups": pipeline_config.get("impact_subgroups", [])},
+        ]
+    axes = []
+    for gi, g in enumerate(groups):
+        term_col = "matched_fuel_terms" if gi == 0 else "matched_impact_terms"
+        sg_col   = "matched_fuel_subgroups" if gi == 0 else "matched_impact_subgroups"
+        axes.append({"id": f"{gi}_subgroups", "label": f"{g.get('name', f'Group {gi}')} — subgroups",
+                      "col": sg_col, "is_array": True, "terms": None})
+        for sg in (g.get("subgroups") or []):
+            if sg.get("is_others"):
+                continue
+            terms = sg.get("terms") or []
+            if terms:
+                axes.append({"id": f"{gi}_{sg['name']}", "label": sg["name"],
+                              "col": term_col, "is_array": True, "terms": terms})
+    # Standard bibliometric + LLM axes
+    axes += [
+        {"id": "countries",    "label": "Countries",          "col": "authors_countries",       "is_array": True,  "terms": None},
+        {"id": "institutions", "label": "Institutions",       "col": "authors_institutions",    "is_array": True,  "terms": None},
+        {"id": "work_type",    "label": "Work Type",          "col": "type",                    "is_array": False, "terms": None},
+        {"id": "oa_status",    "label": "OA Status",          "col": "open_access_oa_status",   "is_array": False, "terms": None},
+        {"id": "pub_year",     "label": "Publication Year",   "col": "publication_year",        "is_array": False, "terms": None},
+        {"id": "llm_fuel_cls", "label": "Fuel Classification","col": "llm_fuel_classification", "is_array": True,  "terms": None},
+        {"id": "llm_ml_role",  "label": "ML Role",            "col": "llm_ml_role",             "is_array": True,  "terms": None},
+        {"id": "llm_ml_algo",  "label": "ML Algorithm",       "col": "llm_ml_algorithm",        "is_array": True,  "terms": None},
+        {"id": "llm_scope",    "label": "Value Chain",        "col": "llm_scope",               "is_array": True,  "terms": None},
+    ]
+    return axes
+
+
+def _cooc_query_sql(a: dict, b: dict) -> str:
+    """Build a co-occurrence SQL between two axis defs, mirroring the JS logic."""
+    dim_a = "_a.value" if a["is_array"] else a["col"]
+    dim_b = "_b.value" if b["is_array"] else b["col"]
+    from_parts = ["filtered_records"]
+    if a["is_array"]:
+        from_parts.append(f"json_each({a['col']}) _a")
+    if b["is_array"]:
+        from_parts.append(f"json_each({b['col']}) _b")
+    where = []
+    if a["is_array"]:
+        if a.get("terms"):
+            vals = ",".join(f"'{t}'" for t in a["terms"])
+            where.append(f"_a.value IN ({vals})")
+        else:
+            where.append("_a.value IS NOT NULL AND _a.value != '' AND LOWER(_a.value) NOT IN ('none','null','[]')")
+    else:
+        where.append(f"{a['col']} IS NOT NULL AND CAST({a['col']} AS TEXT) != ''")
+    if b["is_array"]:
+        if b.get("terms"):
+            vals = ",".join(f"'{t}'" for t in b["terms"])
+            where.append(f"_b.value IN ({vals})")
+        else:
+            where.append("_b.value IS NOT NULL AND _b.value != '' AND LOWER(_b.value) NOT IN ('none','null','[]')")
+    else:
+        where.append(f"{b['col']} IS NOT NULL AND CAST({b['col']} AS TEXT) != ''")
+    return (
+        f"SELECT {dim_a} AS dim_a, {dim_b} AS dim_b, COUNT(DISTINCT openalex_id) AS count "
+        f"FROM {', '.join(from_parts)} WHERE {' AND '.join(where)} GROUP BY dim_a, dim_b"
+    )
+
+
+def _render_cooc_png(rows: list, title: str) -> bytes:
+    """Render a co-occurrence heatmap PNG from rows [(a, b, count), ...]."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    if not rows:
+        return b""
+    tot_a: dict[str, int] = {}
+    tot_b: dict[str, int] = {}
+    for a_val, b_val, cnt in rows:
+        tot_a[a_val] = tot_a.get(a_val, 0) + cnt
+        tot_b[b_val] = tot_b.get(b_val, 0) + cnt
+    all_a = sorted(tot_a, key=lambda k: -tot_a[k])
+    all_b = sorted(tot_b, key=lambda k: -tot_b[k])
+    mat = {}
+    for a_val, b_val, cnt in rows:
+        mat[(a_val, b_val)] = cnt
+    data = np.zeros((len(all_a), len(all_b)))
+    for i, a_val in enumerate(all_a):
+        for j, b_val in enumerate(all_b):
+            data[i, j] = mat.get((a_val, b_val), 0)
+    fig, ax = plt.subplots(figsize=(max(6, len(all_b) * 0.6), max(4, len(all_a) * 0.45)))
+    if data.max() > 0:
+        im = ax.imshow(data, aspect="auto", cmap="Blues", interpolation="nearest")
+        plt.colorbar(im, ax=ax, shrink=0.7, label="Paper count")
+    ax.set_xticks(range(len(all_b)))
+    ax.set_xticklabels(all_b, rotation=45, ha="right", fontsize=7)
+    ax.set_yticks(range(len(all_a)))
+    ax.set_yticklabels(all_a, fontsize=7)
+    for i in range(len(all_a)):
+        for j in range(len(all_b)):
+            v = int(data[i, j])
+            if v > 0:
+                color = "white" if v > data.max() * 0.55 else "black"
+                ax.text(j, i, str(v), ha="center", va="center", fontsize=6, color=color)
+    ax.set_title(title, fontsize=10, pad=10)
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def _export_cooccurrence_data(
+    zf: zipfile.ZipFile, prefix: str, db_path: Path, pipeline_config: dict,
+) -> list[str]:
+    """Generate all meaningful Terms Co-occurrence CSVs + PNGs into the ZIP.
+
+    Returns list of written file base names (without extension)."""
+    axes = _cooc_axes_from_config(pipeline_config)
+    written: list[str] = []
+    if len(axes) < 2:
+        return written
+
+    # Generate combos of subgroup-level axes (first 10 axes max for sanity)
+    combos = []
+    for i, a in enumerate(axes[:10]):
+        for j, b in enumerate(axes[:10]):
+            if i != j:
+                combos.append((a, b))
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA query_only = ON")
+        for ax_a, ax_b in combos:
+            sql = _cooc_query_sql(ax_a, ax_b)
+            try:
+                cur = conn.execute(sql)
+                raw = cur.fetchall()
+            except Exception:
+                continue
+            rows = [(r[0], r[1], r[2]) for r in raw if r[0] and r[1] and r[2] and r[2] > 0]
+            if not rows:
+                continue
+            safe_name = f"{ax_a['id']}_x_{ax_b['id']}"
+            title = f"{ax_a['label']} × {ax_b['label']}"
+            # CSV
+            csv_buf = io.StringIO()
+            w = csv.writer(csv_buf)
+            w.writerow([ax_a["label"], ax_b["label"], "count"])
+            w.writerows(rows)
+            zf.writestr(f"{prefix}charts/cooccurrence/{safe_name}.csv", csv_buf.getvalue())
+            # PNG
+            try:
+                png = _render_cooc_png(rows, title)
+                if png:
+                    zf.writestr(f"{prefix}charts/cooccurrence/{safe_name}.png", _png_add_watermark(png))
+            except Exception:
+                pass
+            written.append(safe_name)
+
+    return written
+
+
 def _dump_table_csv(conn: sqlite3.Connection, table: str) -> str:
     """Return a CSV string for the given table, empty string on error."""
     try:
@@ -595,6 +760,12 @@ def api_export_zip(pipeline_id: int):
             sql_lines.append(spec.format_sql(top_n=20))
             sql_lines.append("")
         zf.writestr(f"{prefix}chart_queries.sql", "\n".join(sql_lines))
+
+        # ── 4b. Terms Co-occurrence data (all possible axis combos) ───────────
+        if db_path and db_path.exists():
+            _cooc_written = _export_cooccurrence_data(
+                zf, prefix, db_path, pipeline_config,
+            )
 
         # ── 5. Database export ────────────────────────────────────────────────
         if db_path and db_path.exists() and tables:

@@ -756,6 +756,8 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
                       <option value="cited_by_count">cited by count</option>
                       <option value="title">title</option>
                       <option value="llm_confidence">llm confidence</option>
+                      <option value="llm_ml_role">ml role</option>
+                      <option value="llm_ml_algorithm">ml algorithm</option>
                     </>
                 }
               </select>
