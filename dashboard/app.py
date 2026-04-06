@@ -30,7 +30,6 @@ _JS_MODULES = [
     "views/pipeline.js",
     "views/jobs.js",
     "views/qa.js",
-    "views/export.js",
     "app-root.js",
 ]
 

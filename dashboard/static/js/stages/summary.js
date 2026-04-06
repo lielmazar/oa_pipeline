@@ -13,6 +13,49 @@ function SummaryStage({ pipeline, pipelineStatus }) {
   const [dbFormat, setDbFormat]   = useState('csv');
   const [chunkMb, setChunkMb]     = useState('50');
 
+  // ── Export state ──────────────────────────────────────────────────────────
+  const [prisma, setPrisma]         = useState(null);
+  const [downloading, setDownloading] = useState('');
+
+  useEffect(() => {
+    apiFetch(`/api/export/prisma/${pipeline.id}`).then(r => r.json()).then(setPrisma).catch(() => {});
+  }, [pipeline.id]);
+
+  const EXPORT_MATRICES = [
+    { id: 'fuelclass_x_mlrole', label: 'Fuel Classification × ML Role' },
+    { id: 'mlrole_x_algorithm', label: 'ML Role × Algorithm' },
+    { id: 'fuelclass_x_algorithm', label: 'Fuel Classification × Algorithm' },
+    { id: 'fuelclass_x_datasource', label: 'Fuel Classification × Data Source' },
+  ];
+
+  const downloadCSV = async (matrixId) => {
+    setDownloading(matrixId);
+    try {
+      const res = await apiFetch(`/api/export/cooccurrence/${pipeline.id}?matrix=${matrixId}`);
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${matrixId}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    } catch {}
+    setDownloading('');
+  };
+
+  const downloadArticlePackage = async () => {
+    setDownloading('package');
+    try {
+      const res = await apiFetch(`/api/export/article-package/${pipeline.id}`);
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `article_data_pipeline_${pipeline.id}.zip`; a.click();
+      URL.revokeObjectURL(url);
+    } catch {}
+    setDownloading('');
+  };
+
   // ── Stats derived from pipelineStatus + pipeline.config ───────────────────
   const rc   = pipelineStatus?.record_count ?? null;
   const llm  = pipelineStatus?.llm_done ?? null;
@@ -248,6 +291,56 @@ function SummaryStage({ pipeline, pipelineStatus }) {
           </div>
         </div>
       )}
+
+      {/* ── PRISMA Flow ── */}
+      {prisma && !prisma.error && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">PRISMA Flow Data</h4>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {Object.entries(prisma).filter(([k]) => k !== 'error').map(([key, val]) => (
+              <div key={key} className="bg-gray-50 rounded-lg p-3 border text-center">
+                <div className="text-lg font-bold text-gray-800">{typeof val === 'number' ? val.toLocaleString() : val}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{key.replace(/_/g, ' ')}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Co-occurrence CSV exports ── */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Co-occurrence Matrices (CSV)</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {EXPORT_MATRICES.map(m => (
+            <button key={m.id} onClick={() => downloadCSV(m.id)}
+              disabled={downloading === m.id}
+              className="flex items-center gap-3 p-3 border rounded-lg hover:bg-blue-50 hover:border-blue-300 transition text-left">
+              <svg className="w-5 h-5 text-blue-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+              </svg>
+              <div>
+                <div className="text-sm font-medium">{m.label}</div>
+                <div className="text-xs text-gray-400">{downloading === m.id ? 'Downloading…' : 'CSV pivot table'}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Article Data Package ── */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Article Data Package</h4>
+        <p className="text-sm text-gray-500 mb-4">
+          ZIP containing all co-occurrence CSVs, orthogonality metrics, data quality audit, and exemplar papers.
+        </p>
+        <button onClick={downloadArticlePackage} disabled={downloading === 'package'}
+          className="bg-blue-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-2">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+          {downloading === 'package' ? 'Generating…' : 'Export Article Data Package'}
+        </button>
+      </div>
 
       {/* ── Pipeline log ── */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">

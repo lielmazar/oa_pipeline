@@ -57,9 +57,7 @@ function App() {
           <NavBar me={me} view={view} runningCount={runningCount}
             onShowHome={() => { setView('home'); refreshGlobal(); }}
             onShowJobs={() => { setView('jobs'); refreshGlobal(); }}
-            onShowQA={() => { setView('qa'); refreshGlobal(); }}
             onShowIRR={() => { setView('irr'); refreshGlobal(); }}
-            onShowExport={() => { setView('export'); refreshGlobal(); }}
             onLogout={handleLogout}
           />
           {view === 'home' && (
@@ -79,14 +77,8 @@ function App() {
           {view === 'jobs' && (
             <JobsView jobs={jobs} pipelines={pipelines} onRefresh={refreshGlobal} />
           )}
-          {view === 'qa' && (
-            <QAView pipelines={pipelines} onRefresh={refreshGlobal} />
-          )}
           {view === 'irr' && (
             <EnhancedQAView pipelines={pipelines} onRefresh={refreshGlobal} />
-          )}
-          {view === 'export' && (
-            <ExportView pipelines={pipelines} />
           )}
         </>
       )}

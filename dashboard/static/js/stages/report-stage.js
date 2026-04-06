@@ -10,6 +10,10 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
   const [recordViewer, setRecordViewer] = useState(null);
   const [expandedSg, setExpandedSg]     = useState({});
 
+  // ── Saved subsets ──────────────────────────────────────────────────────────
+  const [subsets, setSubsets]           = useState([]);
+  const [activeSubsetIdx, setActiveSubsetIdx] = useState(null);
+
   // ── Pinned charts ──────────────────────────────────────────────────────────
   // Each pinned entry is a snapshot: { key, chartId, subsetIdx, title }
   const [pinnedCharts, setPinnedCharts] = useState([]);
@@ -25,10 +29,6 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
   const unpinChart = useCallback(key => {
     setPinnedCharts(prev => prev.filter(p => p.key !== key));
   }, []);
-
-  // ── Saved subsets ──────────────────────────────────────────────────────────
-  const [subsets, setSubsets]           = useState([]);
-  const [activeSubsetIdx, setActiveSubsetIdx] = useState(null);
 
   // ── Split pane ─────────────────────────────────────────────────────────────
   const [splitRatio, setSplitRatio]     = useState(58);   // left pane %
