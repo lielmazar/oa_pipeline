@@ -77,8 +77,9 @@ def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
     STATE_FILE = BATCH_DIR / "state.json"
 
 PROMPT_ID      = "pmpt_694c136369fc81939aa9e7eb310bd3170ecd05cb5a9fb123"
-PROMPT_VERSION = "21"
+PROMPT_VERSION = "23"  # v5 prompt with fuel classification + value chain position
 MODEL          = "gpt-5.4-nano"
+BATCH_SIZE_LIMIT = 50_000   # OpenAI hard limit per batch
 
 # ── Pricing table (per 1M tokens) ─────────────────────────────────────────
 # Source: platform.openai.com/docs/pricing  — Batch API, short-context window
@@ -144,13 +145,13 @@ def ensure_result_columns(conn: sqlite3.Connection) -> None:
     """
     Add all LLM output columns to filtered_records.
 
-    Column mapping from prompt v3 JSON output:
+    Column mapping from prompt v5 JSON output:
       llm_is_hydrocarbon       ← fuel_relevant (boolean)
       llm_fuel_classification  ← fuel_classification  (JSON array)
-      llm_ml_role              ← ml_role              (JSON array)  — v3
-      llm_ml_algorithm         ← ml_algorithm         (JSON array)  — v3
-      llm_ml_strategy          ← ml_strategy          (JSON array)  — v3
-      llm_ml_data_source       ← ml_data_source       (string)      — v3
+      llm_ml_role              ← ml_role              (JSON array)  — v3+
+      llm_ml_algorithm         ← ml_algorithm         (JSON array)  — v3+
+      llm_ml_data_source       ← ml_data_source       (string)      — v3+
+      llm_scope                ← scope                (JSON array)  — v5
       llm_confidence           ← confidence
       llm_justification        ← justification
       llm_models               ← models  (JSON array of model objects)
@@ -163,10 +164,10 @@ def ensure_result_columns(conn: sqlite3.Connection) -> None:
         ("llm_fuel_classification", "TEXT"),       # JSON array
         ("llm_ml_paradigm",         "TEXT"),       # v2 compat — JSON array
         ("llm_ml_method",           "TEXT"),       # v2 compat — JSON array
-        ("llm_ml_role",             "TEXT"),       # v3 — JSON array
-        ("llm_ml_algorithm",        "TEXT"),       # v3 — JSON array
-        ("llm_ml_strategy",         "TEXT"),       # v3 — JSON array
-        ("llm_ml_data_source",      "TEXT"),       # v3 — single string
+        ("llm_ml_role",             "TEXT"),       # v3+ — JSON array
+        ("llm_ml_algorithm",        "TEXT"),       # v3+ — JSON array
+        ("llm_ml_data_source",      "TEXT"),       # v3+ — single string
+        ("llm_scope",               "TEXT"),       # v5 — JSON array (value-chain position)
         ("llm_confidence",          "TEXT"),
         ("llm_justification",       "TEXT"),
         ("llm_models",              "TEXT"),       # JSON array of objects
@@ -242,7 +243,7 @@ def phase_prepare(
     overwrite: bool = False,
     subset_sql: str | None = None,
     model: str | None = None,
-) -> Path | None:
+) -> list[Path] | None:
     """
     Export records to a JSONL batch file.
 
@@ -291,41 +292,48 @@ def phase_prepare(
         print("No unprocessed records found — nothing to prepare.")
         return None
 
-    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    batch_file = BATCH_DIR / f"batch_input_{ts}.jsonl"
+    ts     = datetime.now().strftime("%Y%m%d_%H%M%S")
+    chunks = [rows[i:i + BATCH_SIZE_LIMIT] for i in range(0, len(rows), BATCH_SIZE_LIMIT)]
 
-    with batch_file.open("w", encoding="utf-8") as fh:
-        for row in rows:
-            title    = row["title"] or ""
-            abstract = row["abstract_text"] or ""
+    batch_files: list[Path] = []
+    for chunk_idx, chunk in enumerate(chunks):
+        if len(chunks) > 1:
+            batch_file = BATCH_DIR / f"batch_input_{ts}_part{chunk_idx + 1:02d}.jsonl"
+        else:
+            batch_file = BATCH_DIR / f"batch_input_{ts}.jsonl"
 
-            request = {
-                "custom_id": row["openalex_id"],
-                "method": "POST",
-                "url": "/v1/responses",
-                "body": {
-                    "model": model or MODEL,
-                    "prompt": {
-                        "id": PROMPT_ID,
-                        "version": PROMPT_VERSION,
-                        "variables": {
-                            "title":    title,
-                            "abstract": abstract,
+        with batch_file.open("w", encoding="utf-8") as fh:
+            for row in chunk:
+                title    = row["title"] or ""
+                abstract = row["abstract_text"] or ""
+                request = {
+                    "custom_id": row["openalex_id"],
+                    "method": "POST",
+                    "url": "/v1/responses",
+                    "body": {
+                        "model": model or MODEL,
+                        "prompt": {
+                            "id": PROMPT_ID,
+                            "version": PROMPT_VERSION,
+                            "variables": {
+                                "title":    title,
+                                "abstract": abstract,
+                            },
                         },
+                        "input": [],   # content is fully in template variables
+                        "reasoning": {"summary": "auto"},
+                        "store": True,
+                        "include": [
+                            "reasoning.encrypted_content",
+                            "web_search_call.action.sources",
+                        ],
                     },
-                    "input": [],   # content is fully in template variables
-                    "reasoning": {"summary": "auto"},
-                    "store": True,
-                    "include": [
-                        "reasoning.encrypted_content",
-                        "web_search_call.action.sources",
-                    ],
-                },
-            }
-            fh.write(json.dumps(request, ensure_ascii=False) + "\n")
+                }
+                fh.write(json.dumps(request, ensure_ascii=False) + "\n")
+        batch_files.append(batch_file)
 
     state = load_state()
-    state["batch_file"]   = str(batch_file)
+    state["batch_file"]   = str(batch_files[0])
     state["record_count"] = len(rows)
     state["prepared_at"]  = datetime.now().isoformat()
     state.pop("batch_id",        None)
@@ -333,9 +341,18 @@ def phase_prepare(
     state.pop("error_file_id",   None)
     save_state(state)
 
-    size_mb = batch_file.stat().st_size / 1024 / 1024
-    print(f"Prepared {len(rows):,} records  ->  {batch_file}  ({size_mb:.1f} MB)")
-    return batch_file
+    if len(batch_files) > 1:
+        print(
+            f"Prepared {len(rows):,} records  ->  {len(batch_files)} chunks "
+            f"of ≤{BATCH_SIZE_LIMIT:,}:"
+        )
+        for bf in batch_files:
+            size_mb = bf.stat().st_size / 1024 / 1024
+            print(f"  {bf.name}  ({size_mb:.1f} MB)")
+    else:
+        size_mb = batch_files[0].stat().st_size / 1024 / 1024
+        print(f"Prepared {len(rows):,} records  ->  {batch_files[0]}  ({size_mb:.1f} MB)")
+    return batch_files
 
 
 # ── Phase 2: Submit ────────────────────────────────────────────────────────
@@ -455,7 +472,7 @@ _UPDATE_SQL = """
         llm_ml_method           = ?,
         llm_ml_role             = ?,
         llm_ml_algorithm        = ?,
-        llm_ml_strategy         = ?,
+        llm_scope               = ?,
         llm_ml_data_source      = ?,
         llm_confidence          = ?,
         llm_justification       = ?,
@@ -472,20 +489,20 @@ _UPDATE_SQL = """
 
 def _parse_result_row(parsed: dict) -> tuple:
     """
-    Extract DB column values from a v3 LLM JSON response.
+    Extract DB column values from a v5 LLM JSON response.
     Schema: fuel_relevant, fuel_classification, ml_role, ml_algorithm,
-            ml_strategy, ml_data_source, models, confidence, justification
+            scope, ml_data_source, models, confidence, justification
     """
     hydro_raw = parsed.get("fuel_relevant")
     is_hydro  = 1 if hydro_raw is True else 0 if hydro_raw is False else None
 
     fuel_cls     = json.dumps(parsed.get("fuel_classification", []), ensure_ascii=False)
-    # v3 fields
+    # v3+ fields
     ml_role      = json.dumps(parsed.get("ml_role",      []), ensure_ascii=False)
     ml_algo      = json.dumps(parsed.get("ml_algorithm", []), ensure_ascii=False)
-    ml_strategy  = json.dumps(parsed.get("ml_strategy",  []), ensure_ascii=False)
+    scope        = json.dumps(parsed.get("scope",         []), ensure_ascii=False)
     ml_data_src  = str(parsed.get("ml_data_source", "") or "")
-    # v2 compat: null out old fields — v3 prompt no longer produces them
+    # v2 compat: null out old fields — v5 prompt no longer produces them
     ml_para      = json.dumps([], ensure_ascii=False)
     ml_method    = json.dumps([], ensure_ascii=False)
     models_str   = json.dumps(parsed.get("models",       []), ensure_ascii=False)
@@ -493,7 +510,7 @@ def _parse_result_row(parsed: dict) -> tuple:
     justif       = str(parsed.get("justification", "") or "")
 
     return (is_hydro, fuel_cls, ml_para, ml_method,
-            ml_role, ml_algo, ml_strategy, ml_data_src,
+            ml_role, ml_algo, scope, ml_data_src,
             confidence, justif, models_str)
 
 
@@ -537,13 +554,13 @@ def _process_jsonl_lines(lines_iter, conn: sqlite3.Connection,
         if parsed:
             json_ok += 1
             (is_hydro, fuel_cls, ml_para, ml_method,
-             ml_role, ml_algo, ml_strategy, ml_data_src,
+             ml_role, ml_algo, scope, ml_data_src,
              confidence, justif, models_str) = _parse_result_row(parsed)
         else:
             json_fail   = json_fail + 1
             is_hydro    = None
             fuel_cls    = ml_para = ml_method = None
-            ml_role     = ml_algo = ml_strategy = ml_data_src = None
+            ml_role     = ml_algo = scope = ml_data_src = None
             confidence  = justif = models_str = None
 
         usage            = body.get("usage", {})
@@ -555,7 +572,7 @@ def _process_jsonl_lines(lines_iter, conn: sqlite3.Connection,
             _UPDATE_SQL,
             (
                 is_hydro, fuel_cls, ml_para, ml_method,
-                ml_role, ml_algo, ml_strategy, ml_data_src,
+                ml_role, ml_algo, scope, ml_data_src,
                 confidence, justif, models_str, raw_text,
                 batch_id, now_iso,
                 tokens_input, tokens_output, tokens_reasoning,
@@ -917,13 +934,26 @@ def main() -> None:
         phase_save(local_file=getattr(args, "file", None))
 
     elif args.phase == "run":
-        result = phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql,
-                               model=getattr(args, "model", None))
-        if result is None:
+        batch_files = phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql,
+                                    model=getattr(args, "model", None))
+        if batch_files is None:
             return
-        phase_submit()
-        phase_poll(args.interval)
-        phase_save()
+        n_chunks = len(batch_files)
+        for i, bf in enumerate(batch_files):
+            if n_chunks > 1:
+                print(f"\n{'='*60}")
+                print(f"  Chunk {i + 1}/{n_chunks}: {bf.name}")
+                print(f"{'='*60}")
+                state = load_state()
+                state["batch_file"] = str(bf)
+                state.pop("file_id",        None)
+                state.pop("batch_id",       None)
+                state.pop("output_file_id", None)
+                state.pop("error_file_id",  None)
+                save_state(state)
+            phase_submit()
+            phase_poll(args.interval)
+            phase_save()
 
 
 if __name__ == "__main__":

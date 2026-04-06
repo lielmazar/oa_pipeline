@@ -101,7 +101,7 @@ function LLMStage({ pipeline, pipelineStatus }) {
     }
     const subArgs = {};
     if (phase === 'estimate') subArgs['--model'] = selectedModel;
-    if (limit && ['prepare', 'run'].includes(phase)) subArgs['--limit'] = limit;
+    if (limit && ['prepare', 'run', 'estimate'].includes(phase)) subArgs['--limit'] = limit;
     if (['prepare', 'run'].includes(phase)) subArgs['--model'] = selectedModel;
     if (['poll', 'run'].includes(phase)) subArgs['--interval'] = '30';
     const args = { ...mainArgs, [phase]: true, ...subArgs };

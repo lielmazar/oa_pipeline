@@ -32,11 +32,8 @@ const CHART_COLORS = [
 // IDs in display order (non-LLM first, LLM-only after)
 const CHART_ORDER = [
   'publications_by_year',
-  'fuel_subgroup_pie','impact_subgroup_pie',
-  'top_fuel_terms','top_impact_terms',
-  'fuel_impact_cooccurrence',
   'top_countries','top_journals','oa_status','work_types','top_institutions',
-  'llm_scope','llm_ml_role','llm_ml_algorithm','llm_ml_usage','llm_ml_datasource',
+  'llm_scope','llm_value_chain','llm_ml_role','llm_ml_algorithm','llm_ml_usage','llm_ml_datasource',
   'fuel_subgroup_ml_cooccurrence',
   'fuelclass_x_mlrole','mlrole_x_algorithm','fuelclass_x_algorithm','fuelclass_x_datasource',
   'fuel_impact_model_cooccurrence',

@@ -103,6 +103,23 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
   // Collapsible sections
   const [showFilters, setShowFilters] = useState(true);
   const [showSql, setShowSql]         = useState(false);
+  const [showCrossTab, setShowCrossTab] = useState(false);
+
+  // Cross-tab A×B state
+  const CT_DIMS = [
+    { id: 'fuel_subgroup',   label: 'Fuel Subgroup',   col: 'matched_fuel_subgroups',   isJson: true },
+    { id: 'impact_subgroup', label: 'Impact Subgroup', col: 'matched_impact_subgroups', isJson: true },
+    { id: 'ml_role',         label: 'ML Role',         col: 'llm_ml_role',              isJson: true,  noNone: true },
+    { id: 'ml_algorithm',    label: 'ML Algorithm',    col: 'llm_ml_algorithm',         isJson: true,  noNone: true },
+    { id: 'year',            label: 'Pub. Year',       col: 'publication_year',         isJson: false },
+    { id: 'oa_status',       label: 'OA Status',       col: 'open_access_oa_status',    isJson: false },
+    { id: 'country',         label: 'Country',         col: 'authors_countries',        isJson: true },
+  ];
+  const [ctDimA, setCtDimA]   = useState('fuel_subgroup');
+  const [ctDimB, setCtDimB]   = useState('impact_subgroup');
+  const [ctData, setCtData]   = useState(null);
+  const [ctLoading, setCtLoading] = useState(false);
+  const [ctError, setCtError] = useState(null);
 
   // Filter state
   const [filterText, setFilterText]               = useState('');
@@ -220,6 +237,72 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
     fetchPage(sql, whereParts, sortBy, sortDir, 1);
     setPage(1);
     setExpandedId(null);
+  };
+
+  // Cross-tab fetch
+  const fetchCrossTab = useCallback(async (dimAId, dimBId) => {
+    const dimA = CT_DIMS.find(d => d.id === dimAId);
+    const dimB = CT_DIMS.find(d => d.id === dimBId);
+    if (!dimA || !dimB) return;
+    setCtLoading(true); setCtError(null); setCtData(null);
+    const valA = dimA.isJson ? '_a.value' : dimA.col;
+    const valB = dimB.isJson ? '_b.value' : dimB.col;
+    const joinA = dimA.isJson ? `, json_each(${dimA.col}) _a` : '';
+    const joinB = dimB.isJson ? `, json_each(${dimB.col}) _b` : '';
+    const wA = dimA.isJson
+      ? `_a.value IS NOT NULL AND _a.value != ''${dimA.noNone ? ` AND LOWER(_a.value) != 'none'` : ''}`
+      : `${dimA.col} IS NOT NULL AND ${dimA.col} != ''`;
+    const wB = dimB.isJson
+      ? `_b.value IS NOT NULL AND _b.value != ''${dimB.noNone ? ` AND LOWER(_b.value) != 'none'` : ''}`
+      : `${dimB.col} IS NOT NULL AND ${dimB.col} != ''`;
+    // Merge with current base query WHERE
+    const baseParts = [...whereParts, wA, wB];
+    const baseClean = sql.trim().replace(/;+$/, '');
+    const ctSql = `SELECT ${valA} AS dim_a, ${valB} AS dim_b, COUNT(DISTINCT openalex_id) AS count ` +
+      `FROM (${baseClean}) _base${joinA}${joinB} ` +
+      `WHERE ${baseParts.join(' AND ')} ` +
+      `GROUP BY dim_a, dim_b ORDER BY count DESC LIMIT 400`;
+    try {
+      const res = await apiFetch('/api/db/query', { method: 'POST', body: JSON.stringify({ pipeline_id: pipeline.id, sql: ctSql }) });
+      const d = await res.json();
+      if (d.error) { setCtError(d.error); return; }
+      const rows = (d.rows || []).filter(r => r[0] && r[1] && r[2] > 0);
+      const totA = {}, totB = {};
+      rows.forEach(([a, b, c]) => { totA[a] = (totA[a]||0)+c; totB[b] = (totB[b]||0)+c; });
+      const allAs = Object.keys(totA).sort((a, b) => totA[b] - totA[a]).slice(0, 30);
+      const allBs = Object.keys(totB).sort((a, b) => totB[b] - totB[a]).slice(0, 30);
+      const matrix = {};
+      rows.forEach(([a, b, c]) => { if (allAs.includes(a) && allBs.includes(b)) matrix[`${a}\x00${b}`] = c; });
+      const maxVal = Math.max(...Object.values(matrix), 1);
+      setCtData({ allAs, allBs, matrix, maxVal, dimA, dimB });
+    } catch (e) { setCtError(String(e)); }
+    finally { setCtLoading(false); }
+  }, [sql, whereParts, pipeline.id]); // eslint-disable-line
+
+  // Auto-refresh cross-tab when open and filters change
+  useEffect(() => {
+    if (showCrossTab) fetchCrossTab(ctDimA, ctDimB);
+  }, [showCrossTab, ctDimA, ctDimB, whereParts]); // eslint-disable-line
+
+  const ctCellBg = (count, maxVal) => {
+    if (!count) return '';
+    const t = Math.pow(count / maxVal, 0.45);
+    const r = Math.round(239 - (239-37)*t), g = Math.round(246 - (246-99)*t), b = Math.round(255 - (255-235)*t);
+    return `rgb(${r},${g},${b})`;
+  };
+
+  const openCtCell = (a, b, count, dimA, dimB) => {
+    if (!count) return;
+    const safe = s => String(s).replace(/'/g, "''");
+    const cond = (dim, val) => dim.isJson
+      ? `EXISTS (SELECT 1 FROM json_each(${dim.col}) WHERE LOWER(value) = LOWER('${safe(val)}'))`
+      : `${dim.col} = '${safe(val)}'`;
+    const baseClean = sql.trim().replace(/;+$/, '');
+    const baseParts = [...whereParts, cond(dimA, a), cond(dimB, b)];
+    setDrillDown({
+      sql: `SELECT * FROM (${baseClean}) _q WHERE ${baseParts.join(' AND ')}`,
+      title: `${a} × ${b} — ${count.toLocaleString()} records`,
+    });
   };
 
   // ── CSV export (full result set, no pagination) ────────────────────────────
@@ -462,7 +545,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className={embedded
-        ? "flex flex-col h-full bg-white"
+        ? "flex flex-col h-full bg-white overflow-hidden"
         : "fixed right-0 flex flex-col bg-white border-l border-gray-200 shadow-2xl z-30"}
       style={embedded ? {} : { top: '48px', height: 'calc(100vh - 48px)', width: '480px' }}>
 
@@ -705,6 +788,86 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
               </button>
               <span className="text-xs text-gray-400">Ctrl+Enter</span>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Cross-tab A×B (collapsible) */}
+      <div className="flex-shrink-0 border-b border-gray-200">
+        <SectionBar label="A × B Cross-tab" open={showCrossTab} onToggle={() => setShowCrossTab(s => !s)}
+          badge={ctData ? <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium">{ctData.allAs.length}×{ctData.allBs.length}</span> : null}
+        />
+        {showCrossTab && (
+          <div className="bg-white">
+            {/* Dimension pickers */}
+            <div className="flex flex-wrap gap-2 px-3 py-2 border-b border-gray-100">
+              {['A','B'].map((lbl, i) => {
+                const val = i === 0 ? ctDimA : ctDimB;
+                const set = i === 0 ? setCtDimA : setCtDimB;
+                return (
+                  <div key={lbl} className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-400 flex-shrink-0">{lbl}</span>
+                    <select value={val} onChange={e => set(e.target.value)}
+                      className="text-xs border border-gray-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-purple-400 bg-white">
+                      {CT_DIMS.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
+              <button onClick={() => fetchCrossTab(ctDimA, ctDimB)} disabled={ctLoading}
+                className="text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 transition ml-auto">
+                {ctLoading ? '…' : 'Run'}
+              </button>
+            </div>
+            {/* Table */}
+            {ctError && <div className="px-3 py-2 text-xs text-red-500">{ctError}</div>}
+            {ctLoading && <div className="flex justify-center py-4"><span className="w-4 h-4 border-2 border-gray-200 border-t-purple-400 rounded-full animate-spin" /></div>}
+            {!ctLoading && ctData && ctData.allAs.length > 0 && (
+              <div className="overflow-auto" style={{ maxHeight: '260px' }}>
+                <table className="text-xs border-collapse w-full">
+                  <thead className="sticky top-0 z-10">
+                    <tr>
+                      <th className="bg-gray-50 px-2 py-1.5 text-left text-gray-400 font-normal border-b border-r border-gray-200 min-w-[100px]" />
+                      {ctData.allBs.map(b => (
+                        <th key={b} className="bg-gray-50 px-1 py-1.5 border-b border-gray-200 min-w-[44px]">
+                          <div className="truncate max-w-[80px] text-gray-600 font-semibold text-center" title={b}>{b}</div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ctData.allAs.map(a => (
+                      <tr key={a}>
+                        <td className="sticky left-0 bg-white px-2 py-1 font-medium text-gray-700 whitespace-nowrap border-r border-gray-200">
+                          <span className="truncate block max-w-[130px]" title={a}>{a}</span>
+                        </td>
+                        {ctData.allBs.map(b => {
+                          const count = ctData.matrix[`${a}\x00${b}`] || 0;
+                          return (
+                            <td key={b} className="text-center px-1 py-1"
+                              style={{ background: ctCellBg(count, ctData.maxVal) }}>
+                              {count > 0 ? (
+                                <button onClick={() => openCtCell(a, b, count, ctData.dimA, ctData.dimB)}
+                                  className="font-mono font-semibold text-gray-800 hover:text-blue-700 w-full transition"
+                                  title={`${count.toLocaleString()} records — click to drill down`}>
+                                  {count >= 1000 ? `${(count/1000).toFixed(1)}k` : count}
+                                </button>
+                              ) : <span className="text-gray-200">·</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {!ctLoading && !ctError && ctData && ctData.allAs.length === 0 && (
+              <div className="px-3 py-3 text-xs text-gray-400 text-center">No data for selected dimensions</div>
+            )}
+            {!ctLoading && !ctData && !ctError && (
+              <div className="px-3 py-3 text-xs text-gray-400 text-center">Select dimensions above and click Run</div>
+            )}
           </div>
         )}
       </div>

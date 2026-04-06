@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-ChartRenderer = Literal["bar", "hbar", "stacked_hbar", "pie", "subgroup_pie", "cooccurrence_3d_bar", "cooccurrence_3d", "heatmap"]
+ChartRenderer = Literal["bar", "hbar", "pie", "cooccurrence_3d_bar", "cooccurrence_3d", "heatmap"]
 
 
 @dataclass(frozen=True)
@@ -47,72 +47,6 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
         ),
         renderer="bar", x_key="year", y_key="count",
         params=("cutoff_year",),
-    ),
-    "fuel_subgroup_pie": ChartDefinition(
-        id="fuel_subgroup_pie",
-        title="Papers by Fuel Subgroup",
-        sql_template=(
-            "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, "
-            "  COUNT(DISTINCT openalex_id) AS count "
-            "FROM filtered_records, json_each(matched_fuel_subgroups) "
-            "WHERE matched_fuel_subgroups IS NOT NULL "
-            "  AND matched_fuel_subgroups != '[]' "
-            "GROUP BY subgroup ORDER BY count DESC"
-        ),
-        renderer="subgroup_pie", x_key="subgroup", y_key="count",
-    ),
-    "impact_subgroup_pie": ChartDefinition(
-        id="impact_subgroup_pie",
-        title="Papers by Impact Subgroup",
-        sql_template=(
-            "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, "
-            "  COUNT(DISTINCT openalex_id) AS count "
-            "FROM filtered_records, json_each(matched_impact_subgroups) "
-            "WHERE matched_impact_subgroups IS NOT NULL "
-            "  AND matched_impact_subgroups != '[]' "
-            "GROUP BY subgroup ORDER BY count DESC"
-        ),
-        renderer="subgroup_pie", x_key="subgroup", y_key="count",
-    ),
-    "top_fuel_terms": ChartDefinition(
-        id="top_fuel_terms",
-        title="Top Fuel Terms by Subgroup",
-        sql_template=(
-            "SELECT value AS term, COUNT(*) AS count "
-            "FROM filtered_records, json_each(matched_fuel_terms) "
-            "WHERE matched_fuel_terms IS NOT NULL AND matched_fuel_terms != '[]' "
-            "GROUP BY term ORDER BY count DESC LIMIT {top_n}"
-        ),
-        renderer="stacked_hbar", x_key="term", y_key="count",
-        subgroup_key="fuel",
-        params=("top_n", "terms_per_subgroup"),
-    ),
-    "top_impact_terms": ChartDefinition(
-        id="top_impact_terms",
-        title="Top Impact Terms by Subgroup",
-        sql_template=(
-            "SELECT value AS term, COUNT(*) AS count "
-            "FROM filtered_records, json_each(matched_impact_terms) "
-            "WHERE matched_impact_terms IS NOT NULL AND matched_impact_terms != '[]' "
-            "GROUP BY term ORDER BY count DESC LIMIT {top_n}"
-        ),
-        renderer="stacked_hbar", x_key="term", y_key="count",
-        subgroup_key="impact",
-        params=("top_n", "terms_per_subgroup"),
-    ),
-    "fuel_impact_cooccurrence": ChartDefinition(
-        id="fuel_impact_cooccurrence",
-        title="Fuel × Impact Subgroup Co-occurrence",
-        sql_template=(
-            "SELECT DISTINCT openalex_id, "
-            "  REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, "
-            "  REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup "
-            "FROM filtered_records, "
-            "  json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg "
-            "WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' "
-            "  AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' "
-        ),
-        renderer="cooccurrence_3d_bar", x_key="fuel_subgroup", y_key="openalex_id",
     ),
     "top_countries": ChartDefinition(
         id="top_countries",
@@ -336,6 +270,19 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
         ),
         renderer="pie", x_key="source", y_key="count",
         llm_only=True,
+    ),
+    "llm_value_chain": ChartDefinition(
+        id="llm_value_chain",
+        title="Value-Chain Position (LLM)",
+        sql_template=(
+            "SELECT value AS stage, COUNT(*) AS count "
+            "FROM filtered_records, json_each(llm_scope) "
+            "WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' "
+            "GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        ),
+        renderer="hbar", x_key="stage", y_key="count",
+        llm_only=True,
+        params=("top_n",),
     ),
 }
 

@@ -360,7 +360,7 @@ _LLM_EXPORT_COLUMNS = [
     ("llm_ml_method",           "TEXT"),
     ("llm_ml_role",             "TEXT"),
     ("llm_ml_algorithm",        "TEXT"),
-    ("llm_ml_strategy",         "TEXT"),
+    ("llm_scope",               "TEXT"),       # v5 — value-chain position
     ("llm_ml_data_source",      "TEXT"),
     ("llm_confidence",          "TEXT"),
     ("llm_justification",       "TEXT"),
@@ -553,6 +553,8 @@ def api_export_zip(pipeline_id: int):
         "fuelclass_x_algorithm":         "(LLM) Heatmap of fuel classification vs. algorithm family.",
         "fuelclass_x_datasource":        "(LLM) Heatmap of fuel classification vs. ML data source type.",
         "llm_ml_datasource":             "(LLM) Distribution of data source types across ML/AI papers.",
+        "terms_cooccurrence":            "Heatmap of first fuel subgroup terms × first impact subgroup terms co-occurrence.",
+        "llm_value_chain":               "(LLM) Value-chain position of each paper (feedstock, processing, combustion, emissions, etc.).",
     }
 
     buf = io.BytesIO()

@@ -234,6 +234,20 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
         </div>
       )}
 
+      {/* Fuel × Impact Subgroup Co-occurrence (dynamic heatmap, fixed axes) */}
+      <FuelImpactSubgroupCooccPanel
+        pipelineId={pipeline.id}
+        onOpenRecords={openChartRecords}
+      />
+
+      {/* Terms Co-occurrence (dynamic heatmap, user-selectable axes) */}
+      <TermsCooccurrencePanel
+        pipeline={pipeline}
+        pipelineId={pipeline.id}
+        isLLM={isLLM}
+        onOpenRecords={openChartRecords}
+      />
+
       {/* Charts grid */}
       {chartConfigs === null ? (
         <div className="flex items-center justify-center py-20 text-gray-400">
