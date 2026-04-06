@@ -295,13 +295,35 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
   // ── Drill-down sub-viewer ─────────────────────────────────────────────────
   const [drillDown, setDrillDown] = useState(null); // { sql, title }
 
+  // Parse SQL text to determine what DB column a generic alias (e.g. x_label, y_label) maps to.
+  // Returns { col: 'llm_fuel_classification', isJson: true } or null.
+  const _inferAliasCol = useCallback((sqlText, alias) => {
+    // Build map of table-alias → json_each source column: json_each(xxx) a → { a: 'xxx' }
+    const jeMap = {};
+    const jeRe = /json_each\((\w+)\)\s+(?:AS\s+)?(\w+)\b/gi;
+    let m;
+    while ((m = jeRe.exec(sqlText)) !== null) jeMap[m[2]] = m[1];
+    // Look for: tbl.value AS alias
+    const vmRe = new RegExp(`(\\w+)\\.value\\s+AS\\s+${alias}\\b`, 'i');
+    const vm = sqlText.match(vmRe);
+    if (vm && jeMap[vm[1]]) return { col: jeMap[vm[1]], isJson: true };
+    // Look for: CASE ... END AS alias or col_name AS alias
+    const dmRe = new RegExp(`(?:ELSE\\s+)?(\\w+)\\s+AS\\s+${alias}\\b`, 'i');
+    const dm = sqlText.match(dmRe);
+    if (dm && dm[1].toLowerCase() !== 'value') return { col: dm[1], isJson: false };
+    return null;
+  }, []);
+
   // Build a drill-down SQL from a table row by mapping dimension columns to
   // filtered_records WHERE conditions.
   const buildDrillSql = useCallback((rowCols, rowData, skipCol) => {
     const DIM_MAP = {
       year: 'publication_year', publication_year: 'publication_year',
       oa_status: 'open_access_oa_status', open_access_oa_status: 'open_access_oa_status',
+      status: 'open_access_oa_status',
       type: 'type', record_type: 'type',
+      journal: 'primary_location_source_display_name',
+      source: 'llm_ml_data_source',
     };
     const conditions = [];
     rowCols.forEach((col, i) => {
@@ -309,25 +331,41 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
       const val = rowData[i];
       if (val == null || val === '' || val === 'Unknown/≤2000') return;
       const lc = col.toLowerCase();
-      if (lc === 'subgroup' || lc.includes('subgroup')) {
-        // JSON array match
-        const safe = String(val).replace(/'/g, "''");
+      const safe = String(val).replace(/'/g, "''");
+      if (lc === 'x_label' || lc === 'y_label') {
+        // Heatmap chart generic alias — parse the current SQL to infer actual DB column
+        const inferred = _inferAliasCol(sql, col);
+        if (!inferred) return;
+        if (inferred.isJson) {
+          conditions.push(`EXISTS (SELECT 1 FROM json_each(${inferred.col}) WHERE LOWER(value) = LOWER('${safe}'))`);
+        } else {
+          conditions.push(`LOWER(${inferred.col}) = LOWER('${safe}')`);
+        }
+      } else if (lc === 'subgroup' || lc.includes('subgroup')) {
         const base = lc.includes('impact') ? 'matched_impact_subgroups' : 'matched_fuel_subgroups';
         conditions.push(`EXISTS (SELECT 1 FROM json_each(${base}) WHERE value = '${safe}')`);
       } else if (lc === 'term' || lc.includes('_term')) {
-        const safe = String(val).replace(/'/g, "''");
         const base = lc.includes('impact') ? 'matched_impact_terms' : 'matched_fuel_terms';
         conditions.push(`EXISTS (SELECT 1 FROM json_each(${base}) WHERE LOWER(value) = LOWER('${safe}'))`);
+      } else if (lc === 'country') {
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(authors_countries) WHERE value = '${safe}')`);
+      } else if (lc === 'institution') {
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(authors_institutions) WHERE value = '${safe}')`);
+      } else if (lc === 'fuel_type') {
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(llm_fuel_classification) WHERE LOWER(value) = LOWER('${safe}'))`);
+      } else if (lc === 'role') {
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(llm_ml_role) WHERE LOWER(value) = LOWER('${safe}'))`);
+      } else if (lc === 'algorithm') {
+        conditions.push(`EXISTS (SELECT 1 FROM json_each(llm_ml_algorithm) WHERE LOWER(value) = LOWER('${safe}'))`);
       } else {
-        const mapped = DIM_MAP[lc] || (DIM_MAP[col] ? DIM_MAP[col] : null);
+        const mapped = DIM_MAP[lc] || DIM_MAP[col] || null;
         if (!mapped) return;
-        const safe = String(val).replace(/'/g, "''");
         conditions.push(`${mapped} = '${safe}'`);
       }
     });
     if (!conditions.length) return null;
     return `SELECT * FROM filtered_records WHERE ${conditions.join(' AND ')}`;
-  }, []);
+  }, [sql, _inferAliasCol]);
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const ci           = useCallback(n => cols.indexOf(n), [cols]);
@@ -883,6 +921,7 @@ function RecordViewerPanel({ pipeline, initialSql, title, onClose,
                 initialSql={drillDown.sql}
                 title={drillDown.title}
                 onClose={() => setDrillDown(null)}
+                onSubsetSaved={onSubsetSaved}
                 embedded={true}
               />
             </div>

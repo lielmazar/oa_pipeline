@@ -241,6 +241,7 @@ def phase_prepare(
     limit: int | None = None,
     overwrite: bool = False,
     subset_sql: str | None = None,
+    model: str | None = None,
 ) -> Path | None:
     """
     Export records to a JSONL batch file.
@@ -303,7 +304,7 @@ def phase_prepare(
                 "method": "POST",
                 "url": "/v1/responses",
                 "body": {
-                    "model": MODEL,
+                    "model": model or MODEL,
                     "prompt": {
                         "id": PROMPT_ID,
                         "version": PROMPT_VERSION,
@@ -837,6 +838,10 @@ def build_parser() -> argparse.ArgumentParser:
     # prepare
     p_prep = sub.add_parser("prepare", help="Write JSONL from DB rows")
     p_prep.add_argument(
+        "--model", default=None, choices=list(MODEL_PRICING),
+        help=f"Model to use (default: {MODEL})",
+    )
+    p_prep.add_argument(
         "--limit", type=int, default=None, metavar="N",
         help="Number of records to include (default: ALL)",
     )
@@ -868,6 +873,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Full pipeline: prepare -> submit -> poll -> save",
     )
     p_run.add_argument(
+        "--model", default=None, choices=list(MODEL_PRICING),
+        help=f"Model to use (default: {MODEL})",
+    )
+    p_run.add_argument(
         "--limit", type=int, default=None, metavar="N",
         help="Number of records to process (default: ALL)",
     )
@@ -895,7 +904,8 @@ def main() -> None:
                        subset_sql=subset_sql)
 
     elif args.phase == "prepare":
-        phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql)
+        phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql,
+                      model=getattr(args, "model", None))
 
     elif args.phase == "submit":
         phase_submit()
@@ -907,7 +917,8 @@ def main() -> None:
         phase_save(local_file=getattr(args, "file", None))
 
     elif args.phase == "run":
-        result = phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql)
+        result = phase_prepare(args.limit, overwrite=args.overwrite, subset_sql=subset_sql,
+                               model=getattr(args, "model", None))
         if result is None:
             return
         phase_submit()

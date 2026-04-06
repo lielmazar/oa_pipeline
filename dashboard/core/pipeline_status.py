@@ -55,9 +55,12 @@ def build_stage_status(pipeline: dict) -> dict:
             processed = len(pipeline_state.get("processed_files", []))
             seen = pipeline_state.get("total_records_seen", 0)
             inserted = pipeline_state.get("total_records_inserted", 0)
+            failed_files = pipeline_state.get("failed_files", [])
             status["search_progress"] = {
                 "total": all_files,
                 "processed": processed,
+                "failed": len(failed_files),
+                "failed_files": failed_files,
                 "percent": round(100 * processed / all_files, 1) if all_files else 0,
                 "seen": seen,
                 "inserted": inserted,

@@ -1,9 +1,18 @@
 // ── Stage: LLM ────────────────────────────────────────────────────────────────
 
+const LLM_MODELS = [
+  { id: 'gpt-5.4-nano',  label: 'GPT-5.4 Nano',  note: 'cheapest' },
+  { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini',  note: '' },
+  { id: 'gpt-5.4',       label: 'GPT-5.4',        note: 'recommended' },
+  { id: 'gpt-5.4-pro',   label: 'GPT-5.4 Pro',    note: 'most capable' },
+  { id: 'gpt-4o-mini',   label: 'GPT-4o Mini',    note: '' },
+  { id: 'gpt-4o',        label: 'GPT-4o',         note: '' },
+];
+
 function LLMStage({ pipeline, pipelineStatus }) {
   const [activeJobId, setActiveJobId] = useState(null);
   const [limit, setLimit] = useState('');
-  const [pollInterval, setPollInterval] = useState('60');
+  const [selectedModel, setSelectedModel] = useState('gpt-5.4-nano');
   const [launchError, setLaunchError] = useState('');
   const [liveBatchState, setLiveBatchState] = useState(null);
   const [cancelling, setCancelling] = useState(false);
@@ -91,8 +100,10 @@ function LLMStage({ pipeline, pipelineStatus }) {
       mainArgs['--subset-sql'] = subsets[activeSubsetIdx].sql;
     }
     const subArgs = {};
+    if (phase === 'estimate') subArgs['--model'] = selectedModel;
     if (limit && ['prepare', 'run'].includes(phase)) subArgs['--limit'] = limit;
-    if (['poll', 'run'].includes(phase)) subArgs['--interval'] = pollInterval;
+    if (['prepare', 'run'].includes(phase)) subArgs['--model'] = selectedModel;
+    if (['poll', 'run'].includes(phase)) subArgs['--interval'] = '30';
     const args = { ...mainArgs, [phase]: true, ...subArgs };
     const res = await apiFetch('/api/jobs', {
       method: 'POST',
@@ -260,10 +271,11 @@ function LLMStage({ pipeline, pipelineStatus }) {
               </div>
             </details>
 
-            {/* Subset selector */}
-            {subsets.length > 0 && (
-              <div className="mb-3">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Dataset</label>
+            {/* Configuration card */}
+            <div className="mb-3 p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-3">
+              {/* Dataset selector */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5">Dataset</label>
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     onClick={() => setActiveSubsetIdx(null)}
@@ -279,24 +291,29 @@ function LLMStage({ pipeline, pipelineStatus }) {
                   ))}
                 </div>
                 {activeSubsetIdx != null && (
-                  <p className="text-xs text-gray-400 mt-1">LLM will process only records in this subset.</p>
+                  <p className="text-xs text-gray-400 mt-1">Processing only records in this subset.</p>
                 )}
               </div>
-            )}
 
-            {/* Options */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Limit records (blank = all)</label>
-                <input type="number" placeholder="e.g. 100" min="1" value={limit}
-                  onChange={e => setLimit(e.target.value)}
-                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Poll interval (sec)</label>
-                <input type="number" value={pollInterval} min="10"
-                  onChange={e => setPollInterval(e.target.value)}
-                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+              {/* Model + Limit row */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Model</label>
+                  <select value={selectedModel} onChange={e => setSelectedModel(e.target.value)}
+                    className="w-full border rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 bg-white">
+                    {LLM_MODELS.map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}{m.note ? ` (${m.note})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Record limit <span className="font-normal text-gray-400">(blank = all)</span></label>
+                  <input type="number" placeholder="e.g. 500" min="1" value={limit}
+                    onChange={e => setLimit(e.target.value)}
+                    className="w-full border rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+                </div>
               </div>
             </div>
 

@@ -12,7 +12,6 @@ function SummaryStage({ pipeline, pipelineStatus }) {
   const [logLoading, setLogLoading] = useState(false);
   const [dbFormat, setDbFormat]   = useState('csv');
   const [chunkMb, setChunkMb]     = useState('50');
-  const [skipOpen, setSkipOpen]   = useState(false);
 
   // ── Stats derived from pipelineStatus + pipeline.config ───────────────────
   const rc   = pipelineStatus?.record_count ?? null;
@@ -59,22 +58,19 @@ function SummaryStage({ pipeline, pipelineStatus }) {
   };
 
   // ── Screening funnel data ─────────────────────────────────────────────────
-  const sk       = sp?.skip_stats || {};
-  const seen     = sp?.seen     || 0;
-  const inserted = sp?.inserted || 0;
-  const notEn  = sk['not_english']    || 0;
-  const noDoi  = sk['no_doi']         || 0;
-  const noAbs  = sk['no_abstract']    || 0;
-  const noKw   = sk['no_keywords']    || 0;
-  const MAIN_KEYS = new Set(['not_english','no_doi','no_abstract','no_keywords']);
-  const otherSkipRows = Object.entries(sk)
-    .filter(([k]) => !MAIN_KEYS.has(k))
-    .sort((a, b) => b[1] - a[1]);
-  const otherTotal = otherSkipRows.reduce((s, [, v]) => s + v, 0);
+  const sk           = sp?.skip_stats || {};
+  const seen         = sp?.seen     || 0;
+  const inserted     = sp?.inserted || 0;
+  const allSkipRows  = Object.entries(sk).sort((a, b) => b[1] - a[1]);
+  const tracked      = allSkipRows.reduce((s, [, v]) => s + v, 0);
+  const unaccounted  = seen > 0 ? seen - tracked - inserted : 0;
   const fileErrors   = sp?.file_errors   || 0;
   const recordErrors = sp?.record_errors || 0;
+  const failedFiles  = sp?.failed || 0;
 
   const _SKIP_LABEL = {
+    not_english: 'non-English (pre-screened)', no_doi: 'no DOI',
+    no_abstract: 'no abstract', no_keywords: 'no matching keywords',
     empty_abstract: 'empty abstract', json_error: 'JSON parse error',
     empty_line: 'empty line', no_id: 'no OpenAlex ID', processing_error: 'processing error',
   };
@@ -145,72 +141,37 @@ function SummaryStage({ pipeline, pipelineStatus }) {
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Screening Funnel</h4>
           <div className="space-y-0.5 font-mono text-xs">
-            {[
-              { label: 'records scanned', count: seen },
-              notEn  > 0 && { label: '↳ non-English (pre-screened)', count: notEn,  dim: true },
-              noDoi  > 0 && { label: '↳ no DOI',                     count: noDoi,  dim: true },
-              noAbs  > 0 && { label: '↳ no abstract',                 count: noAbs,  dim: true },
-              noKw   > 0 && { label: '↳ no matching keywords',        count: noKw,   dim: true },
-              otherTotal > 0 && {
-                label: (
-                  <span className="flex items-center gap-1">
-                    ↳ other skip reasons
-                    {otherSkipRows.length > 0 && (
-                      <button onClick={() => setSkipOpen(true)}
-                        className="text-blue-500 hover:text-blue-700 underline decoration-dotted ml-0.5">ⓘ</button>
-                    )}
-                  </span>
-                ),
-                count: otherTotal, dim: true,
-              },
-              { label: '✓ saved', count: inserted, green: true },
-            ].filter(Boolean).map((row, i) => (
-              <div key={i} className={`flex gap-4 ${row.dim ? 'pl-4' : ''} ${row.green ? 'mt-1 pt-1 border-t border-gray-100' : ''}`}>
-                <span className={`w-28 text-right flex-shrink-0 ${row.green ? 'text-green-700 font-bold' : row.dim ? 'text-gray-400' : 'text-gray-700 font-semibold'}`}>
-                  {typeof row.count === 'number' ? row.count.toLocaleString() : row.count}
-                </span>
-                <span className={row.green ? 'text-green-700 font-semibold' : row.dim ? 'text-gray-400' : ''}>{row.label}</span>
+            <div className="flex gap-4">
+              <span className="w-28 text-right flex-shrink-0 text-gray-700 font-semibold">{seen.toLocaleString()}</span>
+              <span>records scanned</span>
+            </div>
+            {allSkipRows.map(([key, count]) => (
+              <div key={key} className="flex gap-4 pl-4">
+                <span className="w-28 text-right flex-shrink-0 text-gray-400">{count.toLocaleString()}</span>
+                <span className="text-gray-400">↳ {_SKIP_LABEL[key] || key}</span>
               </div>
             ))}
+            {unaccounted > 0 && (
+              <div className="flex gap-4 pl-4">
+                <span className="w-28 text-right flex-shrink-0 text-orange-500">{unaccounted.toLocaleString()}</span>
+                <span className="text-orange-500">↳ unaccounted (pipeline restart or tracking gap)</span>
+              </div>
+            )}
+            <div className="flex gap-4 mt-1 pt-1 border-t border-gray-100">
+              <span className="w-28 text-right flex-shrink-0 text-green-700 font-bold">{inserted.toLocaleString()}</span>
+              <span className="text-green-700 font-semibold">✓ saved</span>
+            </div>
           </div>
           {seen > 0 && inserted > 0 && (
             <div className="mt-2 text-xs text-gray-400">
               Match rate: <strong className="text-gray-600">{(inserted / seen * 100).toFixed(3)}%</strong>
             </div>
           )}
-
-          {/* ── Other skip reasons popup ── */}
-          {skipOpen && (
-            <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 p-4"
-              onClick={e => e.target === e.currentTarget && setSkipOpen(false)}>
-              <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm">
-                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-                  <h3 className="font-semibold text-sm text-gray-800">Other skip reasons — breakdown</h3>
-                  <button onClick={() => setSkipOpen(false)}
-                    className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-100 transition">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                  </button>
-                </div>
-                <div className="px-5 py-4 space-y-1.5">
-                  {otherSkipRows.map(([key, count]) => (
-                    <div key={key} className="flex justify-between text-xs">
-                      <span className="text-gray-600">{_SKIP_LABEL[key] || key}</span>
-                      <span className="font-mono font-semibold text-gray-700">{count.toLocaleString()}</span>
-                    </div>
-                  ))}
-                  {otherSkipRows.length === 0 && (
-                    <p className="text-xs text-gray-400 italic">No breakdown available.</p>
-                  )}
-                </div>
-                <div className="px-5 py-3 border-t border-gray-100 bg-gray-50/50 rounded-b-xl text-right">
-                  <button onClick={() => setSkipOpen(false)}
-                    className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition">
-                    Close
-                  </button>
-                </div>
-              </div>
+          {(failedFiles > 0 || fileErrors > 0 || recordErrors > 0) && (
+            <div className="mt-2 text-xs text-red-500 space-y-0.5">
+              {failedFiles > 0 && <div>{failedFiles} file{failedFiles !== 1 ? 's' : ''} failed — see pipeline.log in ZIP</div>}
+              {fileErrors > 0 && <div>{fileErrors} file-level errors</div>}
+              {recordErrors > 0 && <div>{recordErrors.toLocaleString()} record-level errors</div>}
             </div>
           )}
         </div>

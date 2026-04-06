@@ -1556,23 +1556,31 @@ def run_parallel(
                     state["processed_files"].append(key);  processed_set.add(key)
                     state["total_records_seen"]     += result["seen"]
                     state["total_records_inserted"] += result["inserted"]
+                    # add_skip_stats MUST come before state["skip_stats"] snapshot so the
+                    # saved state always reflects every processed file (not N-1 files).
+                    display.add_skip_stats(result["skips"])
+                    display.files_done      = len(state["processed_files"])
+                    display.total_seen      = state["total_records_seen"]
+                    display.total_inserted  = state["total_records_inserted"]
+                    display.total_data_mb  += result["data_mb"]
+                    if result["last_title"]:
+                        display.last_match_title = result["last_title"]
                     state["skip_stats"]    = dict(display.skip_stats)
                     state["file_errors"]   = display.file_errors
                     state["record_errors"] = display.record_errors
                     save_state(state, state_file)
 
-                    display.files_done      = len(state["processed_files"])
-                    display.total_seen      = state["total_records_seen"]
-                    display.total_inserted  = state["total_records_inserted"]
-                    display.total_data_mb  += result["data_mb"]
-                    display.add_skip_stats(result["skips"])
-                    if result["last_title"]:
-                        display.last_match_title = result["last_title"]
-
+                    # Log per-file skip breakdown when the file has significant skips
                     err_note = f"  ({len(rec_errs)} record errors)" if rec_errs else ""
+                    skip_note = ""
+                    if result["skips"] and result["seen"] > 0:
+                        top_skips = sorted(result["skips"].items(), key=lambda kv: -kv[1])[:3]
+                        skip_note = "  skips: " + ", ".join(
+                            f"{_SKIP_LABELS.get(r, r)}={c:,}" for r, c in top_skips
+                        )
                     logger.info(
                         f"[{display.files_done:,}/{total_files:,}] {key} — "
-                        f"ins: {result['inserted']}  seen: {result['seen']:,}{err_note}"
+                        f"ins: {result['inserted']}  seen: {result['seen']:,}{skip_note}{err_note}"
                     )
 
                 display.render()

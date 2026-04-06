@@ -449,7 +449,7 @@ def _dump_table_csv_chunks(
 
 @data_bp.route("/api/pipelines/<int:pipeline_id>/export-zip")
 def api_export_zip(pipeline_id: int):
-    """Build and stream a ZIP with per-stage HTML reports, charts, data, logs, and metadata.
+    """Build and stream a ZIP with charts, data, logs, and metadata.
 
     Query params:
       db_format = csv | sqlite | both | csv_chunks_N   (default: csv)
@@ -459,17 +459,14 @@ def api_export_zip(pipeline_id: int):
         csv_chunks_N   — each table split into N-MB CSV chunks (e.g. csv_chunks_50)
 
     ZIP structure:
-      summary_report.html             pipeline overview + key charts (root level)
-      pipeline_metadata.json
-      manifest.txt
+      README.md                       overview + chart index + SQL reference
+      keywords.json                   keyword configuration
+      pipeline_state.json             pipeline state and skip statistics
+      pipeline_metadata.json          full pipeline configuration
+      charts/                         all chart images (analysis + LLM)
+      chart_queries.sql               all chart SQL queries
       data/                           record data (format per db_format)
-      logs/                           pipeline log files
-      stages/
-        1_keyword_selection/          report.html, keywords.json
-        2_openalex_search/            report.html, pipeline_state.json
-        3_analysis/                   report.html, charts/*.png, chart_queries.sql
-        4_llm_classification/         report.html, batch_state.json
-        5_llm_analysis/               report.html, charts_llm/*.png
+      logs/                           pipeline log files + skip stats summary
     """
     err = require_auth()
     if err:
@@ -504,10 +501,10 @@ def api_export_zip(pipeline_id: int):
     prefix = f"{safe_name}/"
 
     from core.charts import _CHART_DEFINITIONS
-    from core import report_builder as _rb
 
-    non_llm_charts = [c for c in _CHART_DEFINITIONS.values() if not c.llm_only]
-    llm_charts     = [c for c in _CHART_DEFINITIONS.values() if c.llm_only]
+    all_charts     = list(_CHART_DEFINITIONS.values())
+    non_llm_charts = [c for c in all_charts if not c.llm_only]
+    llm_charts     = [c for c in all_charts if c.llm_only]
 
     tables: list[str] = []
     record_count = 0
@@ -532,110 +529,73 @@ def api_export_zip(pipeline_id: int):
         except Exception:
             pass
 
+    # ── Chart descriptions for README ─────────────────────────────────────────
+    _CHART_DESC: dict[str, str] = {
+        "publications_by_year":          "Distribution of matched papers by publication year. Papers from 2000 or earlier are grouped together.",
+        "fuel_subgroup_pie":             "Share of papers touching each fuel subgroup (papers can appear in multiple subgroups).",
+        "impact_subgroup_pie":           "Share of papers touching each impact subgroup.",
+        "top_fuel_terms":                "Top keyword terms matched in the fuel category, stacked by subgroup.",
+        "top_impact_terms":              "Top keyword terms matched in the impact category, stacked by subgroup.",
+        "fuel_impact_cooccurrence":      "3D co-occurrence matrix showing how fuel and impact subgroups co-occur within the same paper.",
+        "top_countries":                 "Countries contributing the most papers (counted by author affiliation).",
+        "top_journals":                  "Journals / conference proceedings publishing the most papers in this corpus.",
+        "oa_status":                     "Open access status breakdown (gold, green, hybrid, bronze, closed).",
+        "work_types":                    "Distribution of document types (article, conference paper, review, etc.).",
+        "top_institutions":              "Institutions with the most affiliated authors in the corpus.",
+        "llm_scope":                     "(LLM) Fuel classification tags assigned by the model to each paper.",
+        "llm_ml_role":                   "(LLM) Functional role of ML/AI in each paper (predictive, optimisation, etc.).",
+        "llm_ml_algorithm":              "(LLM) Algorithm families identified (neural network, gradient boosting, etc.).",
+        "llm_ml_usage":                  "(LLM) Fraction of papers that use ML/AI vs. do not.",
+        "fuel_impact_model_cooccurrence":"(LLM) Three-way co-occurrence of fuel subgroup, impact subgroup, and model type.",
+        "fuel_subgroup_ml_cooccurrence": "(LLM) Fuel × impact subgroup co-occurrence restricted to ML/AI papers only.",
+        "fuelclass_x_mlrole":            "(LLM) Heatmap of fuel classification vs. ML functional role.",
+        "mlrole_x_algorithm":            "(LLM) Heatmap of ML functional role vs. algorithm family.",
+        "fuelclass_x_algorithm":         "(LLM) Heatmap of fuel classification vs. algorithm family.",
+        "fuelclass_x_datasource":        "(LLM) Heatmap of fuel classification vs. ML data source type.",
+        "llm_ml_datasource":             "(LLM) Distribution of data source types across ML/AI papers.",
+    }
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
 
-        # ── 1. Summary report (root level) ────────────────────────────────────
-        try:
-            summary_html = _rb.build_summary_report(
-                pipeline, db_path, pipeline_dir, pipeline_config, _chart_gen
-            )
-            zf.writestr(f"{prefix}summary_report.html", summary_html)
-        except Exception:
-            pass
-
-        # ── 2. Stage 1 — Keyword Selection ────────────────────────────────────
-        s1 = f"{prefix}stages/1_keyword_selection/"
-        try:
-            zf.writestr(s1 + "report.html",
-                        _rb.build_keywords_report(pipeline, pipeline_dir))
-        except Exception:
-            pass
+        # ── 1. Root-level config files ────────────────────────────────────────
         if pipeline_dir:
             kw = pipeline_dir / "keywords.json"
             if kw.exists():
-                zf.write(str(kw), s1 + "keywords.json")
-
-        # ── 3. Stage 2 — OpenAlex Search ─────────────────────────────────────
-        s2 = f"{prefix}stages/2_openalex_search/"
-        try:
-            zf.writestr(s2 + "report.html",
-                        _rb.build_search_report(pipeline, pipeline_dir))
-        except Exception:
-            pass
-        if pipeline_dir:
+                zf.write(str(kw), f"{prefix}keywords.json")
             sp = pipeline_dir / "pipeline_state.json"
             if sp.exists():
-                zf.write(str(sp), s2 + "pipeline_state.json")
+                zf.write(str(sp), f"{prefix}pipeline_state.json")
 
-        # ── 4. Stage 3 — Analysis (non-LLM charts) ───────────────────────────
-        s3 = f"{prefix}stages/3_analysis/"
-        try:
-            zf.writestr(s3 + "report.html",
-                        _rb.build_analysis_report(
-                            pipeline, db_path, pipeline_config, _chart_gen, llm=False))
-        except Exception:
-            pass
-
-        analysis_charts_written = 0
-        if db_path and db_path.exists():
-            for spec in non_llm_charts:
-                try:
-                    png = _chart_gen.generate(db_path, spec.id, pipeline_config, top_n=20)
-                    zf.writestr(s3 + f"charts/{spec.id}.png", _png_add_watermark(png))
-                    analysis_charts_written += 1
-                except Exception:
-                    pass
-
-        sql_lines: list[str] = []
-        for spec in non_llm_charts:
-            sql_lines.append(f"-- {spec.title} ({spec.id})")
-            sql_lines.append(spec.format_sql(top_n=20))
-            sql_lines.append("")
-        zf.writestr(s3 + "chart_queries.sql", "\n".join(sql_lines))
-
-        # ── 5. Stage 4 — LLM Classification ──────────────────────────────────
-        s4 = f"{prefix}stages/4_llm_classification/"
-        try:
-            zf.writestr(s4 + "report.html",
-                        _rb.build_llm_classification_report(pipeline, pipeline_dir))
-        except Exception:
-            pass
+        # ── 2. Batch state ────────────────────────────────────────────────────
         if pipeline_dir:
             bs = pipeline_dir / "batch_runs" / "state.json"
             if bs.exists():
-                zf.write(str(bs), s4 + "batch_state.json")
+                zf.write(str(bs), f"{prefix}batch_state.json")
 
-        # ── 6. Stage 5 — LLM Analysis ────────────────────────────────────────
-        s5 = f"{prefix}stages/5_llm_analysis/"
-        try:
-            zf.writestr(s5 + "report.html",
-                        _rb.build_analysis_report(
-                            pipeline, db_path, pipeline_config, _chart_gen, llm=True))
-        except Exception:
-            pass
-
-        llm_charts_written = 0
+        # ── 3. All charts in flat charts/ folder ──────────────────────────────
+        charts_written_ids: list[str] = []
         if db_path and db_path.exists():
-            for spec in llm_charts:
+            for spec in all_charts:
                 try:
                     png = _chart_gen.generate(db_path, spec.id, pipeline_config, top_n=20)
-                    zf.writestr(s5 + f"charts_llm/{spec.id}.png", _png_add_watermark(png))
-                    llm_charts_written += 1
+                    zf.writestr(f"{prefix}charts/{spec.id}.png", _png_add_watermark(png))
+                    charts_written_ids.append(spec.id)
                 except Exception:
                     pass
 
-        llm_sql_lines: list[str] = []
-        for spec in llm_charts:
-            llm_sql_lines.append(f"-- {spec.title} ({spec.id})")
-            llm_sql_lines.append(spec.format_sql(top_n=20))
-            llm_sql_lines.append("")
-        zf.writestr(s5 + "chart_queries.sql", "\n".join(llm_sql_lines))
+        # ── 4. Chart SQL (all charts) ─────────────────────────────────────────
+        sql_lines: list[str] = []
+        for spec in all_charts:
+            sql_lines.append(f"-- {spec.title} ({spec.id})")
+            if spec.llm_only:
+                sql_lines.append("-- NOTE: requires LLM classification to have been run")
+            sql_lines.append(spec.format_sql(top_n=20))
+            sql_lines.append("")
+        zf.writestr(f"{prefix}chart_queries.sql", "\n".join(sql_lines))
 
-        # ── 7. Database export (data/ at root level) ──────────────────────────
+        # ── 5. Database export ────────────────────────────────────────────────
         if db_path and db_path.exists() and tables:
-            # Guarantee LLM columns exist before any export format.
-            # Also checkpoint WAL so the main DB file includes all committed data.
             try:
                 with sqlite3.connect(db_path) as _wal_conn:
                     _ensure_llm_columns(_wal_conn)
@@ -664,7 +624,7 @@ def api_export_zip(pipeline_id: int):
                             for i, chunk in enumerate(chunks):
                                 zf.writestr(f"{prefix}data/{table}_part{i+1:03d}.csv", chunk)
 
-        # ── 8. Logs ───────────────────────────────────────────────────────────
+        # ── 6. Logs (pipeline logs + batch logs) ──────────────────────────────
         logs_written: list[str] = []
         if pipeline_dir and pipeline_dir.exists():
             for log_file in sorted(pipeline_dir.glob("*.log")):
@@ -674,10 +634,17 @@ def api_export_zip(pipeline_id: int):
                 if log_file.parent == pipeline_dir:
                     continue
                 rel = log_file.relative_to(pipeline_dir)
-                zf.write(str(log_file), f"{prefix}logs/{rel}")
+                zf.write(str(log_file), f"{prefix}logs/{str(rel).replace(chr(92), '/')}")
                 logs_written.append(str(rel))
+            # Include batch errors/output JSONL if present
+            batch_dir = pipeline_dir / "batch_runs"
+            if batch_dir.exists():
+                for jl in sorted(batch_dir.glob("*.jsonl")):
+                    if jl.stat().st_size <= 50 * 1024 * 1024:  # skip files > 50 MB
+                        zf.write(str(jl), f"{prefix}logs/batch/{jl.name}")
+                        logs_written.append(f"batch/{jl.name}")
 
-        # ── 8b. Skip-stats summary (always write when state file exists) ──────
+        # ── 7. Skip-stats summary ─────────────────────────────────────────────
         state_path = pipeline_dir / "pipeline_state.json" if pipeline_dir else None
         if state_path and state_path.exists():
             try:
@@ -687,7 +654,7 @@ def api_export_zip(pipeline_id: int):
                 _ins  = _state.get("total_records_inserted", 0)
                 _ferr = _state.get("file_errors", 0)
                 _rerr = _state.get("record_errors", 0)
-                lines = [
+                skip_lines = [
                     "Screening funnel / skip-reason summary",
                     "=" * 40,
                     f"Records scanned  : {_seen:,}",
@@ -706,13 +673,17 @@ def api_export_zip(pipeline_id: int):
                     "no_id": "no OpenAlex ID",
                     "processing_error": "processing error",
                 }
+                _accounted = sum(_skip.values())
                 for k in _SKIP_ORDER:
                     if k in _skip:
-                        lines.append(f"  ↳ {_SKIP_LABEL.get(k, k):<30}: {_skip[k]:>12,}")
+                        skip_lines.append(f"  ↳ {_SKIP_LABEL.get(k, k):<32}: {_skip[k]:>12,}")
                 for k, v in sorted(_skip.items(), key=lambda x: -x[1]):
                     if k not in _SKIP_ORDER:
-                        lines.append(f"  ↳ {k:<30}: {v:>12,}")
-                lines += [
+                        skip_lines.append(f"  ↳ {k:<32}: {v:>12,}")
+                _unaccounted = _seen - _accounted - _ins if _seen > 0 else 0
+                if _unaccounted > 0:
+                    skip_lines.append(f"  ↳ {'unaccounted (not tracked)':<32}: {_unaccounted:>12,}")
+                skip_lines += [
                     f"Saved (matched)  : {_ins:,}",
                     f"Match rate       : {_ins/_seen*100:.4f}%" if _seen else "Match rate       : n/a",
                     "",
@@ -721,11 +692,11 @@ def api_export_zip(pipeline_id: int):
                     "",
                     "See pipeline.log for per-record error details.",
                 ]
-                zf.writestr(f"{prefix}logs/skip_stats_summary.txt", "\n".join(lines))
+                zf.writestr(f"{prefix}logs/skip_stats_summary.txt", "\n".join(skip_lines))
             except Exception:
                 pass
 
-        # ── 9. Pipeline metadata JSON ─────────────────────────────────────────
+        # ── 8. Pipeline metadata JSON ─────────────────────────────────────────
         meta = {k: v for k, v in pipeline.items() if k != "config"}
         meta["config"] = pipeline_config
         zf.writestr(
@@ -733,45 +704,96 @@ def api_export_zip(pipeline_id: int):
             json.dumps(meta, indent=2, default=str),
         )
 
-        # ── 10. Manifest ──────────────────────────────────────────────────────
+        # ── 9. README.md ──────────────────────────────────────────────────────
         db_size_str = (
             f"{round(db_path.stat().st_size / 1024**2, 1)} MB"
             if db_path and db_path.exists() else "n/a"
         )
-        table_lines = "\n".join(
-            f"  {tbl}: {table_row_counts.get(tbl, 0):,} rows" for tbl in tables
-        ) or "  (none)"
         db_format_desc = (
-            "SQLite + CSV"          if db_format == "both"
+            "SQLite + CSV"              if db_format == "both"
             else f"CSV chunks ({chunk_mb} MB)" if db_format == "csv_chunks"
             else db_format.upper()
         )
-        charts_written = analysis_charts_written + llm_charts_written
-        manifest = (
-            f"Pipeline:    {pipeline.get('name', '')}\n"
-            f"Pipeline ID: {pipeline_id}\n"
-            f"Owner:       {pipeline.get('user_id', '')}\n"
-            f"Exported:    {ts} UTC\n"
-            f"Stage:       {pipeline.get('current_stage', 'unknown')}\n"
-            f"Records:     {record_count:,}\n"
-            f"DB size:     {db_size_str}\n"
-            f"DB format:   {db_format_desc}\n"
-            f"\nDB tables:\n{table_lines}\n"
-            f"\nCharts:      {charts_written} total "
-            f"({analysis_charts_written} analysis, {llm_charts_written} LLM)\n"
-            f"Logs:        {', '.join(logs_written) or 'none (run a pipeline stage first)'}\n"
-            f"\nZIP structure:\n"
-            f"  summary_report.html                 Pipeline overview + key charts\n"
-            f"  data/                               Database export ({db_format_desc})\n"
-            f"  logs/                               Pipeline log files\n"
-            f"  stages/1_keyword_selection/         Keywords report + keywords.json\n"
-            f"  stages/2_openalex_search/           Search report + pipeline_state.json\n"
-            f"  stages/3_analysis/                  Analysis report + chart PNGs + SQL\n"
-            f"  stages/4_llm_classification/        LLM classification report + batch state\n"
-            f"  stages/5_llm_analysis/              LLM analysis report + LLM chart PNGs\n"
-            f"  pipeline_metadata.json              Full pipeline configuration\n"
+        table_lines_md = "\n".join(
+            f"- `{tbl}`: {table_row_counts.get(tbl, 0):,} rows" for tbl in tables
+        ) or "*(no tables yet)*"
+
+        # Build skip stats block for README
+        readme_skip = ""
+        if state_path and state_path.exists():
+            try:
+                _st2 = json.loads(state_path.read_text(encoding="utf-8"))
+                _sk2 = _st2.get("skip_stats", {})
+                _s2  = _st2.get("total_records_seen", 0)
+                _i2  = _st2.get("total_records_inserted", 0)
+                _acc2 = sum(_sk2.values())
+                _unc2 = _s2 - _acc2 - _i2 if _s2 > 0 else 0
+                _LABEL2 = {
+                    "not_english": "Non-English", "no_doi": "No DOI",
+                    "no_abstract": "No abstract", "no_keywords": "No matching keywords",
+                    "empty_abstract": "Empty abstract", "json_error": "JSON parse error",
+                    "empty_line": "Blank line", "no_id": "No OpenAlex ID",
+                    "processing_error": "Processing error",
+                }
+                skip_rows = [f"| Records scanned | {_s2:,} |"]
+                for k in ["not_english", "no_doi", "no_abstract", "no_keywords",
+                          "empty_abstract", "json_error", "empty_line", "no_id", "processing_error"]:
+                    if k in _sk2:
+                        skip_rows.append(f"| ↳ {_LABEL2.get(k, k)} | {_sk2[k]:,} |")
+                for k, v in sorted(_sk2.items(), key=lambda x: -x[1]):
+                    if k not in _LABEL2:
+                        skip_rows.append(f"| ↳ {k} | {v:,} |")
+                if _unc2 > 0:
+                    skip_rows.append(f"| ↳ Unaccounted (not tracked) | {_unc2:,} |")
+                skip_rows.append(f"| **Saved (matched)** | **{_i2:,}** |")
+                _rate = f"{_i2/_s2*100:.4f}%" if _s2 else "n/a"
+                skip_rows.append(f"| Match rate | {_rate} |")
+                readme_skip = (
+                    "## Screening Funnel\n\n"
+                    "| Stage | Count |\n|---|---|\n"
+                    + "\n".join(skip_rows) + "\n\n"
+                    + "> See `logs/skip_stats_summary.txt` for the full breakdown.\n"
+                )
+            except Exception:
+                readme_skip = ""
+
+        # Chart index section
+        chart_section_lines = ["## Charts\n", f"All charts are in the `charts/` folder.\n"]
+        for spec in all_charts:
+            in_zip = spec.id in charts_written_ids
+            tag = "" if in_zip else " *(no data)*"
+            desc = _CHART_DESC.get(spec.id, "")
+            chart_section_lines.append(f"### {spec.title}{tag}\n")
+            chart_section_lines.append(f"**File:** `charts/{spec.id}.png`  ")
+            if desc:
+                chart_section_lines.append(f"**Description:** {desc}\n")
+            chart_section_lines.append(f"```sql\n{spec.format_sql(top_n=20)}\n```\n")
+        chart_section = "\n".join(chart_section_lines)
+
+        readme = (
+            f"# Pipeline Export: {pipeline.get('name', f'Pipeline {pipeline_id}')}\n\n"
+            f"**Exported:** {ts} UTC  \n"
+            f"**Records:** {record_count:,}  \n"
+            f"**DB size:** {db_size_str}  \n"
+            f"**Format:** {db_format_desc}  \n\n"
+            "---\n\n"
+            + readme_skip +
+            "## Files\n\n"
+            "| File / Folder | Description |\n|---|---|\n"
+            "| `keywords.json` | Keyword groups and terms used to screen OpenAlex records |\n"
+            "| `pipeline_state.json` | Pipeline state: skip statistics, record counts, timestamps |\n"
+            "| `batch_state.json` | LLM batch API state (if LLM classification was run) |\n"
+            "| `pipeline_metadata.json` | Full pipeline configuration |\n"
+            "| `chart_queries.sql` | All SQL queries used to generate the charts |\n"
+            f"| `charts/` | All chart images ({len(charts_written_ids)} PNG files) |\n"
+            f"| `data/` | Database export ({db_format_desc}) |\n"
+            "| `logs/` | Pipeline log files and skip-stats summary |\n\n"
+            "### Database tables\n\n"
+            + table_lines_md + "\n\n"
+            "---\n\n"
+            + chart_section
         )
-        zf.writestr(f"{prefix}manifest.txt", manifest)
+        zf.writestr(f"{prefix}README.md", readme)
 
     buf.seek(0)
     filename = f"{safe_name}_{ts}.zip"
