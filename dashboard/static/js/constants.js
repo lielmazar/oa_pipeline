@@ -30,12 +30,10 @@ const CHART_COLORS = [
 ];
 
 // IDs in display order (non-LLM first, LLM-only after)
+// Static co-occurrence / cross-tab charts removed — superseded by dynamic TermsCooccurrencePanel
 const CHART_ORDER = [
   'publications_by_year',
   'top_countries','top_journals','oa_status','work_types','top_institutions',
-  'llm_scope','llm_value_chain','llm_ml_role','llm_ml_algorithm','llm_ml_usage','llm_ml_datasource',
-  'fuel_subgroup_ml_cooccurrence',
-  'fuelclass_x_mlrole','mlrole_x_algorithm','fuelclass_x_algorithm','fuelclass_x_datasource',
-  'fuel_impact_model_cooccurrence',
+  'llm_scope','llm_value_chain','llm_ml_role','llm_ml_algorithm','llm_ml_usage',
 ];
 

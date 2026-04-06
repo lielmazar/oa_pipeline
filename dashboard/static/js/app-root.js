@@ -59,7 +59,6 @@ function App() {
             onShowJobs={() => { setView('jobs'); refreshGlobal(); }}
             onShowQA={() => { setView('qa'); refreshGlobal(); }}
             onShowIRR={() => { setView('irr'); refreshGlobal(); }}
-            onShowOrthogonality={() => { setView('orthogonality'); refreshGlobal(); }}
             onShowExport={() => { setView('export'); refreshGlobal(); }}
             onLogout={handleLogout}
           />
@@ -85,9 +84,6 @@ function App() {
           )}
           {view === 'irr' && (
             <EnhancedQAView pipelines={pipelines} onRefresh={refreshGlobal} />
-          )}
-          {view === 'orthogonality' && (
-            <OrthogonalityView pipelines={pipelines} />
           )}
           {view === 'export' && (
             <ExportView pipelines={pipelines} />

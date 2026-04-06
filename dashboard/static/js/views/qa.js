@@ -265,6 +265,13 @@ function AnnotationRow({ article, dimensions, onSave }) {
   const [values, setValues] = useState({});
 
   const setVal = (dim, val) => setValues(v => ({ ...v, [dim]: val }));
+  const toggleMulti = (dim, code) => {
+    setValues(v => {
+      const prev = (v[dim] || '').split(',').map(s => s.trim()).filter(Boolean);
+      const next = prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code];
+      return { ...v, [dim]: next.join(', ') };
+    });
+  };
 
   const llmVal = (col) => {
     const raw = article[col];
@@ -322,29 +329,49 @@ function AnnotationRow({ article, dimensions, onSave }) {
       {snippet && <p className="text-xs text-gray-500 mb-3 leading-relaxed">{snippet}</p>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
-        {dimensions.map(d => (
-          <div key={d.id} className="flex flex-col gap-1">
-            <div className="flex items-center gap-1">
-              <span className="text-xs font-medium text-gray-600">{d.label}</span>
-              <span className="text-xs text-gray-400">LLM: {llmVal(LLM_COL_MAP[d.id])}</span>
-            </div>
-            {d.type === 'binary' ? (
-              <div className="flex gap-1">
-                {['true', 'false'].map(opt => (
-                  <button key={opt} onClick={() => setVal(d.id, opt)}
-                    className={`text-xs px-2 py-1 rounded border transition
-                      ${values[d.id] === opt ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
-                    {opt}
-                  </button>
-                ))}
+        {dimensions.map(d => {
+          const codes = d.codes || [];
+          const selectedMulti = (values[d.id] || '').split(',').map(s => s.trim()).filter(Boolean);
+          return (
+            <div key={d.id} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1">
+                <span className="text-xs font-medium text-gray-600">{d.label}</span>
+                <span className="text-xs text-gray-400">LLM: {llmVal(LLM_COL_MAP[d.id])}</span>
               </div>
-            ) : (
-              <input type="text" value={values[d.id] || ''} onChange={e => setVal(d.id, e.target.value)}
-                placeholder={d.type === 'multi' ? 'val1, val2' : 'value'}
-                className="text-xs border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500" />
-            )}
-          </div>
-        ))}
+              {d.type === 'binary' ? (
+                <div className="flex gap-1">
+                  {['true', 'false'].map(opt => (
+                    <button key={opt} onClick={() => setVal(d.id, opt)}
+                      className={`text-xs px-2 py-1 rounded border transition
+                        ${values[d.id] === opt ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'}`}>
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              ) : d.type === 'multi' && codes.length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {codes.map(code => (
+                    <button key={code} onClick={() => toggleMulti(d.id, code)}
+                      className={`text-xs px-2 py-0.5 rounded border transition
+                        ${selectedMulti.includes(code) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-400'}`}>
+                      {code}
+                    </button>
+                  ))}
+                </div>
+              ) : codes.length > 0 ? (
+                <select value={values[d.id] || ''} onChange={e => setVal(d.id, e.target.value)}
+                  className="text-xs border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                  <option value="">Select…</option>
+                  {codes.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              ) : (
+                <input type="text" value={values[d.id] || ''} onChange={e => setVal(d.id, e.target.value)}
+                  placeholder={d.type === 'multi' ? 'val1, val2' : 'value'}
+                  className="text-xs border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <button onClick={handleSave} disabled={Object.values(values).every(v => !v?.trim())}
@@ -454,7 +481,7 @@ function DisagreementPanel({ pipelineId }) {
 
 function EnhancedQAView({ pipelines, onRefresh }) {
   const [pipelineId, setPipelineId] = useState(null);
-  const [tab, setTab] = useState('annotate');
+  const [tab, setTab] = useState('training');
   const [articles, setArticles] = useState([]);
   const [dimensions, setDimensions] = useState([]);
   const [alphaDetailed, setAlphaDetailed] = useState(null);
@@ -499,18 +526,52 @@ function EnhancedQAView({ pipelines, onRefresh }) {
     }
   };
 
+  // Compute sample size guidance per dimension
+  const sampleGuidance = useMemo(() => {
+    if (!alphaDetailed?.dimensions) return {};
+    const guide = {};
+    for (const [dim, info] of Object.entries(alphaDetailed.dimensions)) {
+      const n = info.n_items || 0;
+      const target = 50; // Krippendorff recommends min 50 coded units for stable alpha
+      guide[dim] = { n, target, remaining: Math.max(0, target - n), sufficient: n >= target };
+    }
+    return guide;
+  }, [alphaDetailed]);
+
   const tabs = [
+    { id: 'training', label: 'Training' },
     { id: 'annotate', label: 'Annotate' },
     { id: 'alpha', label: "Krippendorff's α" },
     { id: 'confusion', label: 'Confusion Matrix' },
     { id: 'disagreements', label: 'Disagreements' },
   ];
 
+  // Alpha interpretation legend — always visible when a pipeline is selected
+  const AlphaLegend = () => (
+    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-6">
+      <h4 className="text-xs font-semibold text-gray-700 mb-2 uppercase tracking-wide">
+        Krippendorff's Alpha Interpretation (Krippendorff, 2019; Marzi et al., 2024)
+      </h4>
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="px-2 py-1 rounded bg-green-100 text-green-800 border border-green-200">α = 1.0 — Perfect</span>
+        <span className="px-2 py-1 rounded bg-green-50 text-green-700 border border-green-200">α ≥ 0.80 — Reliable / Satisfactory</span>
+        <span className="px-2 py-1 rounded bg-yellow-50 text-yellow-700 border border-yellow-200">α 0.67–0.79 — Tentative conclusions only</span>
+        <span className="px-2 py-1 rounded bg-red-50 text-red-700 border border-red-200">α &lt; 0.67 — Unreliable</span>
+        <span className="px-2 py-1 rounded bg-gray-100 text-gray-600 border border-gray-200">α = 0 — Chance agreement</span>
+        <span className="px-2 py-1 rounded bg-gray-200 text-gray-600 border border-gray-300">α &lt; 0 — Systematic disagreement</span>
+      </div>
+      <p className="text-xs text-gray-400 mt-2">
+        Threshold of α ≥ 0.80 recommended for drawing triangulated conclusions (Krippendorff, 2019).
+        Min ~50 coded units recommended for stable alpha estimates.
+      </p>
+    </div>
+  );
+
   return (
     <div className="max-w-6xl mx-auto px-6 py-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gray-900">Inter-Rater Reliability</h2>
-        <p className="text-sm text-gray-500 mt-1">Stratified annotation, Krippendorff's alpha, confusion matrices, and disagreement analysis.</p>
+        <p className="text-sm text-gray-500 mt-1">Stratified annotation, training, Krippendorff's alpha, confusion matrices, and disagreement analysis.</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-6">
@@ -524,14 +585,49 @@ function EnhancedQAView({ pipelines, onRefresh }) {
 
       {pipelineId && (
         <>
-          {/* Alpha overview */}
+          {/* Always-visible legend */}
+          <AlphaLegend />
+
+          {/* Alpha overview gauges with sample size badges */}
           {alphaDetailed?.dimensions && (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-              {Object.entries(alphaDetailed.dimensions).map(([dim, info]) => (
-                <AlphaGauge key={dim} label={dim.replace(/_/g, ' ')} alpha={info.alpha} />
-              ))}
+              {Object.entries(alphaDetailed.dimensions).map(([dim, info]) => {
+                const sg = sampleGuidance[dim];
+                return (
+                  <div key={dim} className="relative">
+                    <AlphaGauge label={dim.replace(/_/g, ' ')} alpha={info.alpha} />
+                    {sg && (
+                      <div className={`absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium
+                        ${sg.sufficient ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                        {sg.n}/{sg.target}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
+
+          {/* Sample size guidance bar */}
+          {alphaDetailed?.dimensions && (() => {
+            const totalNeeded = Object.values(sampleGuidance).reduce((s, g) => s + g.remaining, 0);
+            const allSufficient = Object.values(sampleGuidance).every(g => g.sufficient);
+            if (allSufficient) return (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-6 flex items-center gap-2 text-sm text-green-700">
+                <span className="text-lg">✓</span>
+                All dimensions have ≥50 coded units. Alpha estimates are stable.
+              </div>
+            );
+            return (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-6 text-sm text-amber-800">
+                <strong>Sample size:</strong>{' '}
+                {Object.entries(sampleGuidance).filter(([, g]) => !g.sufficient).map(([dim, g]) =>
+                  `${dim.replace(/_/g, ' ')}: ${g.n}/${g.target} (need ${g.remaining} more)`
+                ).join(' · ')}
+                <span className="text-xs text-amber-600 ml-2">— Min 50 coded units per dimension for reliable alpha (Krippendorff, 2019)</span>
+              </div>
+            );
+          })()}
 
           <div className="flex gap-1 mb-4 border-b">
             {tabs.map(t => (
@@ -542,6 +638,71 @@ function EnhancedQAView({ pipelines, onRefresh }) {
               </button>
             ))}
           </div>
+
+          {/* Training tab */}
+          {tab === 'training' && (
+            <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm space-y-6">
+              <div>
+                <h3 className="text-lg font-semibold mb-2">Training Session</h3>
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  Before rating, familiarise yourself with the coding scheme below.
+                  Per the <a href="https://www.k-alpha.org/methodological-notes" target="_blank" rel="noopener"
+                  className="text-blue-600 hover:underline">k-alpha.org methodological template</a> (Krippendorff, 2019; Marzi et al., 2024),
+                  raters should undergo a training session including familiarisation with the rating scheme,
+                  practice rating exercises, and discussion to clarify ambiguities.
+                </p>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold text-gray-800 mb-3">Coding Scheme — Dimension Definitions</h4>
+                <div className="space-y-3">
+                  {dimensions.length > 0 ? dimensions.map(d => (
+                    <div key={d.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <span className="font-semibold text-sm text-gray-900">{d.label}</span>
+                          <span className={`ml-2 text-xs px-2 py-0.5 rounded-full
+                            ${d.type === 'binary' ? 'bg-purple-100 text-purple-700' :
+                              d.type === 'multi' ? 'bg-blue-100 text-blue-700' :
+                              d.type === 'ordinal' ? 'bg-amber-100 text-amber-700' :
+                              'bg-gray-100 text-gray-600'}`}>{d.type}</span>
+                        </div>
+                      </div>
+                      {d.description && <p className="text-xs text-gray-600 mb-2">{d.description}</p>}
+                      {d.codes && d.codes.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {d.codes.map(c => (
+                            <span key={c} className="text-xs bg-white border border-gray-300 rounded px-2 py-0.5 text-gray-700">{c}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )) : (
+                    <p className="text-sm text-gray-400">Generate a QA sample first to load dimension definitions from the server.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-blue-800 mb-2">Key Guidelines</h4>
+                <ul className="text-xs text-blue-700 space-y-1.5 list-disc list-inside">
+                  <li>Read the title and abstract carefully before rating</li>
+                  <li>For <strong>multi-label</strong> dimensions, select ALL codes that apply</li>
+                  <li>For <strong>binary</strong> dimensions, choose true/false based on the primary focus of the paper</li>
+                  <li>If uncertain, select the closest match and mark confidence as <strong>Low</strong></li>
+                  <li>The LLM's classification is shown for reference but should not bias your judgement</li>
+                  <li>Disagreements between raters will be reviewed in the Disagreements tab</li>
+                </ul>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button onClick={() => { generateSample(100); setTab('annotate'); }}
+                  className="bg-blue-600 text-white text-sm px-5 py-2 rounded-lg font-medium hover:bg-blue-700 transition">
+                  Ready — Generate Sample & Start Annotating
+                </button>
+              </div>
+            </div>
+          )}
 
           {tab === 'annotate' && (
             <div>
@@ -579,27 +740,51 @@ function EnhancedQAView({ pipelines, onRefresh }) {
                     <th className="p-2 border text-right">Alpha</th>
                     <th className="p-2 border text-right">N Items</th>
                     <th className="p-2 border text-right">N Coders</th>
+                    <th className="p-2 border text-left">Confidence Level</th>
                     <th className="p-2 border text-left">Interpretation</th>
+                    <th className="p-2 border text-left">Sample</th>
                   </tr></thead>
                   <tbody>
-                    {Object.entries(alphaDetailed.dimensions).map(([dim, info]) => (
-                      <tr key={dim}>
-                        <td className="p-2 border font-medium">{dim.replace(/_/g, ' ')}</td>
-                        <td className="p-2 border text-right font-mono">
-                          {info.alpha != null ? info.alpha.toFixed(4) : '—'}
-                        </td>
-                        <td className="p-2 border text-right">{info.n_items}</td>
-                        <td className="p-2 border text-right">{info.n_coders}</td>
-                        <td className="p-2 border">
-                          <span className={`text-xs px-2 py-0.5 rounded
-                            ${info.interpretation === 'good agreement' ? 'bg-green-100 text-green-700' :
-                              info.interpretation === 'tentative agreement' ? 'bg-yellow-100 text-yellow-700' :
-                              'bg-red-100 text-red-700'}`}>
-                            {info.interpretation}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {Object.entries(alphaDetailed.dimensions).map(([dim, info]) => {
+                      const sg = sampleGuidance[dim];
+                      const confLevel = info.alpha == null ? '—'
+                        : info.alpha >= 0.8 ? 'Reliable — draw conclusions'
+                        : info.alpha >= 0.67 ? 'Tentative — interpret with caution'
+                        : 'Unreliable — do not draw conclusions';
+                      return (
+                        <tr key={dim}>
+                          <td className="p-2 border font-medium">{dim.replace(/_/g, ' ')}</td>
+                          <td className="p-2 border text-right font-mono">
+                            {info.alpha != null ? info.alpha.toFixed(4) : '—'}
+                          </td>
+                          <td className="p-2 border text-right">{info.n_items}</td>
+                          <td className="p-2 border text-right">{info.n_coders}</td>
+                          <td className="p-2 border">
+                            <span className={`text-xs px-2 py-0.5 rounded
+                              ${info.alpha >= 0.8 ? 'bg-green-100 text-green-700' :
+                                info.alpha >= 0.67 ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-red-100 text-red-700'}`}>
+                              {confLevel}
+                            </span>
+                          </td>
+                          <td className="p-2 border">
+                            <span className={`text-xs px-2 py-0.5 rounded
+                              ${info.interpretation === 'good agreement' ? 'bg-green-100 text-green-700' :
+                                info.interpretation === 'tentative agreement' ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-red-100 text-red-700'}`}>
+                              {info.interpretation}
+                            </span>
+                          </td>
+                          <td className="p-2 border text-xs">
+                            {sg && (
+                              <span className={sg.sufficient ? 'text-green-600' : 'text-orange-600 font-medium'}>
+                                {sg.n}/{sg.target}{sg.sufficient ? ' ✓' : ` (${sg.remaining} more)`}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               ) : <p className="text-gray-400">No annotation data available yet.</p>}

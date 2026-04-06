@@ -20,6 +20,40 @@ function LLMStage({ pipeline, pipelineStatus }) {
   const [activeSubsetIdx, setActiveSubsetIdx] = useState(null); // null = all records
   const { lines, status: jobStatus } = useJobStream(activeJobId);
 
+  // Orthogonality state
+  const [orthoOpen, setOrthoOpen] = useState(false);
+  const [orthoMlOnly, setOrthoMlOnly] = useState(true);
+  const [orthoTab, setOrthoTab] = useState('cramers');
+  const [orthoCramers, setOrthoCramers] = useState(null);
+  const [orthoEntropy, setOrthoEntropy] = useState(null);
+  const [orthoJaccard, setOrthoJaccard] = useState(null);
+  const [orthoTauto, setOrthoTauto] = useState(null);
+  const [orthoPmi, setOrthoPmi] = useState(null);
+  const [orthoAudit, setOrthoAudit] = useState(null);
+  const [orthoExemplars, setOrthoExemplars] = useState(null);
+  const [orthoLoading, setOrthoLoading] = useState(false);
+
+  const loadOrtho = useCallback(async () => {
+    setOrthoLoading(true);
+    const ml = orthoMlOnly ? 'true' : 'false';
+    try {
+      const [cr, en, jc, tp, pm, au, ex] = await Promise.all([
+        apiFetch(`/api/orthogonality/cramers-v/${pipeline.id}?ml_only=${ml}`).then(r => r.json()).catch(() => null),
+        apiFetch(`/api/orthogonality/entropy/${pipeline.id}?ml_only=${ml}`).then(r => r.json()).catch(() => null),
+        apiFetch(`/api/orthogonality/jaccard/${pipeline.id}?dimension=ml_role&ml_only=${ml}`).then(r => r.json()).catch(() => null),
+        apiFetch(`/api/orthogonality/tautological/${pipeline.id}`).then(r => r.json()).catch(() => null),
+        apiFetch(`/api/orthogonality/pmi/${pipeline.id}`).then(r => r.json()).catch(() => null),
+        apiFetch(`/api/orthogonality/audit/${pipeline.id}`).then(r => r.json()).catch(() => null),
+        apiFetch(`/api/orthogonality/exemplars/${pipeline.id}`).then(r => r.json()).catch(() => null),
+      ]);
+      setOrthoCramers(cr); setOrthoEntropy(en); setOrthoJaccard(jc);
+      setOrthoTauto(tp); setOrthoPmi(pm); setOrthoAudit(au); setOrthoExemplars(ex);
+    } catch {}
+    setOrthoLoading(false);
+  }, [pipeline.id, orthoMlOnly]);
+
+  useEffect(() => { if (orthoOpen) loadOrtho(); }, [orthoOpen, orthoMlOnly]); // eslint-disable-line
+
   const isJobRunning = !!(activeJobId && (jobStatus === null || jobStatus === 'running'));
 
   // On mount, auto-connect to the most recent llm_classify job + load subsets
@@ -341,6 +375,131 @@ function LLMStage({ pipeline, pipelineStatus }) {
           )}
         </div>
         <Terminal lines={lines} />
+      </div>
+
+      {/* Taxonomy Orthogonality — collapsible */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <button onClick={() => setOrthoOpen(o => !o)}
+          className="w-full flex items-center gap-3 px-6 py-4 text-left hover:bg-gray-50 transition">
+          <svg className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${orthoOpen ? 'rotate-90' : ''}`}
+            fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7"/>
+          </svg>
+          <div>
+            <span className="font-semibold text-gray-800">Taxonomy Orthogonality</span>
+            <span className="text-xs text-gray-400 ml-2">Independence between classification dimensions</span>
+          </div>
+        </button>
+        {orthoOpen && (
+          <div className="px-6 pb-6 space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1.5 text-sm text-gray-600">
+                <input type="checkbox" checked={orthoMlOnly} onChange={e => setOrthoMlOnly(e.target.checked)} className="rounded" />
+                ML-positive only
+              </label>
+              <button onClick={loadOrtho} disabled={orthoLoading}
+                className="bg-blue-600 text-white text-sm px-4 py-1.5 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition">
+                {orthoLoading ? 'Loading…' : 'Refresh'}
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex gap-1 border-b">
+              {[
+                { id: 'cramers', label: "Cramér's V" },
+                { id: 'entropy', label: 'Entropy' },
+                { id: 'jaccard', label: 'Jaccard' },
+                { id: 'tautological', label: 'Tautological' },
+                { id: 'pmi', label: 'PMI' },
+                { id: 'audit', label: 'Data Quality' },
+                { id: 'exemplars', label: 'Exemplars' },
+              ].map(t => (
+                <button key={t.id} onClick={() => setOrthoTab(t.id)}
+                  className={`px-3 py-2 text-sm font-medium border-b-2 transition
+                    ${orthoTab === t.id ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {orthoLoading && <div className="text-center text-gray-400 py-8">Loading analysis…</div>}
+
+            {!orthoLoading && orthoTab === 'cramers' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Cramér's V Matrix</h4>
+                <p className="text-xs text-gray-500 mb-2">Values near 0 = independence; 0.5+ = strong association.</p>
+                <CramersVHeatmap data={orthoCramers} />
+              </div>
+            )}
+            {!orthoLoading && orthoTab === 'entropy' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Conditional Entropy</h4>
+                <EntropyPanel data={orthoEntropy} />
+              </div>
+            )}
+            {!orthoLoading && orthoTab === 'jaccard' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Within-Dimension Jaccard (ML Role)</h4>
+                <p className="text-xs text-gray-500 mb-2">Amber &gt; 0.05, Red &gt; 0.1.</p>
+                <JaccardHeatmap data={orthoJaccard} />
+              </div>
+            )}
+            {!orthoLoading && orthoTab === 'tautological' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Tautological Pair Detection</h4>
+                <TautologicalTable data={orthoTauto} />
+              </div>
+            )}
+            {!orthoLoading && orthoTab === 'pmi' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">PMI Analysis (Role × Algorithm)</h4>
+                <PMITable data={orthoPmi} />
+              </div>
+            )}
+            {!orthoLoading && orthoTab === 'audit' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Data Quality Audit</h4>
+                <DataQualityPanel data={orthoAudit} />
+              </div>
+            )}
+            {!orthoLoading && orthoTab === 'exemplars' && (
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Exemplar Papers</h4>
+                <p className="text-xs text-gray-500 mb-2">Top paper by FWCI for each ML Role × Fuel Class cell with ≥3 papers.</p>
+                {orthoExemplars?.exemplars?.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="text-xs border-collapse w-full">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="p-2 border text-left">Fuel Class</th>
+                          <th className="p-2 border text-left">ML Role</th>
+                          <th className="p-2 border text-right">Cell Count</th>
+                          <th className="p-2 border text-left">Title</th>
+                          <th className="p-2 border text-right">FWCI</th>
+                          <th className="p-2 border">DOI</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orthoExemplars.exemplars.slice(0, 100).map((ex, i) => (
+                          <tr key={i}>
+                            <td className="p-2 border">{ex.fuel_class}</td>
+                            <td className="p-2 border">{ex.ml_role}</td>
+                            <td className="p-2 border text-right">{ex.cell_count}</td>
+                            <td className="p-2 border max-w-xs truncate" title={ex.title}>{ex.title}</td>
+                            <td className="p-2 border text-right font-mono">{ex.fwci != null ? Number(ex.fwci).toFixed(2) : '—'}</td>
+                            <td className="p-2 border">
+                              {ex.doi && <a href={`https://doi.org/${ex.doi}`} target="_blank" rel="noopener" className="text-blue-500 hover:underline">{ex.doi}</a>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : <p className="text-gray-400 text-sm">No exemplar papers found.</p>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

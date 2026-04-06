@@ -24,12 +24,12 @@ _JS_MODULES = [
     "stages/records-panel.js",
     "stages/record-viewer.js",
     "stages/report-stage.js",
+    "views/orthogonality.js",
     "stages/llm.js",
     "stages/summary.js",
     "views/pipeline.js",
     "views/jobs.js",
     "views/qa.js",
-    "views/orthogonality.js",
     "views/export.js",
     "app-root.js",
 ]

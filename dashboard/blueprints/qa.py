@@ -365,12 +365,28 @@ def api_qa_my_ratings(pipeline_id: int):
 # ── Enhanced QA: Stratified sample generator ─────────────────────────────────
 
 ANNOTATION_DIMENSIONS = [
-    {"id": "fuel_relevant",          "label": "Fuel Relevant",        "type": "binary"},
-    {"id": "fuel_classification",    "label": "Fuel Classification",  "type": "multi"},
-    {"id": "ml_role",                "label": "ML Role",              "type": "multi"},
-    {"id": "ml_algorithm",           "label": "ML Algorithm",         "type": "multi"},
-    {"id": "ml_data_source",         "label": "ML Data Source",       "type": "nominal"},
-    {"id": "confidence",             "label": "Confidence",           "type": "ordinal"},
+    {"id": "fuel_relevant",       "label": "Fuel Relevant",       "type": "binary",
+     "codes": ["true", "false"],
+     "description": "Is the paper about hydrocarbon fuel research?"},
+    {"id": "fuel_classification", "label": "Fuel Classification", "type": "multi",
+     "codes": ["Gasoline", "Diesel", "Jet Fuels & SAF", "Marine Fuels", "Natural Gas & LPG",
+               "Biofuels & Renewables", "Hydrogen", "Other"],
+     "description": "Which fuel type(s) does the paper study? Select all that apply."},
+    {"id": "ml_role",             "label": "ML Role",             "type": "multi",
+     "codes": ["Prediction", "Classification", "Optimization", "Feature Extraction",
+               "Anomaly Detection", "Simulation", "None"],
+     "description": "What role does ML/AI play in the research? Select all that apply."},
+    {"id": "ml_algorithm",        "label": "ML Algorithm",        "type": "multi",
+     "codes": ["Neural Network", "Random Forest", "SVM", "Gradient Boosting",
+               "Linear Regression", "Decision Tree", "CNN", "RNN/LSTM", "Transformer",
+               "Genetic Algorithm", "Bayesian", "Ensemble", "Other", "None"],
+     "description": "Which ML algorithm(s) are used? Select all that apply."},
+    {"id": "ml_data_source",      "label": "ML Data Source",      "type": "nominal",
+     "codes": ["Experimental", "Simulation", "Database/Repository", "Literature", "Sensor/IoT", "Mixed", "Not specified"],
+     "description": "Where does the ML training data come from?"},
+    {"id": "confidence",          "label": "Confidence",          "type": "ordinal",
+     "codes": ["High", "Medium", "Low"],
+     "description": "How confident are you in this classification? High = clear-cut; Medium = some ambiguity; Low = uncertain."},
 ]
 
 

@@ -42,7 +42,15 @@
             "gasoline",
             "ethanol blend",
             "naphtha",
-            "EN 228"
+            "EN 228",
+            "E10",
+            "E85",
+            "ethanol fuel",
+            "methanol fuel",
+            "flex fuel",
+            "RON",
+            "MON",
+            "anti-knock"
           ]
         },
         {
@@ -60,7 +68,12 @@
             "jp 8",
             "ASTM D7566",
             "ASTM D1655",
-            "def stan 91-091"
+            "def stan 91-091",
+            "ATJ",
+            "HEFA-SPK",
+            "FT-SPK",
+            "SIP fuel",
+            "neat SAF"
           ]
         },
         {
@@ -68,7 +81,15 @@
           "terms": [
             "marine fuel",
             "marine diesel",
-            "bunker fuel"
+            "bunker fuel",
+            "HFO",
+            "heavy fuel oil",
+            "VLSFO",
+            "very low sulphur fuel oil",
+            "MDO",
+            "marine gas oil",
+            "IMO 2020",
+            "MARPOL Annex VI"
           ]
         },
         {
@@ -126,16 +147,16 @@
             "CO2",
             "greenhouse gas",
             "carbon intensity",
-            "carbon footprint",
-            "carbon monoxide",
-            "CO emissions"
+            "carbon footprint"
           ]
         },
         {
-          "name": "Air Pollutants",
+          "name": "Regulated Pollutants",
           "terms": [
             "NOx",
             "SOx",
+            "carbon monoxide",
+            "CO emissions",
             "soot",
             "particulate matter",
             "PM2.5",
@@ -143,39 +164,24 @@
             "black carbon",
             "smoke opacity",
             "smoke number",
+            "unburned hydrocarbons",
+            "HC emissions"
+          ]
+        },
+        {
+          "name": "Exhaust & Tailpipe",
+          "terms": [
             "exhaust emissions",
             "tailpipe emissions",
-            "unburned hydrocarbons",
-            "HC emissions",
             "emissions"
           ]
         },
         {
-          "name": "Combustion & Performance",
+          "name": "Fuel Properties",
           "terms": [
-            "thermal efficiency",
-            "brake thermal efficiency",
-            "BTE",
-            "specific fuel consumption",
-            "BSFC",
-            "energy density",
-            "combustion efficiency",
-            "engine performance",
-            "brake power",
-            "torque",
-            "power output",
-            "ignition delay",
             "cetane number",
             "cetane index",
             "octane number",
-            "heat release rate",
-            "cylinder pressure",
-            "combustion characteristics",
-            "combustion duration",
-            "spray characteristics",
-            "injection pressure",
-            "flame temperature",
-            "auto-ignition",
             "flash point",
             "cloud point",
             "pour point",
@@ -197,7 +203,37 @@
             "freezing point",
             "thermal stability",
             "storage stability",
+            "energy density",
             "Chemometrics"
+          ]
+        },
+        {
+          "name": "Engine Performance",
+          "terms": [
+            "thermal efficiency",
+            "brake thermal efficiency",
+            "BTE",
+            "specific fuel consumption",
+            "BSFC",
+            "combustion efficiency",
+            "engine performance",
+            "brake power",
+            "torque",
+            "power output",
+            "injection pressure",
+            "spray characteristics"
+          ]
+        },
+        {
+          "name": "Combustion Phenomena",
+          "terms": [
+            "ignition delay",
+            "heat release rate",
+            "cylinder pressure",
+            "combustion characteristics",
+            "combustion duration",
+            "flame temperature",
+            "auto-ignition"
           ]
         },
         {

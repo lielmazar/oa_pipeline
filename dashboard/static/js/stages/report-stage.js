@@ -11,15 +11,19 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
   const [expandedSg, setExpandedSg]     = useState({});
 
   // ── Pinned charts ──────────────────────────────────────────────────────────
-  const [pinnedCharts, setPinnedCharts] = useState(new Set());     // chart IDs
+  // Each pinned entry is a snapshot: { key, chartId, subsetIdx, title }
+  const [pinnedCharts, setPinnedCharts] = useState([]);
   const [cooccPinned, setCooccPinned]   = useState(false);         // co-occurrence panel
 
-  const togglePinChart = useCallback(id => {
-    setPinnedCharts(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+  const pinChart = useCallback((id, title) => {
+    setPinnedCharts(prev => [
+      ...prev,
+      { key: `${id}_${Date.now()}`, chartId: id, subsetIdx: activeSubsetIdx, title: title || id },
+    ]);
+  }, [activeSubsetIdx]);
+
+  const unpinChart = useCallback(key => {
+    setPinnedCharts(prev => prev.filter(p => p.key !== key));
   }, []);
 
   // ── Saved subsets ──────────────────────────────────────────────────────────
@@ -277,8 +281,8 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
                 chartParams={cfgMap[id]?.params || []}
                 chartSql={cfgMap[id]?.sql || null}
                 onOpenRecords={openChartRecords}
-                isPinned={pinnedCharts.has(id)}
-                onTogglePin={() => togglePinChart(id)} />
+                isPinned={false}
+                onTogglePin={() => pinChart(id, cfgMap[id]?.title || id)} />
             </div>
           ))}
         </div>
@@ -331,19 +335,19 @@ function ReportStage({ pipeline, isLLM, pipelineStatus }) {
           <div className="flex flex-col overflow-hidden border-l border-gray-200"
             style={{ flex: 1, minWidth: 0 }}>
             {/* Pinned charts strip */}
-            {(cooccPinned || pinnedCharts.size > 0) && (
+            {(cooccPinned || pinnedCharts.length > 0) && (
               <div className="flex-shrink-0 border-b border-gray-200 overflow-y-auto" style={{ maxHeight: '40%' }}>
                 <div className="p-2 space-y-2 bg-gray-50">
                   {cooccPinned && (
                     <TermsCooccurrencePanel pipeline={pipeline} pipelineId={pipeline.id} isLLM={isLLM}
                       onOpenRecords={openChartRecords} isPinned={true} onTogglePin={() => setCooccPinned(false)} />
                   )}
-                  {[...pinnedCharts].map(id => (
-                    <ChartPanel key={id} chartId={id} pipelineId={pipeline.id}
-                      topN={TOP_N} title={cfgMap[id]?.title || id}
-                      subsetIdx={activeSubsetIdx} chartParams={cfgMap[id]?.params || []}
-                      chartSql={cfgMap[id]?.sql || null} onOpenRecords={openChartRecords}
-                      isPinned={true} onTogglePin={() => togglePinChart(id)} />
+                  {pinnedCharts.map(pin => (
+                    <ChartPanel key={pin.key} chartId={pin.chartId} pipelineId={pipeline.id}
+                      topN={TOP_N} title={`📌 ${pin.title}`}
+                      subsetIdx={pin.subsetIdx} chartParams={cfgMap[pin.chartId]?.params || []}
+                      chartSql={cfgMap[pin.chartId]?.sql || null} onOpenRecords={openChartRecords}
+                      isPinned={true} onTogglePin={() => unpinChart(pin.key)} />
                   ))}
                 </div>
               </div>

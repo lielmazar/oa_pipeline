@@ -64,7 +64,7 @@ function LoginOverlay({ visible, onLogin }) {
 
 // ── Nav ───────────────────────────────────────────────────────────────────────
 
-function NavBar({ me, view, runningCount, onShowHome, onShowJobs, onShowQA, onShowIRR, onShowOrthogonality, onShowExport, onLogout }) {
+function NavBar({ me, view, runningCount, onShowHome, onShowJobs, onShowQA, onShowIRR, onShowExport, onLogout }) {
   return (
     <nav className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-40 shadow-sm">
       <button onClick={onShowHome}
@@ -103,11 +103,6 @@ function NavBar({ me, view, runningCount, onShowHome, onShowJobs, onShowQA, onSh
           className={`text-sm transition px-3 py-1 rounded border flex items-center gap-1.5
             ${view === 'irr' ? 'text-blue-700 border-blue-300 bg-blue-50' : 'text-gray-500 hover:text-blue-700 border-gray-200 hover:border-blue-300'}`}>
           IRR
-        </button>
-        <button onClick={onShowOrthogonality}
-          className={`text-sm transition px-3 py-1 rounded border flex items-center gap-1.5
-            ${view === 'orthogonality' ? 'text-blue-700 border-blue-300 bg-blue-50' : 'text-gray-500 hover:text-blue-700 border-gray-200 hover:border-blue-300'}`}>
-          Orthogonality
         </button>
         <button onClick={onShowExport}
           className={`text-sm transition px-3 py-1 rounded border flex items-center gap-1.5
