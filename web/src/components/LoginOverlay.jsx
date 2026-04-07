@@ -11,7 +11,8 @@ export default function LoginOverlay({ visible, onLogin }) {
 
   const submit = async e => {
     e.preventDefault();
-    setLoading(true); setError('');
+    setLoading(true);
+    setError('');
     try {
       const res = await apiFetch('/api/auth/login', {
         method: 'POST',

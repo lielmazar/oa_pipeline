@@ -1266,6 +1266,11 @@ def load_state(state_file: Path) -> dict:
         "total_records_seen": 0, "total_records_inserted": 0,
         "started_at": None, "last_updated": None,
         "skip_stats": {}, "file_errors": 0, "record_errors": 0,
+        "files_processed": 0, "total_files": 0,
+        "total_data_mb": 0.0, "elapsed_sec": 0.0,
+        "files_per_min": 0.0, "records_per_sec": 0.0,
+        "mb_per_sec": 0.0, "eta_sec": None,
+        "summary": {},
     }
 
 
@@ -1288,6 +1293,63 @@ def save_state(state: dict, state_file: Path) -> None:
                     pass
                 with state_file.open("w", encoding="utf-8") as f:
                     json.dump(state, f, indent=2)
+
+
+def _elapsed_from_started_at(state: dict) -> float:
+    started_at = state.get("started_at")
+    if not started_at:
+        return 0.0
+    try:
+        started_dt = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        if started_dt.tzinfo is None:
+            started_dt = started_dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - started_dt).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _update_live_state_metrics(state: dict, display: "Display", total_files: int) -> None:
+    files_done = len(state.get("processed_files", [])) + len(state.get("failed_files", []))
+    elapsed = _elapsed_from_started_at(state)
+    if elapsed <= 0:
+        elapsed = max(0.0, display._elapsed())
+
+    files_per_sec = (files_done / elapsed) if elapsed > 0 else 0.0
+    files_per_min = files_per_sec * 60.0
+    records_seen = int(state.get("total_records_seen", 0) or 0)
+    records_inserted = int(state.get("total_records_inserted", 0) or 0)
+    records_per_sec = (records_seen / elapsed) if elapsed > 0 else 0.0
+    total_data_mb = float(display.total_data_mb)
+    mb_per_sec = (total_data_mb / elapsed) if elapsed > 0 else 0.0
+    remaining = max(0, total_files - files_done)
+    eta_sec = (remaining / files_per_sec) if files_per_sec > 0 and remaining > 0 else 0.0
+    skip_stats = dict(state.get("skip_stats") or {})
+    total_skipped = sum(skip_stats.values())
+
+    state["files_processed"] = files_done
+    state["total_files"] = int(total_files)
+    state["total_data_mb"] = total_data_mb
+    state["elapsed_sec"] = elapsed
+    state["files_per_min"] = files_per_min
+    state["records_per_sec"] = records_per_sec
+    state["mb_per_sec"] = mb_per_sec
+    state["eta_sec"] = eta_sec
+    state["summary"] = {
+        "files_done": files_done,
+        "total_files": int(total_files),
+        "records_seen": records_seen,
+        "records_matched": records_inserted,
+        "records_skipped": total_skipped,
+        "skip_stats": skip_stats,
+        "total_data_mb": total_data_mb,
+        "elapsed_sec": elapsed,
+        "files_per_min": files_per_min,
+        "records_per_sec": records_per_sec,
+        "mb_per_sec": mb_per_sec,
+        "eta_sec": eta_sec,
+        "file_errors": int(state.get("file_errors", 0) or 0),
+        "record_errors": int(state.get("record_errors", 0) or 0),
+    }
 
 
 # ============================================================================
@@ -1462,10 +1524,14 @@ def run_parallel(
     display.files_done      = already_done
     display.total_seen      = state["total_records_seen"]
     display.total_inserted  = state["total_records_inserted"]
+    display.total_data_mb   = float(state.get("total_data_mb", 0.0) or 0.0)
     if state.get("skip_stats"):
         display.skip_stats.update(state["skip_stats"])
     display.file_errors   += state.get("file_errors", 0)
     display.record_errors += state.get("record_errors", 0)
+    state["total_files"] = total_files
+    _update_live_state_metrics(state, display, total_files)
+    save_state(state, state_file)
 
     conn = sqlite3.connect(output_db)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -1545,6 +1611,7 @@ def run_parallel(
                         state["skip_stats"]    = dict(display.skip_stats)
                         state["file_errors"]   = display.file_errors
                         state["record_errors"] = display.record_errors
+                        _update_live_state_metrics(state, display, total_files)
                         save_state(state, state_file)
                         display.files_done = len(state["processed_files"]) + len(state["failed_files"])
                         continue
@@ -1568,6 +1635,7 @@ def run_parallel(
                     state["skip_stats"]    = dict(display.skip_stats)
                     state["file_errors"]   = display.file_errors
                     state["record_errors"] = display.record_errors
+                    _update_live_state_metrics(state, display, total_files)
                     save_state(state, state_file)
 
                     # Log per-file skip breakdown when the file has significant skips
@@ -1605,10 +1673,30 @@ def run_parallel(
         conn.close()
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)
+        _update_live_state_metrics(state, display, total_files)
         save_state(state, state_file)
 
     display.render(force=True)
     display.print_final_summary(state)
+    total_skipped = sum(display.skip_stats.values())
+    logger.info(
+        "FINAL SUMMARY — files=%s/%s, seen=%s, matched=%s, skipped=%s, data_mb=%.1f, elapsed=%s, file_errors=%s, record_errors=%s",
+        display.files_done,
+        total_files,
+        display.total_seen,
+        display.total_inserted,
+        total_skipped,
+        display.total_data_mb,
+        _fmt_dur(display._elapsed()),
+        display.file_errors,
+        display.record_errors,
+    )
+    if display.skip_stats:
+        top_skips = sorted(display.skip_stats.items(), key=lambda kv: kv[1], reverse=True)[:8]
+        logger.info(
+            "FINAL SKIPS — %s",
+            ", ".join(f"{_SKIP_LABELS.get(k, k)}={v}" for k, v in top_skips),
+        )
 
 
 # ============================================================================

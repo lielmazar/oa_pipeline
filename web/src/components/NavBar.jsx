@@ -1,4 +1,14 @@
-export default function NavBar({ me, view, filterRunning, onShowHome, onShowQA, onLogout }) {
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, '0')}s`;
+  return `${sec}s`;
+}
+
+export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, onLogout }) {
   const btn = (label, active, onClick) => (
     <button onClick={onClick}
       className={`text-sm px-3 py-1.5 rounded-lg transition ${
@@ -8,15 +18,22 @@ export default function NavBar({ me, view, filterRunning, onShowHome, onShowQA, 
     </button>
   );
 
+  const isRunning = !!filterRunMeta?.isRunning;
+  const percent = Math.min(100, Math.max(0, filterRunMeta?.percent || 0));
+  const etaText = filterRunMeta?.etaSec > 0 ? formatDuration(filterRunMeta.etaSec) : 'calculating…';
+  const mbpsText = Number.isFinite(filterRunMeta?.mbPerSec) && filterRunMeta.mbPerSec > 0
+    ? ` • ${filterRunMeta.mbPerSec.toFixed(2)} MB/s`
+    : '';
+
   return (
     <nav className="h-12 bg-blue-700 text-white flex items-center px-4 gap-2 sticky top-0 z-30 shadow">
       <span className="font-bold text-sm mr-3 tracking-tight">OA Pipeline</span>
       {btn('Pipelines', view === 'home' || view === 'pipeline', onShowHome)}
       {btn('QA / IRR',  view === 'qa', onShowQA)}
       <div className="ml-auto flex items-center gap-3">
-        {filterRunning && (
-          <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full animate-pulse">
-            filtering…
+        {isRunning && (
+          <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full animate-pulse whitespace-nowrap">
+            Filtering {percent}% • ETA {etaText}{mbpsText}
           </span>
         )}
         <span className="text-xs text-blue-200">{me?.username}</span>

@@ -32,6 +32,7 @@ from api.db.pipelines import (
     get_next_stage,
     get_pipeline,
     get_prev_stage,
+    get_active_run as db_get_active_run,
     go_back_pipeline_stage,
     list_all_pipelines,
     list_events,
@@ -245,6 +246,17 @@ def pipeline_status(pipeline_id: int, user: CurrentUser, db: Db):
     if not p:
         raise HTTPException(404, "not found")
     return build_stage_status(p)
+
+
+@router.get("/active-run")
+def active_run_status(user: CurrentUser, db: Db):
+    """Return system-wide active filter run state for global navbar indicators."""
+    active = db_get_active_run(db)
+    if not active:
+        return {"status": "idle", "run": None, "state": {}, "log_tail": [], "pipeline_id": None}
+    payload = poll_filter_run(db, active["pipeline_id"])
+    payload["pipeline_id"] = active["pipeline_id"]
+    return payload
 
 
 @router.get("/{pipeline_id}/file-count")

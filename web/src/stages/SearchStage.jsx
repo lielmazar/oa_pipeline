@@ -13,7 +13,17 @@ function ProgressBar({ percent }) {
   );
 }
 
-export default function SearchStage({ pipeline, onChange }) {
+function formatDuration(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, '0')}s`;
+  return `${sec}s`;
+}
+
+export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
   const [runState, setRunState] = useState(null);  // null = not loaded yet
   const [starting, setStarting] = useState(false);
   const [killing, setKilling]   = useState(false);
@@ -62,9 +72,44 @@ export default function SearchStage({ pipeline, onChange }) {
 
   const seen     = state.total_records_seen || 0;
   const inserted = state.total_records_inserted || 0;
-  const processed= state.files_processed || 0;
-  const total    = state.total_files || 0;
+  const processed = state.files_processed ?? ((state.processed_files?.length || 0) + (state.failed_files?.length || 0));
+  const total = state.total_files ?? (state.all_files?.length || 0);
   const percent  = total > 0 ? Math.round(processed / total * 100) : 0;
+  const totalDataMb = Number(state.total_data_mb || 0);
+  const totalSkipped = Object.values(state.skip_stats || {}).reduce((acc, val) => acc + Number(val || 0), 0);
+
+  const startedAt = state.started_at || run?.started_at || null;
+  const endedAt = run?.ended_at || null;
+  const startedMs = startedAt ? Date.parse(startedAt) : NaN;
+  const endedMs = endedAt ? Date.parse(endedAt) : NaN;
+  const elapsedSec = state.elapsed_sec > 0
+    ? Number(state.elapsed_sec)
+    : (Number.isFinite(startedMs)
+      ? ((Number.isFinite(endedMs) ? endedMs : Date.now()) - startedMs) / 1000
+      : 0);
+  const safeElapsedSec = elapsedSec > 0 ? elapsedSec : 0;
+  const filesPerMin = state.files_per_min > 0 ? Number(state.files_per_min) : (processed > 0 && safeElapsedSec > 0 ? (processed / safeElapsedSec) * 60 : 0);
+  const recordsPerSec = state.records_per_sec > 0 ? Number(state.records_per_sec) : (seen > 0 && safeElapsedSec > 0 ? seen / safeElapsedSec : 0);
+  const mbPerSec = state.mb_per_sec > 0 ? Number(state.mb_per_sec) : (totalDataMb > 0 && safeElapsedSec > 0 ? totalDataMb / safeElapsedSec : 0);
+  const remainingFiles = Math.max(0, total - processed);
+  const etaSec = state.eta_sec > 0
+    ? Number(state.eta_sec)
+    : (isRunning && filesPerMin > 0 && remainingFiles > 0 ? remainingFiles / (filesPerMin / 60) : 0);
+
+  useEffect(() => {
+    onRunMetaChange?.({
+      isRunning: !!isRunning,
+      status,
+      pipelineId: pipeline.id,
+      pipelineName: pipeline.name,
+      processed,
+      total,
+      percent,
+      etaSec,
+      mbPerSec,
+    });
+    return () => onRunMetaChange?.(null);
+  }, [onRunMetaChange, isRunning, status, pipeline.id, pipeline.name, processed, total, percent, etaSec, mbPerSec]);
 
   return (
     <div className="space-y-4">
@@ -140,7 +185,16 @@ export default function SearchStage({ pipeline, onChange }) {
             <div className="flex gap-4 text-xs text-gray-500">
               <span>Records scanned: {seen.toLocaleString()}</span>
               <span>Matched: {inserted.toLocaleString()}</span>
+              <span>Skipped: {totalSkipped.toLocaleString()}</span>
               {seen > 0 && <span>Match rate: {(inserted / seen * 100).toFixed(3)}%</span>}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+              <div className="bg-gray-50 rounded-lg p-2 text-gray-600">Elapsed: <span className="font-medium text-gray-900">{formatDuration(safeElapsedSec)}</span></div>
+              <div className="bg-gray-50 rounded-lg p-2 text-gray-600">ETA: <span className="font-medium text-gray-900">{etaSec > 0 ? formatDuration(etaSec) : 'calculating…'}</span></div>
+              <div className="bg-gray-50 rounded-lg p-2 text-gray-600">Throughput: <span className="font-medium text-gray-900">{mbPerSec.toFixed(2)} MB/s</span></div>
+              <div className="bg-gray-50 rounded-lg p-2 text-gray-600">Files/min: <span className="font-medium text-gray-900">{filesPerMin.toFixed(2)}</span></div>
+              <div className="bg-gray-50 rounded-lg p-2 text-gray-600">Records/s: <span className="font-medium text-gray-900">{recordsPerSec.toFixed(0)}</span></div>
+              <div className="bg-gray-50 rounded-lg p-2 text-gray-600">Data: <span className="font-medium text-gray-900">{totalDataMb.toFixed(0)} MB</span></div>
             </div>
           </div>
         )}
@@ -149,9 +203,17 @@ export default function SearchStage({ pipeline, onChange }) {
         {!isRunning && run && status === 'done' && inserted > 0 && (
           <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-3">
             <div className="text-sm font-medium text-green-800 mb-1">Filtering complete</div>
-            <div className="text-xs text-green-700">
+            <div className="text-xs text-green-700 mb-2">
               {inserted.toLocaleString()} records saved
               {seen > 0 && ` (${(inserted / seen * 100).toFixed(3)}% match rate from ${seen.toLocaleString()} scanned)`}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs text-green-800">
+              <div>Files: <span className="font-semibold">{processed.toLocaleString()} / {total.toLocaleString()}</span></div>
+              <div>Records seen: <span className="font-semibold">{seen.toLocaleString()}</span></div>
+              <div>Matched: <span className="font-semibold">{inserted.toLocaleString()}</span></div>
+              <div>Skipped: <span className="font-semibold">{totalSkipped.toLocaleString()}</span></div>
+              <div>Data: <span className="font-semibold">{totalDataMb.toFixed(0)} MB</span></div>
+              <div>Time: <span className="font-semibold">{formatDuration(safeElapsedSec)}</span></div>
             </div>
           </div>
         )}

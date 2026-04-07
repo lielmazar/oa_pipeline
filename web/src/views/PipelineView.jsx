@@ -24,10 +24,10 @@ const STAGE_LABELS = {
   summary:            'Summary',
 };
 
-function StageComponent({ stage, pipeline, onPipelineChange }) {
+function StageComponent({ stage, pipeline, onPipelineChange, onFilterRunChange }) {
   switch (stage) {
     case 'keyword_selection':  return <KeywordStage  pipeline={pipeline} onChange={onPipelineChange} />;
-    case 'openalex_search':    return <SearchStage   pipeline={pipeline} onChange={onPipelineChange} />;
+    case 'openalex_search':    return <SearchStage   pipeline={pipeline} onChange={onPipelineChange} onRunMetaChange={onFilterRunChange} />;
     case 'analysis':           return <AnalysisStage pipeline={pipeline} llmOnly={false} />;
     case 'llm_classification': return <LlmStage      pipeline={pipeline} onChange={onPipelineChange} />;
     case 'llm_analysis':       return <AnalysisStage pipeline={pipeline} llmOnly={true} />;
@@ -107,6 +107,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         stage={pipeline.current_stage}
         pipeline={pipeline}
         onPipelineChange={setPipeline}
+        onFilterRunChange={onFilterRunChange}
       />
 
       {/* Navigation buttons */}

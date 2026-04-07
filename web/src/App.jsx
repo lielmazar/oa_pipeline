@@ -11,18 +11,45 @@ export default function App() {
   const [view, setView]                     = useState('loading');
   const [me, setMe]                         = useState(null);
   const [activePipeline, setActivePipeline] = useState(null);
-  const [filterRunning, setFilterRunning]   = useState(false);
+  const [globalRunMeta, setGlobalRunMeta]   = useState(null);
+  const [stageRunMeta, setStageRunMeta]     = useState(null);
 
-  // Lightweight poll: check if any pipeline has an active filter run
-  const refreshRunStatus = useCallback(async () => {
+  const toRunMeta = useCallback((data) => {
+    const run = data?.run;
+    const state = data?.state || {};
+    const status = data?.status || 'idle';
+    const isRunning = !!run && !run?.ended_at && status === 'running';
+    if (!isRunning) return null;
+
+    const processed = state.files_processed ?? ((state.processed_files?.length || 0) + (state.failed_files?.length || 0));
+    const total = state.total_files ?? (state.all_files?.length || 0);
+    const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+    const etaSec = Number(state.eta_sec || 0);
+    const mbPerSec = Number(state.mb_per_sec || 0);
+
+    return {
+      isRunning,
+      status,
+      pipelineId: data?.pipeline_id ?? run?.pipeline_id,
+      processed,
+      total,
+      percent,
+      etaSec,
+      mbPerSec,
+    };
+  }, []);
+
+  const refreshGlobalRunMeta = useCallback(async () => {
     if (!me) return;
     try {
-      const res = await apiFetch('/api/pipeline');
-      if (!res.ok) return;
-      // We just track whether the global "running" badge shows
-      // Detailed run status is handled within PipelineView
-    } catch {}
-  }, [me]);
+      const res = await apiFetch('/api/pipeline/active-run');
+      if (!res.ok) { setGlobalRunMeta(null); return; }
+      const data = await res.json();
+      setGlobalRunMeta(toRunMeta(data));
+    } catch {
+      setGlobalRunMeta(null);
+    }
+  }, [me, toRunMeta]);
 
   useEffect(() => {
     setUnauthHandler(() => { setMe(null); setView('login'); });
@@ -35,6 +62,16 @@ export default function App() {
       .catch(() => setView('login'));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!me) {
+      setGlobalRunMeta(null);
+      return;
+    }
+    refreshGlobalRunMeta();
+  }, [me, refreshGlobalRunMeta]);
+
+  useInterval(refreshGlobalRunMeta, me ? 3000 : null);
+
   const handleLogin = d => {
     setMe({ username: d.username });
     setView('home');
@@ -44,8 +81,12 @@ export default function App() {
     await apiFetch('/api/auth/logout', { method: 'POST' });
     setMe(null);
     setActivePipeline(null);
+    setStageRunMeta(null);
+    setGlobalRunMeta(null);
     setView('login');
   };
+
+  const filterRunMeta = stageRunMeta?.isRunning ? stageRunMeta : globalRunMeta;
 
   if (view === 'loading') {
     return (
@@ -63,8 +104,8 @@ export default function App() {
           <NavBar
             me={me}
             view={view}
-            filterRunning={filterRunning}
-            onShowHome={() => { setActivePipeline(null); setView('home'); }}
+            filterRunMeta={filterRunMeta}
+            onShowHome={() => { setActivePipeline(null); setStageRunMeta(null); setView('home'); }}
             onShowQA={()   => setView('qa')}
             onLogout={handleLogout}
           />
@@ -79,8 +120,8 @@ export default function App() {
             <PipelineView
               key={activePipeline.id}
               initialPipeline={activePipeline}
-              onBack={() => { setView('home'); setActivePipeline(null); }}
-              onFilterRunChange={setFilterRunning}
+              onBack={() => { setView('home'); setActivePipeline(null); setStageRunMeta(null); }}
+              onFilterRunChange={setStageRunMeta}
             />
           )}
 
