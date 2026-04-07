@@ -42,7 +42,7 @@ export default function App() {
   const refreshGlobalRunMeta = useCallback(async () => {
     if (!me) return;
     try {
-      const res = await apiFetch('/api/pipeline/active-run');
+      const res = await apiFetch('/api/pipeline/run/active');
       if (!res.ok) { setGlobalRunMeta(null); return; }
       const data = await res.json();
       setGlobalRunMeta(toRunMeta(data));
@@ -88,6 +88,29 @@ export default function App() {
 
   const filterRunMeta = stageRunMeta?.isRunning ? stageRunMeta : globalRunMeta;
 
+  const openRunningPipeline = useCallback(async () => {
+    const pipelineId = filterRunMeta?.pipelineId;
+    if (!pipelineId) return;
+
+    try {
+      let pipeline = null;
+      const currentRes = await apiFetch(`/api/pipeline/${pipelineId}`);
+      if (!currentRes.ok) return;
+      pipeline = await currentRes.json();
+
+      if (pipeline.current_stage !== 'openalex_search') {
+        const setStageRes = await apiFetch(`/api/pipeline/${pipelineId}/set-stage`, {
+          method: 'POST',
+          body: JSON.stringify({ stage: 'openalex_search' }),
+        });
+        if (setStageRes.ok) pipeline = await setStageRes.json();
+      }
+
+      setActivePipeline(pipeline);
+      setView('pipeline');
+    } catch {}
+  }, [filterRunMeta]);
+
   if (view === 'loading') {
     return (
       <div className="flex items-center justify-center h-screen text-gray-400 text-sm">
@@ -107,6 +130,7 @@ export default function App() {
             filterRunMeta={filterRunMeta}
             onShowHome={() => { setActivePipeline(null); setStageRunMeta(null); setView('home'); }}
             onShowQA={()   => setView('qa')}
+            onRunPillClick={openRunningPipeline}
             onLogout={handleLogout}
           />
 

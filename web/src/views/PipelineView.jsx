@@ -77,6 +77,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
           ← Pipelines
         </button>
         <span className="text-gray-300">/</span>
+        <span className="text-xs text-gray-500 border border-gray-200 px-1.5 py-0.5 rounded">#{pipeline.id}</span>
         <h1 className="font-bold text-gray-900 text-lg truncate">{pipeline.name}</h1>
         {pipeline.forked_from_id && (
           <span className="text-xs text-gray-400 border border-gray-200 px-1.5 py-0.5 rounded">forked</span>

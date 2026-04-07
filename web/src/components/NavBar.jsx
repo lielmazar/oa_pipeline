@@ -8,7 +8,7 @@ function formatDuration(seconds) {
   return `${sec}s`;
 }
 
-export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, onLogout }) {
+export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, onRunPillClick, onLogout }) {
   const btn = (label, active, onClick) => (
     <button onClick={onClick}
       className={`text-sm px-3 py-1.5 rounded-lg transition ${
@@ -20,6 +20,7 @@ export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, 
 
   const isRunning = !!filterRunMeta?.isRunning;
   const percent = Math.min(100, Math.max(0, filterRunMeta?.percent || 0));
+  const pipelineId = filterRunMeta?.pipelineId;
   const etaText = filterRunMeta?.etaSec > 0 ? formatDuration(filterRunMeta.etaSec) : 'calculating…';
   const mbpsText = Number.isFinite(filterRunMeta?.mbPerSec) && filterRunMeta.mbPerSec > 0
     ? ` • ${filterRunMeta.mbPerSec.toFixed(2)} MB/s`
@@ -32,9 +33,14 @@ export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, 
       {btn('QA / IRR',  view === 'qa', onShowQA)}
       <div className="ml-auto flex items-center gap-3">
         {isRunning && (
-          <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full animate-pulse whitespace-nowrap">
-            Filtering {percent}% • ETA {etaText}{mbpsText}
-          </span>
+          <button
+            type="button"
+            onClick={onRunPillClick}
+            className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full animate-pulse whitespace-nowrap hover:bg-green-600 transition"
+            title="Open running pipeline search stage"
+          >
+            #{pipelineId ?? '?'} Filtering {percent}% • ETA {etaText}{mbpsText}
+          </button>
         )}
         <span className="text-xs text-blue-200">{me?.username}</span>
         <button onClick={onLogout}

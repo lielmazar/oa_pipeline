@@ -1501,10 +1501,12 @@ def run_parallel(
     total_files = len(all_files)
     already_done = len(processed_set)
     cpu_cores    = os.cpu_count() or "?"
+    pipeline_id_label = output_db.parent.name
+    pipeline_prefix = f"pipeline#{pipeline_id_label}" if pipeline_id_label else "pipeline#?"
 
     print(f" CPU cores: {cpu_cores}  ·  workers: {workers}  ·  mode: {mode}", flush=True)
     logger.info(
-        f"Pipeline start — {total_files:,} total, {already_done:,} done, "
+        f"{pipeline_prefix} start — {total_files:,} total, {already_done:,} done, "
         f"{len(pending):,} to process, {workers} worker(s), mode={mode}, cpu_cores={cpu_cores}."
     )
     if not pending:
@@ -1647,7 +1649,7 @@ def run_parallel(
                             f"{_SKIP_LABELS.get(r, r)}={c:,}" for r, c in top_skips
                         )
                     logger.info(
-                        f"[{display.files_done:,}/{total_files:,}] {key} — "
+                        f"{pipeline_prefix} [{display.files_done:,}/{total_files:,}] {key} — "
                         f"ins: {result['inserted']}  seen: {result['seen']:,}{skip_note}{err_note}"
                     )
 
@@ -1680,7 +1682,8 @@ def run_parallel(
     display.print_final_summary(state)
     total_skipped = sum(display.skip_stats.values())
     logger.info(
-        "FINAL SUMMARY — files=%s/%s, seen=%s, matched=%s, skipped=%s, data_mb=%.1f, elapsed=%s, file_errors=%s, record_errors=%s",
+        "%s FINAL SUMMARY — files=%s/%s, seen=%s, matched=%s, skipped=%s, data_mb=%.1f, elapsed=%s, file_errors=%s, record_errors=%s",
+        pipeline_prefix,
         display.files_done,
         total_files,
         display.total_seen,
@@ -1694,7 +1697,8 @@ def run_parallel(
     if display.skip_stats:
         top_skips = sorted(display.skip_stats.items(), key=lambda kv: kv[1], reverse=True)[:8]
         logger.info(
-            "FINAL SKIPS — %s",
+            "%s FINAL SKIPS — %s",
+            pipeline_prefix,
             ", ".join(f"{_SKIP_LABELS.get(k, k)}={v}" for k, v in top_skips),
         )
 

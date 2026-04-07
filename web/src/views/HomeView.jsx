@@ -104,6 +104,7 @@ export default function HomeView({ onOpenPipeline }) {
                 onClick={() => onOpenPipeline(p)}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-xs text-gray-500 border border-gray-200 px-1.5 rounded">#{p.id}</span>
                     <span className="font-medium text-gray-900 truncate">{p.name}</span>
                     {p.forked_from_id && (
                       <span className="text-xs text-gray-400 border border-gray-200 px-1.5 rounded">forked</span>

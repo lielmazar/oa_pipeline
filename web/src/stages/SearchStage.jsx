@@ -159,6 +159,7 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
         {/* Status badge */}
         {run && (
           <div className="flex items-center gap-2 mb-4">
+            <span className="text-xs text-gray-500 border border-gray-200 px-1.5 py-0.5 rounded">#{pipeline.id}</span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
               status === 'running' ? 'bg-blue-100 text-blue-700 animate-pulse' :
               status === 'done'    ? 'bg-green-100 text-green-700' :
@@ -221,7 +222,7 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
         {/* Log tail */}
         {logTail.length > 0 && (
           <div>
-            <p className="text-xs text-gray-500 mb-1 font-medium">Log tail</p>
+            <p className="text-xs text-gray-500 mb-1 font-medium">#{pipeline.id} Log tail</p>
             <div className="bg-gray-900 text-gray-100 rounded-lg p-3 text-xs font-mono overflow-auto max-h-64">
               {logTail.map((line, i) => (
                 <div key={i} className="leading-5 whitespace-pre-wrap break-all">{line}</div>

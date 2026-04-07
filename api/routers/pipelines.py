@@ -248,7 +248,7 @@ def pipeline_status(pipeline_id: int, user: CurrentUser, db: Db):
     return build_stage_status(p)
 
 
-@router.get("/active-run")
+@router.get("/run/active")
 def active_run_status(user: CurrentUser, db: Db):
     """Return system-wide active filter run state for global navbar indicators."""
     active = db_get_active_run(db)
