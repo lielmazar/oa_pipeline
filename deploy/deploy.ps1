@@ -3,31 +3,34 @@
     Deploy OA Pipeline to Ubuntu server from PowerShell.
 
 .DESCRIPTION
-    Syncs code and bootstraps the server (venv, systemd, nginx).
+    Builds the React frontend, syncs code, and bootstraps the server.
     Safe to run for both first-time setup and routine updates.
-    Requires SSH key auth -- see README for one-time setup.
+    Requires SSH key auth -- see README.
 
 .PARAMETER Target
     SSH target in user@host format, e.g. root@157.180.11.56
 
 .PARAMETER RestartOnly
-    Skip file sync; just restart the systemd service.
+    Skip file sync and build; just restart the systemd service.
+
+.PARAMETER SkipBuild
+    Skip the React npm build step.
 
 .EXAMPLE
     .\deploy\deploy.ps1 root@157.180.11.56
     .\deploy\deploy.ps1 root@157.180.11.56 -RestartOnly
+    .\deploy\deploy.ps1 root@157.180.11.56 -SkipBuild
 #>
 param(
     [Parameter(Mandatory=$true, Position=0)]
     [string]$Target,
-    [switch]$RestartOnly
+    [switch]$RestartOnly,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 $INSTALL_DIR = "/opt/oa-pipeline"
 $REPO_ROOT = Split-Path -Parent $PSScriptRoot
-
-# SSH/SCP options: timeout quickly on connect failures, keep connection alive during long transfers
 $SSH_OPTS = @("-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
 
 function Run-SSH {
@@ -35,60 +38,93 @@ function Run-SSH {
     ssh @SSH_OPTS $Target $Cmd
 }
 
-function Run-SCP {
+function Run-SCP-R {
     param([string]$Src, [string]$Dest)
     scp @SSH_OPTS -r $Src "${Target}:${Dest}"
 }
 
-Write-Host "=== Deploying to $Target ===" -ForegroundColor Cyan
-
-if (-not $RestartOnly) {
-    # Ensure the install dir and persistent data dirs exist before anything else
-    Write-Host "[1/5] Preparing remote directories..." -ForegroundColor Green
-    Run-SSH "mkdir -p ${INSTALL_DIR}/data/pipelines"
-
-    # scp nests src inside dest when dest already exists -- remove first to get a clean copy
-    Write-Host "[2/5] Syncing dashboard..." -ForegroundColor Green
-    Run-SSH "rm -rf ${INSTALL_DIR}/dashboard"
-    Run-SCP "$REPO_ROOT\dashboard" "${INSTALL_DIR}/"
-
-    Write-Host "[3/5] Syncing pipeline scripts..." -ForegroundColor Green
-    Run-SSH "rm -rf ${INSTALL_DIR}/pipeline"
-    Run-SCP "$REPO_ROOT\pipeline" "${INSTALL_DIR}/"
-
-    Write-Host "[4/5] Syncing deploy scripts..." -ForegroundColor Green
-    Run-SSH "rm -rf ${INSTALL_DIR}/deploy"
-    Run-SCP "$REPO_ROOT\deploy" "${INSTALL_DIR}/"
-
-    # Copy .env to persistent data dir (never wiped by future deploys)
-    $EnvFile = Join-Path $REPO_ROOT ".env"
-    if (Test-Path $EnvFile) {
-        Write-Host "[4b] Copying .env to server..." -ForegroundColor Green
-        Run-SCP $EnvFile "${INSTALL_DIR}/data/.env"
-        Run-SSH "chmod 600 ${INSTALL_DIR}/data/.env"
-    } else {
-        Write-Host "[4b] No .env file found - skipping." -ForegroundColor Yellow
-    }
-
-    Write-Host "[5/5] Bootstrapping server (packages, venv, systemd, nginx)..." -ForegroundColor Green
-    # Strip Windows line endings before running the bash script
-    Run-SSH "sed -i 's/\r//' ${INSTALL_DIR}/deploy/server_bootstrap.sh && bash ${INSTALL_DIR}/deploy/server_bootstrap.sh ${INSTALL_DIR}"
+function Run-SCP-F {
+    param([string]$Src, [string]$Dest)
+    scp @SSH_OPTS $Src "${Target}:${Dest}"
 }
 
+Write-Host "=== Deploying to $Target ===" -ForegroundColor Cyan
+
+if ($RestartOnly) {
+    Write-Host "Restarting service..." -ForegroundColor Green
+    Run-SSH "systemctl restart oa-pipeline && systemctl status oa-pipeline --no-pager -l"
+    Write-Host "=== Done ===" -ForegroundColor Cyan
+    exit 0
+}
+
+# Step 1: Build React frontend
+if (-not $SkipBuild) {
+    Write-Host "[1/5] Building React frontend..." -ForegroundColor Green
+    $WebDir = Join-Path $REPO_ROOT "web"
+    $NpmCmd = $null
+    $NpmCandidates = @(
+        "C:\Program Files\nodejs\npm.cmd",
+        "$env:APPDATA\npm\npm.cmd",
+        "$env:LOCALAPPDATA\Programs\nodejs\npm.cmd"
+    )
+    foreach ($p in $NpmCandidates) {
+        if (Test-Path $p) {
+            $NpmCmd = $p
+            break
+        }
+    }
+    if ($null -eq $NpmCmd) {
+        try {
+            $null = Get-Command "npm" -ErrorAction Stop
+            $NpmCmd = "npm"
+        } catch {}
+    }
+    if ($null -ne $NpmCmd) {
+        Push-Location $WebDir
+        & $NpmCmd ci --silent
+        & $NpmCmd run build
+        Pop-Location
+        Write-Host "    -> built to api/static/" -ForegroundColor DarkGray
+    } else {
+        Write-Host "    [warn] npm not found, skipping build. Run with -SkipBuild to suppress." -ForegroundColor Yellow
+    }
+}
+
+# Step 2: Prepare remote dirs
+Write-Host "[2/5] Preparing remote directories..." -ForegroundColor Green
+Run-SSH "mkdir -p ${INSTALL_DIR}/data/pipelines"
+
+# Step 3: Sync code
+Write-Host "[3/5] Syncing Python backend (api/ + pipeline/)..." -ForegroundColor Green
+Run-SSH "rm -rf ${INSTALL_DIR}/api"
+Run-SCP-R "$REPO_ROOT\api" "${INSTALL_DIR}/"
+Run-SSH "rm -rf ${INSTALL_DIR}/pipeline"
+Run-SCP-R "$REPO_ROOT\pipeline" "${INSTALL_DIR}/"
+
+# Step 4: Sync config + deploy scripts
+Write-Host "[4/5] Syncing config + deploy scripts..." -ForegroundColor Green
+Run-SCP-F "$REPO_ROOT\pyproject.toml" "${INSTALL_DIR}/pyproject.toml"
+Run-SSH "rm -rf ${INSTALL_DIR}/deploy"
+Run-SCP-R "$REPO_ROOT\deploy" "${INSTALL_DIR}/"
+
+$EnvFile = Join-Path $REPO_ROOT ".env"
+if (Test-Path $EnvFile) {
+    Write-Host "    Copying .env to server..." -ForegroundColor DarkGray
+    Run-SCP-F $EnvFile "${INSTALL_DIR}/data/.env"
+    Run-SSH "chmod 600 ${INSTALL_DIR}/data/.env"
+}
+
+# Step 5: Bootstrap server
+Write-Host "[5/5] Bootstrapping server (packages, venv, systemd, nginx)..." -ForegroundColor Green
+Run-SSH "sed -i 's/\r//' ${INSTALL_DIR}/deploy/server_bootstrap.sh && bash ${INSTALL_DIR}/deploy/server_bootstrap.sh ${INSTALL_DIR}"
+
+# Restart + status
 Write-Host "Restarting service..." -ForegroundColor Green
 Run-SSH "systemctl restart oa-pipeline"
-
-# Give gunicorn a moment to bind, then check status
 Start-Sleep -Seconds 2
 Run-SSH "systemctl status oa-pipeline --no-pager -l"
 
 $ip = (Run-SSH "hostname -I").Trim().Split(' ')[0]
 Write-Host ""
 Write-Host "=== Deploy complete! ===" -ForegroundColor Cyan
-Write-Host "Dashboard: http://${ip}/" -ForegroundColor Cyan
-
-if (-not $RestartOnly) {
-    Write-Host ""
-    Write-Host "First deploy? Create an admin user:" -ForegroundColor Yellow
-    Write-Host "  ssh $Target '/opt/oa-pipeline/venv/bin/python3 /opt/oa-pipeline/dashboard/manage.py create-user admin'"
-}
+Write-Host "App: http://${ip}/" -ForegroundColor Cyan

@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - pipeline_data:/data
+    env_file: .env
+    restart: unless-stopped
+
+volumes:
+  pipeline_data:
