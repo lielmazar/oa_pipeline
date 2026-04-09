@@ -69,7 +69,8 @@ function OrthogonalityPresetOverview({ pipelineId, subsetId }) {
     <div className="space-y-3 text-xs">
       <p className="text-gray-600">
         Precomputed χ² / Cramér&apos;s V for curated dimension pairs (same cell counts as the co-occurrence heatmaps
-        below). Use <em>View chart</em> to jump to the matching chart.
+        below). <span className="text-gray-500">95% CI for V</span> uses multinomial bootstrap on the table.
+        Use <em>View chart</em> to jump to the matching chart.
       </p>
       <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
         <table className="w-full text-[11px]">
@@ -78,7 +79,7 @@ function OrthogonalityPresetOverview({ pipelineId, subsetId }) {
               <th className="px-2 py-1 text-left">Pair</th>
               <th className="px-2 py-1 text-left">χ²</th>
               <th className="px-2 py-1 text-left">p</th>
-              <th className="px-2 py-1 text-left">V</th>
+              <th className="px-2 py-1 text-left">V (95% CI)</th>
               <th className="px-2 py-1 text-left">n</th>
               <th className="px-2 py-1 text-left">Heatmap</th>
             </tr>
@@ -89,7 +90,20 @@ function OrthogonalityPresetOverview({ pipelineId, subsetId }) {
                 <td className="px-2 py-1 align-top">{row.label}</td>
                 <td className="px-2 py-1 font-mono">{row.error ? '—' : formatStat(row.stats?.chi2)}</td>
                 <td className="px-2 py-1 font-mono">{row.error ? '—' : formatStat(row.stats?.p_value)}</td>
-                <td className="px-2 py-1 font-mono">{row.error ? '—' : formatStat(row.stats?.cramers_v)}</td>
+                <td className="px-2 py-1 font-mono align-top">
+                  {row.error
+                    ? '—'
+                    : (
+                      <>
+                        {formatStat(row.stats?.cramers_v)}
+                        {row.stats?.cramers_v_ci_low != null && row.stats?.cramers_v_ci_high != null && (
+                          <span className="block text-[10px] text-gray-500 font-normal mt-0.5">
+                            [{formatStat(row.stats.cramers_v_ci_low)}, {formatStat(row.stats.cramers_v_ci_high)}]
+                          </span>
+                        )}
+                      </>
+                    )}
+                </td>
                 <td className="px-2 py-1">{row.error ? '—' : row.stats?.n ?? '—'}</td>
                 <td className="px-2 py-1">
                   {row.chart_id ? (

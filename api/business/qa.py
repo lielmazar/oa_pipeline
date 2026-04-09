@@ -9,6 +9,7 @@ from pathlib import Path
 from api.business.qa_stats import (
     binary_confusion_matrix,
     krippendorff_alpha,
+    krippendorff_alpha_bootstrap_ci,
     interpret_alpha,
     multilabel_code_metrics,
 )
@@ -351,6 +352,11 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
             quality = "no overlapping ratings"
         else:
             quality = interpret_alpha(alpha)
+
+        ci_lo = ci_hi = None
+        if overlap_units >= 2 and alpha is not None:
+            ci_lo, ci_hi = krippendorff_alpha_bootstrap_ci(units, value_type=vtype)
+
         results.append({
             "field":          fid,
             "label":          fmeta.get("label", fid),
@@ -358,6 +364,9 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
             "units":          len({u["unit"] for u in units}),
             "overlap_units":  overlap_units,
             "alpha":          round(alpha, 4) if alpha is not None else None,
+            "alpha_ci_low":   ci_lo,
+            "alpha_ci_high":  ci_hi,
+            "alpha_ci_level": 0.95 if ci_lo is not None else None,
             "quality":        quality,
         })
     return {"fields": results}

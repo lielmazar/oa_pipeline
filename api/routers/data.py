@@ -20,7 +20,7 @@ from api.business.subset_sql import apply_subset_to_chart_sql, compose_subset_qu
 from api.config import settings
 from api.db.pipelines import get_pipeline, get_subset
 from api.business.orthogonality import (
-    chi_square_cramers_residuals,
+    chi_square_cramers_residuals_with_ci,
     contingency_from_labeled_counts,
     interpret_association,
 )
@@ -367,7 +367,7 @@ def orthogonality_pair(
         raise HTTPException(400, raw["error"])
     rows = raw.get("rows") or []
     row_labels, col_labels, matrix = contingency_from_labeled_counts(rows)
-    stats = chi_square_cramers_residuals(matrix)
+    stats = chi_square_cramers_residuals_with_ci(matrix)
     err_msg = stats.get("error")
     interp = err_msg or interpret_association(stats.get("cramers_v"), stats.get("p_value"))
     return {

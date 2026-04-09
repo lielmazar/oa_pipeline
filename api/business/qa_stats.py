@@ -8,7 +8,10 @@ Provides:
 from __future__ import annotations
 
 import json
+import random
 from collections import defaultdict
+
+import numpy as np
 
 
 # ── Distance functions ────────────────────────────────────────────────────────
@@ -102,13 +105,65 @@ def krippendorff_alpha(
 
 
 def interpret_alpha(alpha: float | None) -> str:
+    """Map α to a short quality label.
+
+    Thresholds follow common practice (e.g. Marzi et al. 2024; Krippendorff 2019) as summarized at
+    https://www.k-alpha.org/methodological-notes — satisfactory ≥0.80, tentative 0.67–0.79, poor <0.67,
+    negative values indicate systematic disagreement.
+    """
     if alpha is None:
         return "insufficient data"
+    if alpha < 0:
+        return "systematic disagreement"
     if alpha >= 0.80:
-        return "good agreement"
+        return "satisfactory agreement"
     if alpha >= 0.67:
         return "tentative agreement"
-    return "needs improvement"
+    return "poor agreement"
+
+
+def krippendorff_alpha_bootstrap_ci(
+    units: list[dict],
+    *,
+    value_type: str = "nominal",
+    n_boot: int = 400,
+    confidence: float = 0.95,
+    seed: int | None = 42,
+    min_units: int = 8,
+) -> tuple[float | None, float | None]:
+    """Percentile bootstrap CI for Krippendorff's α (units resampled with replacement).
+
+    Each *unit* (e.g. one paper) is a cluster: all raters for that unit are kept together.
+    """
+    if not units:
+        return None, None
+    by_unit: dict[str, list[dict]] = defaultdict(list)
+    for u in units:
+        by_unit[str(u["unit"])].append(u)
+    unit_ids = list(by_unit.keys())
+    if len(unit_ids) < min_units:
+        return None, None
+
+    rng = random.Random(seed)
+    alphas: list[float] = []
+    n_u = len(unit_ids)
+    for _ in range(n_boot):
+        boot: list[dict] = []
+        for _ in range(n_u):
+            uid = rng.choice(unit_ids)
+            boot.extend(by_unit[uid])
+        a = krippendorff_alpha(boot, value_type=value_type)
+        if a is not None:
+            alphas.append(float(a))
+
+    if len(alphas) < max(30, n_boot // 5):
+        return None, None
+
+    q_lo = (1.0 - confidence) / 2.0 * 100.0
+    q_hi = (1.0 + confidence) / 2.0 * 100.0
+    lo = float(np.percentile(alphas, q_lo))
+    hi = float(np.percentile(alphas, q_hi))
+    return (round(lo, 4), round(hi, 4))
 
 
 # ── Confusion Matrix (binary) ────────────────────────────────────────────────

@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
+
 
 def contingency_from_labeled_counts(
     rows: list[tuple[Any, Any, int]],
@@ -110,6 +112,105 @@ def chi2_survival(x: float, k: int) -> float:
 def _phi(z: float) -> float:
     """Standard normal CDF."""
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2)))
+
+
+def _prune_zero_margin_matrix(matrix: list[list[float]]) -> list[list[float]]:
+    """Drop rows and columns whose marginal sums are zero."""
+    r = len(matrix)
+    c = len(matrix[0]) if r else 0
+    if r == 0 or c == 0:
+        return matrix
+    row_sums = [sum(matrix[i][j] for j in range(c)) for i in range(r)]
+    col_sums = [sum(matrix[i][j] for i in range(r)) for j in range(c)]
+    ri = [i for i in range(r) if row_sums[i] > 0]
+    cj = [j for j in range(c) if col_sums[j] > 0]
+    return [[matrix[i][j] for j in cj] for i in ri]
+
+
+def cramers_v_multinomial_bootstrap_ci(
+    matrix: list[list[float]],
+    *,
+    n_boot: int = 400,
+    confidence: float = 0.95,
+    random_state: int = 42,
+    min_n: int = 10,
+) -> tuple[float | None, float | None]:
+    """Bootstrap percentile CI for Cramér's V by multinomial resampling of *n* individuals.
+
+    Treats the contingency table as multinomial(n; p_ij) over non-empty cells; each bootstrap
+    redraws the full table and recomputes V (after pruning empty margins).
+    """
+    base = chi_square_cramers_residuals(matrix)
+    if base.get("error") or base.get("cramers_v") is None:
+        return None, None
+    n = int(base["n"])
+    if n < min_n:
+        return None, None
+
+    r = len(matrix)
+    c = len(matrix[0]) if r else 0
+    flat_p: list[float] = []
+    idx_map: list[tuple[int, int]] = []
+    for i in range(r):
+        for j in range(c):
+            v = float(matrix[i][j])
+            if v > 0.0:
+                flat_p.append(v / n)
+                idx_map.append((i, j))
+    if len(flat_p) < 2:
+        return None, None
+
+    p = np.asarray(flat_p, dtype=float)
+    p = p / p.sum()
+    rng = np.random.default_rng(random_state)
+    vals: list[float] = []
+    for _ in range(n_boot):
+        counts = rng.multinomial(n, p)
+        mat = [[0.0] * c for _ in range(r)]
+        for k, cnt in enumerate(counts):
+            i, j = idx_map[k]
+            mat[i][j] = float(cnt)
+        mat_p = _prune_zero_margin_matrix(mat)
+        if len(mat_p) < 2 or len(mat_p[0]) < 2:
+            continue
+        st = chi_square_cramers_residuals(mat_p)
+        cv = st.get("cramers_v")
+        if cv is not None:
+            vals.append(float(cv))
+
+    if len(vals) < max(40, n_boot // 5):
+        return None, None
+
+    q_lo = (1.0 - confidence) / 2.0 * 100.0
+    q_hi = (1.0 + confidence) / 2.0 * 100.0
+    lo = float(np.percentile(vals, q_lo))
+    hi = float(np.percentile(vals, q_hi))
+    return (round(lo, 4), round(hi, 4))
+
+
+def chi_square_cramers_residuals_with_ci(
+    matrix: list[list[float]],
+    *,
+    cramers_ci: bool = True,
+    n_boot: int = 400,
+    confidence: float = 0.95,
+    random_state: int = 42,
+) -> dict[str, Any]:
+    """Like :func:`chi_square_cramers_residuals` plus optional bootstrap CI for Cramér's V."""
+    stats = chi_square_cramers_residuals(matrix)
+    if not cramers_ci or stats.get("error"):
+        return stats
+    lo, hi = cramers_v_multinomial_bootstrap_ci(
+        matrix,
+        n_boot=n_boot,
+        confidence=confidence,
+        random_state=random_state,
+    )
+    out = dict(stats)
+    out["cramers_v_ci_low"] = lo
+    out["cramers_v_ci_high"] = hi
+    out["cramers_v_ci_level"] = confidence
+    return out
 
 
 def interpret_association(cramers_v: float | None, p_value: float | None) -> str:

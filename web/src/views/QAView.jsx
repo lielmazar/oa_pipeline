@@ -5,9 +5,12 @@ import { loadQaIrrSubsetId, saveQaIrrSubsetId } from '../stages/analysis/analysi
 
 function QualityBadge({ quality }) {
   const colors = {
-    'good agreement':            'bg-green-100 text-green-700',
+    'satisfactory agreement':    'bg-green-100 text-green-700',
+    'good agreement':            'bg-green-100 text-green-700', // legacy label
     'tentative agreement':       'bg-yellow-100 text-yellow-700',
-    'needs improvement':         'bg-red-100 text-red-700',
+    'poor agreement':            'bg-red-100 text-red-700',
+    'needs improvement':         'bg-red-100 text-red-700', // legacy label
+    'systematic disagreement':   'bg-orange-100 text-orange-900',
     'insufficient data':         'bg-gray-100 text-gray-500',
     'no overlapping ratings':    'bg-slate-100 text-slate-700',
   };
@@ -332,6 +335,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
                 <p className="font-medium text-gray-800">Reliability (Krippendorff&apos;s α)</p>
                 <p>
                   α measures agreement on the same papers (same field). Overlap includes human vs. stored model labels or multiple human raters.
+                  When shown, <span className="text-gray-600">95% CI</span> is a cluster bootstrap (papers resampled with replacement).
                 </p>
               </div>
               <button type="button" onClick={loadIrr}
@@ -351,7 +355,12 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
                   <QualityBadge quality={f.quality} />
                 </div>
                 <div className="flex flex-wrap gap-4 text-xs text-gray-600">
-                  <span>α = <strong className="text-gray-900">{f.alpha ?? '—'}</strong></span>
+                  <span>
+                    α = <strong className="text-gray-900">{f.alpha ?? '—'}</strong>
+                    {f.alpha_ci_low != null && f.alpha_ci_high != null && (
+                      <span className="text-gray-500 font-normal"> (95% CI {f.alpha_ci_low}–{f.alpha_ci_high})</span>
+                    )}
+                  </span>
                   <span>{f.raters} rater{f.raters !== 1 ? 's' : ''}</span>
                   <span>{f.units} rated papers</span>
                   <span title="Papers with ≥2 ratings for this field">{f.overlap_units ?? '—'} overlap papers</span>
@@ -364,8 +373,18 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
               </div>
             ))}
             {(irr?.fields?.length ?? 0) > 0 && (
-              <div className="text-xs text-gray-400 bg-gray-50 rounded-lg p-3">
-                <strong>Interpretation:</strong> α ≥ 0.80 = good · α ≥ 0.67 = tentative · α &lt; 0.67 = needs improvement
+              <div className="text-xs text-gray-600 bg-gray-50 rounded-lg p-3 leading-relaxed">
+                <strong className="text-gray-700">Interpretation</strong> (aligned with{' '}
+                <a
+                  href="https://www.k-alpha.org/methodological-notes"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  K-Alpha methodological notes
+                </a>
+                , Marzi et al. 2024; Krippendorff 2019): α = 1 perfect agreement; α ≥ 0.80 satisfactory;
+                0.67–0.79 tentative (moderate); α &lt; 0.67 poor; α = 0 chance-like; α &lt; 0 systematic disagreement.
               </div>
             )}
           </section>

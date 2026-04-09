@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from api.business.orthogonality import (
-    chi_square_cramers_residuals,
+    chi_square_cramers_residuals_with_ci,
     contingency_from_labeled_counts,
     interpret_association,
 )
@@ -91,7 +91,7 @@ def compute_ortho_preset_overview(db_path: Path, subset_inner_sql: str | None) -
             continue
         rows = raw.get("rows") or []
         row_labels, col_labels, matrix = contingency_from_labeled_counts(rows)
-        stats = chi_square_cramers_residuals(matrix)
+        stats = chi_square_cramers_residuals_with_ci(matrix)
         err_msg = stats.get("error")
         interp = err_msg or interpret_association(stats.get("cramers_v"), stats.get("p_value"))
         out.append(
