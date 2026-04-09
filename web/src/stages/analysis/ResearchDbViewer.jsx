@@ -299,23 +299,15 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     const willOpen = !expanded[i];
     setExpanded(e => ({ ...e, [i]: willOpen }));
     if (willOpen && oid && !expandedDetails[oid]) {
-      // #region agent log
-      fetch('http://127.0.0.1:7246/ingest/e2559b85-5ced-45e2-bbce-75859894f7eb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b7b538'},body:JSON.stringify({sessionId:'b7b538',location:'ResearchDbViewer.jsx:toggleExpand',message:'expand row attempt',data:{i,oid,subsetId:subset?.id,url:`/api/pipeline/${pipelineId}/records/${encodeURIComponent(oid)}?subset_id=${subset.id}`},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       try {
-        const q = new URLSearchParams({ subset_id: String(subset.id) });
-        const res = await apiFetch(`/api/pipeline/${pipelineId}/records/${encodeURIComponent(oid)}?${q}`);
-        // #region agent log
-        fetch('http://127.0.0.1:7246/ingest/e2559b85-5ced-45e2-bbce-75859894f7eb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b7b538'},body:JSON.stringify({sessionId:'b7b538',location:'ResearchDbViewer.jsx:toggleExpand:response',message:'expand API response',data:{status:res.status,ok:res.ok,oid},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
+        const q = new URLSearchParams({ record_id: oid, subset_id: String(subset.id) });
+        const res = await apiFetch(`/api/pipeline/${pipelineId}/record-detail?${q}`);
         if (res.ok) {
           const data = await res.json();
           setExpandedDetails(prev => ({ ...prev, [oid]: data }));
         }
       } catch (err) {
-        // #region agent log
-        fetch('http://127.0.0.1:7246/ingest/e2559b85-5ced-45e2-bbce-75859894f7eb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b7b538'},body:JSON.stringify({sessionId:'b7b538',location:'ResearchDbViewer.jsx:toggleExpand:error',message:'expand fetch error',data:{error:String(err),oid},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
+        /* silently ignore */
       }
     }
   };
@@ -398,8 +390,8 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   };
 
   const openDetail = async openalexId => {
-    const q = new URLSearchParams({ subset_id: String(subset.id) });
-    const res = await apiFetch(`/api/pipeline/${pipelineId}/records/${encodeURIComponent(openalexId)}?${q}`);
+    const q = new URLSearchParams({ record_id: openalexId, subset_id: String(subset.id) });
+    const res = await apiFetch(`/api/pipeline/${pipelineId}/record-detail?${q}`);
     if (res.ok) setDetail(await res.json());
   };
 

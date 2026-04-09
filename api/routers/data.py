@@ -101,6 +101,29 @@ def _dl2(msg, **kw):
     except: pass
 # #endregion
 
+@router.get("/{pipeline_id}/record-detail")
+def db_record_detail_safe(
+    pipeline_id: int,
+    record_id: str,
+    user: CurrentUser,
+    db: Db,
+    subset_id: int | None = None,
+):
+    # #region agent log
+    _dl2("record_detail_safe_reached", record_id=record_id, pipeline_id=pipeline_id, subset_id=subset_id)
+    # #endregion
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    if subset_id is not None:
+        sub = get_subset(db, pipeline_id, subset_id)
+        if not sub:
+            raise HTTPException(404, "subset not found")
+        record = get_record_detail_in_subset(db_path, sub["sql_query"], record_id)
+    else:
+        record = get_record_detail(db_path, record_id)
+    if record is None:
+        raise HTTPException(404, "record not found")
+    return record
+
 @router.get("/{pipeline_id}/records/{record_id}")
 def db_record_detail(
     pipeline_id: int,
@@ -109,9 +132,6 @@ def db_record_detail(
     db: Db,
     subset_id: int | None = None,
 ):
-    # #region agent log
-    _dl2("record_detail_reached", record_id=record_id, pipeline_id=pipeline_id, subset_id=subset_id)
-    # #endregion
     db_path = _resolve_db(db, pipeline_id, user["id"])
     if subset_id is not None:
         sub = get_subset(db, pipeline_id, subset_id)

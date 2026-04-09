@@ -478,7 +478,8 @@ def run_query(
             return {"error": err}
         full_sql = compose_subset_query(subset_inner_sql, sql)
     else:
-        if not sql.upper().startswith("SELECT"):
+        # Allow WITH ... SELECT (subset-scoped default charts use compose_subset_query).
+        if not re.match(r"^\s*(SELECT|WITH)\b", sql, re.IGNORECASE | re.DOTALL):
             return {"error": "Only SELECT queries are allowed"}
         full_sql = sql
 
