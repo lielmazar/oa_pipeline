@@ -782,16 +782,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="Directory for batch run files (default: batch_runs/)",
     )
-    p.add_argument(
-        "--subset-sql",
+    sub = p.add_subparsers(dest="phase", required=True)
+
+    _SUBSET_SQL_KW = dict(
         default=None,
         metavar="SQL",
-        help="SQL query selecting the subset of filtered_records to process (default: all records)",
+        help="SQL selecting rows from filtered_records (inner query; default: all records)",
     )
-    sub = p.add_subparsers(dest="phase", required=True)
 
     # estimate
     p_est = sub.add_parser("estimate", help="Print cost estimate (no API calls)")
+    p_est.add_argument("--subset-sql", **_SUBSET_SQL_KW)
     p_est.add_argument(
         "--model", default="gpt-5.4-nano", choices=list(MODEL_PRICING),
         help="Model to use for pricing table (default: gpt-5.4-nano)",
@@ -807,6 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # prepare
     p_prep = sub.add_parser("prepare", help="Write JSONL from DB rows")
+    p_prep.add_argument("--subset-sql", **_SUBSET_SQL_KW)
     p_prep.add_argument(
         "--model", default=None, choices=list(MODEL_PRICING),
         help=f"Model to use (default: {MODEL})",
@@ -842,6 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         help="Full pipeline: prepare -> submit -> poll -> save",
     )
+    p_run.add_argument("--subset-sql", **_SUBSET_SQL_KW)
     p_run.add_argument(
         "--model", default=None, choices=list(MODEL_PRICING),
         help=f"Model to use (default: {MODEL})",
