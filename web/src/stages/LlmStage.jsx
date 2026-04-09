@@ -39,6 +39,8 @@ export default function LlmStage({ pipeline }) {
   const [error, setError]         = useState('');
   const [catalog, setCatalog]     = useState(null);
   const [model, setModel]         = useState(null);
+  const [subsetSummary, setSubsetSummary] = useState(null);
+  const [subsetId, setSubsetId]   = useState(null);
   const [output, setOutput]       = useState('');
 
   useEffect(() => {
@@ -52,6 +54,15 @@ export default function LlmStage({ pipeline }) {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    apiFetch(`/api/pipeline/${pipeline.id}/subsets/summary`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(setSubsetSummary)
+      .catch(() => setSubsetSummary(null));
+  }, [pipeline.id]);
+
+  const subsets = subsetSummary?.subsets ?? [];
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -73,7 +84,7 @@ export default function LlmStage({ pipeline }) {
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/estimate`, {
         method: 'POST',
-        body: JSON.stringify({ model }),
+        body: JSON.stringify({ model, subset_id: subsetId }),
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Estimate failed'); return; }
@@ -88,7 +99,7 @@ export default function LlmStage({ pipeline }) {
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/submit`, {
         method: 'POST',
-        body: JSON.stringify({ model }),
+        body: JSON.stringify({ model, subset_id: subsetId }),
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Submit failed'); return; }
@@ -130,7 +141,8 @@ export default function LlmStage({ pipeline }) {
         <p className="text-xs text-gray-500 mb-4">
           Classify records via OpenAI Batch API. Requires{' '}
           <code className="bg-gray-100 px-1 rounded">OPENAI_API_KEY</code> on the server.
-          Results are written back to the research database.           Model list and rates come from{' '}
+          Results are written back to the research database. Choose which subset to estimate and batch (same subsets as Dataset access).
+          Model list and rates come from{' '}
           <code className="bg-gray-100 px-1 rounded">pipeline/llm_pricing.py</code> (Batch API; same source as{' '}
           <code className="bg-gray-100 px-1 rounded">llm_classify.py</code>).
         </p>
@@ -160,6 +172,36 @@ export default function LlmStage({ pipeline }) {
         )}
 
         {error && <p className="text-xs text-red-600 bg-red-50 rounded px-3 py-2 mb-3">{error}</p>}
+
+        {/* Subset scope — passed to llm_classify as --subset-sql */}
+        <div className="mb-4">
+          <label className="block text-xs text-gray-600 font-medium mb-1.5">Subset scope</label>
+          {subsets.length === 0 ? (
+            <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+              No saved subsets yet. Estimates and batches use all unprocessed rows in{' '}
+              <code className="bg-gray-100 px-1 rounded">filtered_records</code>. Create subsets from the Analysis stage (Research DB Viewer).
+            </p>
+          ) : (
+            <select
+              value={subsetId == null ? '' : String(subsetId)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSubsetId(v === '' ? null : Number(v));
+              }}
+              className="w-full max-w-xl border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+            >
+              <option value="">
+                Entire dataset — all unprocessed records in filtered_records
+              </option>
+              {subsets.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                  {s.row_count != null ? ` · ${s.row_count.toLocaleString()} rows` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
 
         {/* Model selector — options from API (MODEL_PRICING in llm_classify.py) */}
         <div className="flex flex-col gap-2 mb-4">

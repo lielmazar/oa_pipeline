@@ -695,9 +695,23 @@ def _save_batch_state(pipeline_id: int, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2))
 
 
+def _resolve_llm_subset_inner_sql(db, pipeline_id: int, subset_id: int | None) -> str | None:
+    """Return normalized inner SQL for llm_classify --subset-sql, or None for the full filtered_records table."""
+    if subset_id is None:
+        return None
+    sub = get_subset(db, pipeline_id, subset_id)
+    if not sub:
+        raise HTTPException(404, "subset not found")
+    inner = normalize_subset_inner(sub["sql_query"])
+    err = validate_subset_inner(inner)
+    if err:
+        raise HTTPException(400, f"Subset cannot be used for LLM batch: {err}")
+    return inner
+
+
 class LlmEstimateBody(BaseModel):
     model: str = "gpt-5.4-nano"
-    subset_sql: str | None = None
+    subset_id: int | None = None
 
 
 @router.post("/{pipeline_id}/llm/estimate")
@@ -706,7 +720,10 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
     if not p:
         raise HTTPException(404, "not found")
     _require_known_llm_model(body.model)
+    inner = _resolve_llm_subset_inner_sql(db, pipeline_id, body.subset_id)
     cmd = _llm_classify_cmd(pipeline_id) + ["estimate", "--model", body.model]
+    if inner:
+        cmd += ["--subset-sql", inner]
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
         raise HTTPException(500, out[:2000])
@@ -716,6 +733,7 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
 class LlmSubmitBody(BaseModel):
     model: str = "gpt-5.4-nano"
     limit: int | None = None
+    subset_id: int | None = None
 
 
 @router.post("/{pipeline_id}/llm/submit")
@@ -728,8 +746,11 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
     _require_known_llm_model(body.model)
+    inner = _resolve_llm_subset_inner_sql(db, pipeline_id, body.subset_id)
     # Prepare JSONL with the same model the user selected (batch body embeds model id).
     cmd = _llm_classify_cmd(pipeline_id) + ["prepare", "--model", body.model]
+    if inner:
+        cmd += ["--subset-sql", inner]
     if body.limit:
         cmd += ["--limit", str(body.limit)]
     # Only prepare + submit, don't poll (that's the frontend's job via /llm/status)
