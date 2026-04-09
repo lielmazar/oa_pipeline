@@ -120,6 +120,8 @@ def interpret_association(cramers_v: float | None, p_value: float | None) -> str
     if cramers_v < 0.1:
         return "Significant but weak association (small effect size)."
     if cramers_v < 0.3:
-        return "Moderate association between dimensions."
-    return "Strong association; dimensions are not orthogonal in this sample."
+        return "Significant association with moderate effect size."
+    if cramers_v < 0.5:
+        return "Strong association; dimensions are not orthogonal in this sample."
+    return "Very strong association; dimensions are clearly not orthogonal in this sample."
 
