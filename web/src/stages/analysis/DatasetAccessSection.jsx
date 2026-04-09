@@ -8,6 +8,7 @@ export default function DatasetAccessSection({
   onOpenViewer,
 }) {
   const [summary, setSummary] = useState(null);
+  const [open, setOpen] = useState(true);
 
   const load = useCallback(() => {
     apiFetch(`/api/pipeline/${pipelineId}/subsets/summary`)
@@ -52,9 +53,33 @@ export default function DatasetAccessSection({
     URL.revokeObjectURL(url);
   };
 
+  const sel = subsets.find(s => s.id === selectedSubsetId);
+
   return (
-    <section className="bg-white border border-gray-200 rounded-xl p-4 space-y-4">
-      <h2 className="text-sm font-bold text-gray-900">Dataset access</h2>
+    <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 transition border-b border-gray-100">
+        <div>
+          <h2 className="text-sm font-bold text-gray-900">Data</h2>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            {open ? 'Presets, row counts, and Research DB viewer' : (
+              <>
+                {sel ? <span className="font-medium text-gray-700">{sel.name}</span> : 'No subset selected'}
+                {sel?.row_count != null && (
+                  <span className="text-gray-400"> · {sel.row_count.toLocaleString()} rows</span>
+                )}
+                {total != null && <span className="text-gray-400"> · dataset {total.toLocaleString()}</span>}
+              </>
+            )}
+          </p>
+        </div>
+        <span className="text-gray-400 text-xs shrink-0">{open ? '▼' : '▶'}</span>
+      </button>
+
+      {open && (
+      <div className="p-4 space-y-4 border-t border-gray-50">
 
       {total != null && (
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -132,6 +157,9 @@ export default function DatasetAccessSection({
           <span className="text-xs text-gray-400 self-center">Select a subset first</span>
         )}
       </div>
+
+      </div>
+      )}
     </section>
   );
 }

@@ -193,6 +193,7 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   const [detail, setDetail] = useState(null);
   const [sqlError, setSqlError] = useState('');
   const [sqlOpen, setSqlOpen] = useState(false);
+  const [customSqlPanelOpen, setCustomSqlPanelOpen] = useState(false);
   const [colPickerOpen, setColPickerOpen] = useState(false);
   const [filterPopCol, setFilterPopCol] = useState(null);
 
@@ -236,7 +237,12 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     setUseCustomSql(true);
     setCustomSql(initialCustomSql);
     setSqlOpen(true);
+    setCustomSqlPanelOpen(true);
   }, [initialCustomSql, subset?.id]);
+
+  useEffect(() => {
+    if (useCustomSql) setCustomSqlPanelOpen(true);
+  }, [useCustomSql]);
 
   useEffect(() => {
     const h = e => { if (colPickerRef.current && !colPickerRef.current.contains(e.target)) setColPickerOpen(false); };
@@ -436,35 +442,69 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
         {/* ── SQL panel ─────────────────────────────────────────────────── */}
         {sqlOpen && (
           <div className="px-4 py-2.5 bg-white border-b border-gray-100 shrink-0 space-y-2">
-            <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
-              <input type="checkbox" checked={useCustomSql} onChange={e => {
-                const on = e.target.checked;
-                setUseCustomSql(on);
-                if (on) {
-                  let next = builderSql.replace(/\s*LIMIT\s+<page_size>\s+OFFSET\s+<offset>\s*$/i, '').trim();
-                  next = stripOuterFrSubsetCte(next);
-                  setCustomSql(next);
-                } else setCustomSql('');
-              }} />
-              Custom SQL (subset-scoped, must use <code className="bg-gray-100 px-1 rounded">_fr_subset</code>)
-            </label>
-            {explainLoading && !useCustomSql && <p className="text-xs text-gray-400">Updating…</p>}
-            <textarea
-              value={useCustomSql ? customSql : builderSql}
-              onChange={e => { if (useCustomSql) setCustomSql(e.target.value); }}
-              readOnly={!useCustomSql}
-              rows={useCustomSql ? 6 : 3}
-              className={`w-full border rounded-lg px-3 py-2 text-xs font-mono resize-y ${useCustomSql ? 'bg-white' : 'bg-gray-50 text-gray-600'}`}
-              placeholder={useCustomSql ? 'SELECT * FROM _fr_subset WHERE ...' : 'Generated from column filters/sort'}
-            />
-            {useCustomSql && (
-              <div className="flex gap-2">
-                <button type="button" onClick={() => loadTable(1)}
-                  className="text-xs px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Run</button>
-                <button type="button" onClick={() => { setUseCustomSql(false); setCustomSql(''); }}
-                  className="text-xs px-3 py-1 border rounded-lg hover:bg-gray-50">Back to builder</button>
-              </div>
+            {!useCustomSql && explainLoading && <p className="text-xs text-gray-400">Updating…</p>}
+            {!useCustomSql && (
+              <>
+                <p className="text-[11px] text-gray-500">Query generated from filters, sorts, and visible columns.</p>
+                <textarea
+                  value={builderSql}
+                  readOnly
+                  rows={3}
+                  className="w-full border rounded-lg px-3 py-2 text-xs font-mono resize-y bg-gray-50 text-gray-600"
+                  placeholder="Generated from column filters/sort"
+                />
+              </>
             )}
+            {useCustomSql && (
+              <p className="text-xs text-amber-900 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5">
+                Custom SQL is active — edit below and click Run. Disable it inside the Custom SQL panel to return to the builder.
+              </p>
+            )}
+
+            <details
+              className="rounded-lg border border-amber-200/90 bg-amber-50/40 overflow-hidden"
+              open={customSqlPanelOpen}
+              onToggle={(e) => setCustomSqlPanelOpen(e.target.open)}
+            >
+              <summary className="px-3 py-2 text-xs font-medium text-amber-950 cursor-pointer select-none hover:bg-amber-50/80">
+                Custom SQL{' '}
+                <span className="font-normal text-amber-800/90">
+                  (subset-scoped — must reference <code className="bg-amber-100/80 px-1 rounded text-[10px]">_fr_subset</code>)
+                </span>
+              </summary>
+              <div className="px-3 pb-3 pt-2 space-y-2 border-t border-amber-100 bg-white/95">
+                <label className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
+                  <input type="checkbox" checked={useCustomSql} onChange={e => {
+                    const on = e.target.checked;
+                    setUseCustomSql(on);
+                    if (on) {
+                      let next = builderSql.replace(/\s*LIMIT\s+<page_size>\s+OFFSET\s+<offset>\s*$/i, '').trim();
+                      next = stripOuterFrSubsetCte(next);
+                      setCustomSql(next);
+                      setCustomSqlPanelOpen(true);
+                    } else setCustomSql('');
+                  }} />
+                  Use custom SQL instead of the generated query
+                </label>
+                {useCustomSql && (
+                  <>
+                    <textarea
+                      value={customSql}
+                      onChange={e => setCustomSql(e.target.value)}
+                      rows={6}
+                      className="w-full border rounded-lg px-3 py-2 text-xs font-mono resize-y bg-white"
+                      placeholder="SELECT * FROM _fr_subset WHERE ..."
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => loadTable(1)}
+                        className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">Run</button>
+                      <button type="button" onClick={() => { setUseCustomSql(false); setCustomSql(''); }}
+                        className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50">Back to builder</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </details>
             {sqlError && <p className="text-xs text-red-600">{sqlError}</p>}
           </div>
         )}

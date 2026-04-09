@@ -47,6 +47,7 @@ export default function AnalysisStage({ pipeline, llmOnly }) {
         pipelineId={pipeline.id}
         subsetId={selectedSubsetId}
         llmOnly={llmOnly}
+        metadataChartsOnly={!llmOnly}
         onDrilldown={openDrilldown}
       />
 

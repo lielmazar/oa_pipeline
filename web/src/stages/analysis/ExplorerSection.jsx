@@ -433,7 +433,7 @@ function SavedChartCard({ pipelineId, item, onDeleted }) {
 
 const CHART_CARD_WRAP = 'flex-1 min-w-[min(100%,340px)] max-w-full';
 
-export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrilldown }) {
+export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadataChartsOnly = false, onDrilldown }) {
   const [charts, setCharts] = useState([]);
   const [topN, setTopN] = useState(20);
   const [cutoffYear, setCutoffYear] = useState(2000);
@@ -467,7 +467,14 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrill
 
   return (
     <section className="bg-white border border-gray-200 rounded-xl p-4">
-      <h2 className="text-sm font-bold text-gray-900 mb-3">Charts & orthogonality</h2>
+      <h2 className="text-sm font-bold text-gray-900 mb-3">
+        {metadataChartsOnly ? 'Metadata & corpus charts' : 'Charts & orthogonality'}
+      </h2>
+      {metadataChartsOnly && (
+        <p className="text-xs text-gray-600 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2 mb-3">
+          At this stage only corpus metadata views are shown. LLM cross-dimension charts and orthogonality tools appear in <strong>LLM Analysis</strong> after classification.
+        </p>
+      )}
       {!subsetId && (
         <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 mb-3">
           Select a subset to scope default charts to that slice (full dataset charts use all filtered records when no subset is selected — pick &quot;All&quot; or a saved subset).
@@ -505,18 +512,18 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrill
               topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
           </div>
         ))}
-        {llmCharts.length > 0 && (
+        {!metadataChartsOnly && llmCharts.length > 0 && (
           <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
             LLM classification
           </h3>
         )}
-        {llmCharts.map(c => (
+        {!metadataChartsOnly && llmCharts.map(c => (
           <div key={c.id} className={CHART_CARD_WRAP}>
             <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
               topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
           </div>
         ))}
-        {dependencyCharts.length > 0 && (
+        {!metadataChartsOnly && dependencyCharts.length > 0 && (
           <>
             <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
               Cross-dimension dependency
@@ -526,19 +533,23 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrill
             </p>
           </>
         )}
-        {dependencyCharts.map(c => (
+        {!metadataChartsOnly && dependencyCharts.map(c => (
           <div key={c.id} className={CHART_CARD_WRAP}>
             <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
               topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
           </div>
         ))}
 
-        <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-2 border-t border-gray-100 pt-4">
-          Orthogonality
-        </h3>
-        <div className={`${CHART_CARD_WRAP} border border-gray-200 rounded-xl p-3 bg-gray-50/60`}>
-          <OrthogonalityPresetOverview pipelineId={pipelineId} subsetId={subsetId} />
-        </div>
+        {!metadataChartsOnly && (
+          <>
+            <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-2 border-t border-gray-100 pt-4">
+              Orthogonality
+            </h3>
+            <div className={`${CHART_CARD_WRAP} border border-gray-200 rounded-xl p-3 bg-gray-50/60`}>
+              <OrthogonalityPresetOverview pipelineId={pipelineId} subsetId={subsetId} />
+            </div>
+          </>
+        )}
       </div>
     </section>
   );
