@@ -4,6 +4,7 @@ import KeywordStage    from '../stages/KeywordStage';
 import SearchStage     from '../stages/SearchStage';
 import AnalysisStage   from '../stages/AnalysisStage';
 import LlmStage        from '../stages/LlmStage';
+import QaStage         from '../stages/QaStage';
 import SummaryStage    from '../stages/SummaryStage';
 
 const STAGE_ORDER = [
@@ -12,6 +13,7 @@ const STAGE_ORDER = [
   'analysis',
   'llm_classification',
   'llm_analysis',
+  'qa_irr',
   'summary',
 ];
 
@@ -21,6 +23,7 @@ const STAGE_LABELS = {
   analysis:           'Analysis',
   llm_classification: 'LLM',
   llm_analysis:       'LLM Analysis',
+  qa_irr:             'IRR',
   summary:            'Summary',
 };
 
@@ -31,15 +34,17 @@ function StageComponent({ stage, pipeline, onPipelineChange, onFilterRunChange }
     case 'analysis':           return <AnalysisStage pipeline={pipeline} llmOnly={false} />;
     case 'llm_classification': return <LlmStage      pipeline={pipeline} onChange={onPipelineChange} />;
     case 'llm_analysis':       return <AnalysisStage pipeline={pipeline} llmOnly={true} />;
+    case 'qa_irr':             return <QaStage       pipeline={pipeline} />;
     case 'summary':            return <SummaryStage  pipeline={pipeline} />;
     default: return <div className="p-8 text-gray-400 text-sm">Unknown stage: {stage}</div>;
   }
 }
 
-export default function PipelineView({ initialPipeline, onBack, onFilterRunChange, onOpenQA }) {
+export default function PipelineView({ initialPipeline, onBack, onFilterRunChange }) {
   const [pipeline, setPipeline] = useState(initialPipeline);
   const [advancing, setAdvancing] = useState(false);
   const [goingBack, setGoingBack] = useState(false);
+  const [settingStage, setSettingStage] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,7 +71,21 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
     } finally { setGoingBack(false); }
   };
 
-  const currentIdx = STAGE_ORDER.indexOf(pipeline.current_stage);
+  const goToStage = async (stage) => {
+    if (stage === pipeline.current_stage) return;
+    setSettingStage(true);
+    try {
+      const res = await apiFetch(`/api/pipeline/${pipeline.id}/set-stage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage }),
+      });
+      if (res.ok) setPipeline(await res.json());
+    } finally { setSettingStage(false); }
+  };
+
+  const rawIdx = STAGE_ORDER.indexOf(pipeline.current_stage);
+  const currentIdx = rawIdx >= 0 ? rawIdx : 0;
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-4">
@@ -82,14 +101,6 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         {pipeline.forked_from_id && (
           <span className="text-xs text-gray-400 border border-gray-200 px-1.5 py-0.5 rounded">forked</span>
         )}
-        {onOpenQA && (
-          <button
-            type="button"
-            onClick={() => onOpenQA({ pipelineId: pipeline.id, subsetId: null })}
-            className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium shrink-0">
-            QA / IRR
-          </button>
-        )}
       </div>
 
       {/* Stage breadcrumb */}
@@ -97,16 +108,20 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         {STAGE_ORDER.map((s, i) => {
           const isCurrent = s === pipeline.current_stage;
           const isDone    = i < currentIdx;
-          const isLocked  = i > currentIdx;
           return (
-            <div key={s}
-              className={`flex-1 text-center text-xs py-3 border-r border-gray-200 last:border-r-0 transition
+            <button
+              key={s}
+              type="button"
+              disabled={settingStage}
+              onClick={() => goToStage(s)}
+              title={`Go to ${STAGE_LABELS[s]}`}
+              className={`flex-1 text-center text-xs py-3 border-r border-gray-200 last:border-r-0 transition cursor-pointer disabled:opacity-60 disabled:cursor-wait
                 ${isCurrent ? 'bg-blue-600 text-white font-semibold' :
-                  isDone    ? 'bg-green-50 text-green-700' :
-                              'text-gray-400'}`}>
+                  isDone    ? 'bg-green-50 text-green-700 hover:bg-green-100' :
+                              'bg-gray-50 text-gray-500 hover:bg-gray-100'}`}>
               {isDone && <span className="mr-1">✓</span>}
               {STAGE_LABELS[s]}
-            </div>
+            </button>
           );
         })}
       </div>
@@ -123,7 +138,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
       <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-200">
         <button
           onClick={goBack}
-          disabled={goingBack || currentIdx === 0}
+          disabled={goingBack || settingStage || currentIdx === 0}
           className="text-sm px-4 py-2 border rounded-lg hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition">
           {goingBack ? '…' : '← Back'}
         </button>
@@ -132,7 +147,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         </span>
         <button
           onClick={advance}
-          disabled={advancing || currentIdx === STAGE_ORDER.length - 1}
+          disabled={advancing || settingStage || currentIdx === STAGE_ORDER.length - 1}
           className="text-sm px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed transition font-medium">
           {advancing ? '…' : 'Next →'}
         </button>

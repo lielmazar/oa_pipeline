@@ -142,10 +142,8 @@ export default function App() {
         <>
           <NavBar
             me={me}
-            view={view}
             filterRunMeta={filterRunMeta}
-            onShowHome={() => { setActivePipeline(null); setStageRunMeta(null); setView('home'); }}
-            onShowQA={()   => { setQaContext(null); setView('qa'); }}
+            onShowHome={() => { setActivePipeline(null); setStageRunMeta(null); setQaContext(null); setView('home'); }}
             onRunPillClick={openRunningPipeline}
             onLogout={handleLogout}
           />
@@ -162,19 +160,6 @@ export default function App() {
               initialPipeline={activePipeline}
               onBack={() => { setView('home'); setActivePipeline(null); setStageRunMeta(null); }}
               onFilterRunChange={setStageRunMeta}
-              onOpenQA={(ctx) => {
-                setQaContext(ctx);
-                setView('qa');
-                try {
-                  const u = new URL(window.location.href);
-                  u.searchParams.set('qa', '1');
-                  if (ctx?.pipelineId) u.searchParams.set('pipeline', String(ctx.pipelineId));
-                  else u.searchParams.delete('pipeline');
-                  if (ctx?.subsetId) u.searchParams.set('subset', String(ctx.subsetId));
-                  else u.searchParams.delete('subset');
-                  window.history.replaceState({}, '', `${u.pathname}${u.search}`);
-                } catch { /* ignore */ }
-              }}
             />
           )}
 

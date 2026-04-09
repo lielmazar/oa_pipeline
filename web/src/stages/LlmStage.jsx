@@ -178,8 +178,8 @@ export default function LlmStage({ pipeline }) {
           <label className="block text-xs text-gray-600 font-medium mb-1.5">Subset scope</label>
           {subsets.length === 0 ? (
             <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-              No saved subsets yet. Estimates and batches use all unprocessed rows in{' '}
-              <code className="bg-gray-100 px-1 rounded">filtered_records</code>. Create subsets from the Analysis stage (Research DB Viewer).
+              No preset subsets loaded yet. Estimates and batches use all unprocessed rows in{' '}
+              <code className="bg-gray-100 px-1 rounded">filtered_records</code> until subsets exist (they appear automatically in Analysis when the research DB is available).
             </p>
           ) : (
             <select

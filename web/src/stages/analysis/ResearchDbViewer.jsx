@@ -196,10 +196,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   const [colPickerOpen, setColPickerOpen] = useState(false);
   const [filterPopCol, setFilterPopCol] = useState(null);
 
-  const [saveName, setSaveName] = useState('');
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [saving, setSaving] = useState(false);
-
   const customSqlRef = useRef(customSql);
   customSqlRef.current = customSql;
   const colPickerRef = useRef(null);
@@ -275,9 +271,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     if (!subset?.id) return;
     setLoading(true); setSqlError('');
     setExpanded({}); setExpandedDetails({});
-    // #region agent log
-    fetch('http://127.0.0.1:7246/ingest/e2559b85-5ced-45e2-bbce-75859894f7eb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b7b538'},body:JSON.stringify({sessionId:'b7b538',location:'ResearchDbViewer.jsx:loadTable',message:'loading records',data:{pg,sortRules:sortRules.map(s=>({col:s.column,dir:s.dir})),filterCount:filters.length,useCustomSql},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     try {
       const res = await apiFetch(`/api/pipeline/${pipelineId}/records/view`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -326,9 +319,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
 
   /* ── Column-header sort (click to cycle, additive with shift) ────────────── */
   const cycleSort = (col, additive) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7246/ingest/e2559b85-5ced-45e2-bbce-75859894f7eb',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b7b538'},body:JSON.stringify({sessionId:'b7b538',location:'ResearchDbViewer.jsx:cycleSort',message:'sort cycle',data:{col,additive,currentRules:sortRules.map(s=>({col:s.column,dir:s.dir}))},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
     setSortRules(prev => {
       const existing = prev.find(s => s.column === col);
       if (additive) {
@@ -351,55 +341,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   };
   const clearFilter = col => setFilters(prev => prev.filter(f => f.column !== col));
   const toggleCol = name => setVisibleCols(v => (v.includes(name) ? v.filter(x => x !== name) : [...v, name]));
-
-  /* ── Save as subset ──────────────────────────────────────────────────────── */
-  const hasModifications = filters.length > 0 || useCustomSql;
-
-  function buildSubsetSqlFromFilters() {
-    const esc = v => "'" + String(v).replace(/'/g, "''") + "'";
-    const qi = c => '"' + c + '"';
-    const parts = filters.map(f => {
-      const col = qi(f.column), val = f.value ?? '';
-      switch (f.op) {
-        case 'eq': return `${col} = ${esc(val)}`;
-        case 'neq': return `${col} != ${esc(val)}`;
-        case 'contains': return `${col} LIKE ${esc('%' + val + '%')}`;
-        case 'starts_with': return `${col} LIKE ${esc(val + '%')}`;
-        case 'gt': return `CAST(${col} AS REAL) > ${esc(val)}`;
-        case 'gte': return `CAST(${col} AS REAL) >= ${esc(val)}`;
-        case 'lt': return `CAST(${col} AS REAL) < ${esc(val)}`;
-        case 'lte': return `CAST(${col} AS REAL) <= ${esc(val)}`;
-        case 'is_null': return `${col} IS NULL`;
-        case 'is_not_null': return `${col} IS NOT NULL`;
-        default: return `${col} = ${esc(val)}`;
-      }
-    });
-    const where = parts.length ? parts.join(' AND ') : '1=1';
-    const orderBits = sortRules.filter(s => s.column).map(s => `${qi(s.column)} ${s.dir === 'asc' ? 'ASC' : 'DESC'}`);
-    const order = orderBits.length ? ` ORDER BY ${orderBits.join(', ')}` : '';
-    return `SELECT * FROM filtered_records WHERE ${where}${order}`;
-  }
-
-  const saveAsSubset = async () => {
-    const nm = saveName.trim();
-    if (!nm) return;
-    setSaving(true);
-    try {
-      let sql;
-      if (useCustomSql && customSqlRef.current.trim()) {
-        sql = customSqlRef.current.trim().replace(/\b_fr_subset\b/gi, 'filtered_records');
-      } else {
-        sql = buildSubsetSqlFromFilters();
-      }
-      if (!sql) return;
-      const res = await apiFetch(`/api/pipeline/${pipelineId}/subsets`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: nm, sql_query: sql }),
-      });
-      if (res.ok) { setShowSaveDialog(false); setSaveName(''); onSubsetSaved?.(); }
-      else { const d = await res.json(); alert(d.detail || 'Save failed'); }
-    } finally { setSaving(false); }
-  };
 
   const openDetail = async openalexId => {
     const q = new URLSearchParams({ record_id: openalexId, subset_id: String(subset.id) });
@@ -427,12 +368,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
                 {subset.row_count != null && <span className="ml-1">· {subset.row_count.toLocaleString()} rows</span>}
               </p>
             </div>
-            {hasModifications && (
-              <button type="button" onClick={() => { setSaveName(''); setShowSaveDialog(true); }}
-                className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium transition shrink-0">
-                Save as subset
-              </button>
-            )}
           </div>
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2 shrink-0">×</button>
         </div>
@@ -692,25 +627,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
           </div>
         )}
 
-        {/* ── Save-as-subset dialog ─────────────────────────────────────── */}
-        {showSaveDialog && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5 space-y-3">
-              <h3 className="font-bold text-gray-900 text-sm">Save as new subset</h3>
-              <p className="text-xs text-gray-500">Current {useCustomSql ? 'custom SQL' : 'filters + sort'} will be saved as a reusable subset.</p>
-              <input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="Subset name" autoFocus
-                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                onKeyDown={e => { if (e.key === 'Enter' && saveName.trim()) saveAsSubset(); }} />
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setShowSaveDialog(false)} className="flex-1 border text-sm py-2 rounded-lg hover:bg-gray-50">Cancel</button>
-                <button type="button" onClick={saveAsSubset} disabled={saving || !saveName.trim()}
-                  className="flex-1 bg-emerald-600 text-white text-sm py-2 rounded-lg disabled:opacity-50 font-medium hover:bg-emerald-700">
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

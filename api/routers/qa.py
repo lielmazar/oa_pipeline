@@ -8,12 +8,16 @@ from pydantic import BaseModel
 
 from api.business.qa import (
     ANNOTATION_DIMENSIONS,
+    FIELD_BY_ID,
     QA_FIELDS,
     compute_irr,
     get_qa_sample,
     list_annotations,
     list_disagreements,
+    list_distinct_field_labels,
     list_ratings,
+    read_llm_field_value,
+    resolve_subset_inner,
     upsert_annotation,
     upsert_rating,
 )
@@ -59,7 +63,18 @@ def qa_records(
         db, db_path, pipeline_id, user["id"],
         field=field, size=size, subset_id=subset_id,
     )
-    return {"records": records, "field": field, "count": len(records)}
+    subset_inner = resolve_subset_inner(db, pipeline_id, subset_id)
+    labels = list_distinct_field_labels(db_path, field, subset_inner)
+    fmeta = FIELD_BY_ID.get(field, {})
+    bs = min(max(1, size), 100)
+    return {
+        "records": records,
+        "field": field,
+        "count": len(records),
+        "batch_size": bs,
+        "field_type": fmeta.get("type"),
+        "labels": labels,
+    }
 
 
 @router.get("/{pipeline_id}/qa/disagreements")
@@ -91,9 +106,13 @@ def submit_rating(pipeline_id: int, body: RatingBody, user: CurrentUser, db: Db)
         raise HTTPException(404, "not found")
     if not body.openalex_id.strip() or not body.field.strip() or not body.human_value.strip():
         raise HTTPException(400, "openalex_id, field, and human_value are required")
+    llm_val = body.llm_value
+    if llm_val is None or (isinstance(llm_val, str) and not llm_val.strip()):
+        db_path = _resolve_pipeline_db(db, pipeline_id, user["id"])
+        llm_val = read_llm_field_value(db_path, body.openalex_id.strip(), body.field.strip())
     return upsert_rating(
         db, pipeline_id, user["id"],
-        body.openalex_id, body.field, body.human_value, body.llm_value,
+        body.openalex_id, body.field, body.human_value, llm_val,
     )
 
 

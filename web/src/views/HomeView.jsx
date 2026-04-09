@@ -8,6 +8,7 @@ const STAGE_LABELS = {
   analysis:           'Analysis',
   llm_classification: 'LLM',
   llm_analysis:       'LLM Analysis',
+  qa_irr:             'IRR',
   summary:            'Summary',
 };
 
@@ -17,6 +18,7 @@ const STAGE_COLORS = {
   analysis:           'bg-green-100 text-green-700',
   llm_classification: 'bg-purple-100 text-purple-700',
   llm_analysis:       'bg-violet-100 text-violet-700',
+  qa_irr:             'bg-emerald-100 text-emerald-800',
   summary:            'bg-amber-100 text-amber-700',
 };
 

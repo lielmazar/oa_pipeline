@@ -8,16 +8,7 @@ function formatDuration(seconds) {
   return `${sec}s`;
 }
 
-export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, onRunPillClick, onLogout }) {
-  const btn = (label, active, onClick) => (
-    <button onClick={onClick}
-      className={`text-sm px-3 py-1.5 rounded-lg transition ${
-        active ? 'bg-white/20 font-semibold' : 'hover:bg-white/10'
-      }`}>
-      {label}
-    </button>
-  );
-
+export default function NavBar({ me, filterRunMeta, onShowHome, onRunPillClick, onLogout }) {
   const isRunning = !!filterRunMeta?.isRunning;
   const percent = Math.min(100, Math.max(0, filterRunMeta?.percent || 0));
   const pipelineId = filterRunMeta?.pipelineId;
@@ -28,9 +19,12 @@ export default function NavBar({ me, view, filterRunMeta, onShowHome, onShowQA, 
 
   return (
     <nav className="h-12 bg-blue-700 text-white flex items-center px-4 gap-2 sticky top-0 z-30 shadow">
-      <span className="font-bold text-sm mr-3 tracking-tight">OA Pipeline</span>
-      {btn('Pipelines', view === 'home' || view === 'pipeline', onShowHome)}
-      {btn('QA / IRR',  view === 'qa', onShowQA)}
+      <button
+        type="button"
+        onClick={onShowHome}
+        className="font-bold text-sm mr-3 tracking-tight hover:text-blue-100 transition text-left">
+        OA Pipelines
+      </button>
       <div className="ml-auto flex items-center gap-3">
         {isRunning && (
           <button

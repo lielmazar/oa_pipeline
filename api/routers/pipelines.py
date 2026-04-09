@@ -16,6 +16,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from api.business.pipeline_status import build_stage_status
+from api.business.preset_subsets import ensure_preset_subsets
 from api.business.runner import (
     kill_filter_run,
     poll_filter_run,
@@ -505,23 +506,21 @@ def get_subsets(pipeline_id: int, user: CurrentUser, db: Db):
 
 @router.post("/{pipeline_id}/subsets", status_code=201)
 def add_subset(pipeline_id: int, body: SubsetBody, user: CurrentUser, db: Db):
-    if not get_pipeline(db, pipeline_id, user["id"]):
-        raise HTTPException(404, "not found")
-    name = (body.name or "").strip()
-    sql  = (body.sql_query or "").strip()
-    if not name or not sql:
-        raise HTTPException(400, "name and sql_query required")
-    inner = normalize_subset_inner(sql)
-    err = validate_subset_inner(inner)
-    if err:
-        raise HTTPException(400, err)
-    return create_subset(db, pipeline_id, name, sql)
+    raise HTTPException(
+        403,
+        "Creating custom subsets is disabled. This pipeline uses fixed preset subsets only.",
+    )
 
 
 @router.delete("/{pipeline_id}/subsets/{subset_id}")
 def remove_subset(pipeline_id: int, subset_id: int, user: CurrentUser, db: Db):
     if not get_pipeline(db, pipeline_id, user["id"]):
         raise HTTPException(404, "not found")
+    sub = get_subset(db, pipeline_id, subset_id)
+    if not sub:
+        raise HTTPException(404, "subset not found")
+    if sub.get("preset_key"):
+        raise HTTPException(403, "preset subsets cannot be deleted")
     if not delete_subset(db, pipeline_id, subset_id):
         raise HTTPException(404, "subset not found")
     return {"ok": True}
@@ -573,6 +572,11 @@ def subsets_summary(pipeline_id: int, user: CurrentUser, db: Db):
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
+    rp = Path(p["output_db_path"]) if p.get("output_db_path") else None
+    try:
+        ensure_preset_subsets(db, pipeline_id, rp)
+    except Exception:
+        pass
     db_path_str = p.get("output_db_path")
     path = Path(db_path_str) if db_path_str else None
     dataset_total = None

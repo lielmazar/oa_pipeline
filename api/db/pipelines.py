@@ -12,6 +12,7 @@ STAGES = [
     "analysis",
     "llm_classification",
     "llm_analysis",
+    "qa_irr",
     "summary",
 ]
 
@@ -21,6 +22,7 @@ STAGE_LABELS = {
     "analysis":           "Analysis",
     "llm_classification": "LLM Classification",
     "llm_analysis":       "LLM Analysis",
+    "qa_irr":             "IRR",
     "summary":            "Summary",
 }
 
@@ -327,7 +329,11 @@ def list_subsets(db: sqlite3.Connection, pipeline_id: int) -> list[dict]:
     return [
         dict(r)
         for r in db.execute(
-            "SELECT * FROM pipeline_subsets WHERE pipeline_id = ? ORDER BY created_at ASC",
+            """SELECT * FROM pipeline_subsets WHERE pipeline_id = ? ORDER BY
+            CASE COALESCE(preset_key, '')
+              WHEN 'all' THEN 0 WHEN 'oa' THEN 1 WHEN 'oa_llm' THEN 2
+              WHEN 'oa_llm_hc' THEN 3 WHEN 'oa_llm_hc_ml' THEN 4 ELSE 99 END,
+            created_at ASC""",
             (pipeline_id,),
         ).fetchall()
     ]
@@ -346,6 +352,14 @@ def create_subset(db: sqlite3.Connection, pipeline_id: int, name: str, sql_query
 
 
 def delete_subset(db: sqlite3.Connection, pipeline_id: int, subset_id: int) -> bool:
+    row = db.execute(
+        "SELECT preset_key FROM pipeline_subsets WHERE id = ? AND pipeline_id = ?",
+        (subset_id, pipeline_id),
+    ).fetchone()
+    if not row:
+        return False
+    if row["preset_key"]:
+        return False
     cur = db.execute(
         "DELETE FROM pipeline_subsets WHERE id = ? AND pipeline_id = ?",
         (subset_id, pipeline_id),

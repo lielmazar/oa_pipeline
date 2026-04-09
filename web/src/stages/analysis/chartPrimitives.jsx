@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../api/client';
+import { buildChartDrilldownSql } from './chartDrilldown.js';
 
 export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
@@ -30,24 +31,32 @@ export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40, onCountClick
   );
 }
 
-export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 24 }) {
+export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 48, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const slice = rows.slice(0, maxRows);
   const maxVal = Math.max(...slice.map(r => Number(r[yKey]) || 0));
   return (
-    <div className="flex items-end gap-1 h-40 overflow-x-auto pb-1">
+    <div className="flex items-end gap-1 min-h-52 max-h-72 overflow-x-auto pb-1 pt-1">
       {slice.map((r, i) => {
         const h = maxVal > 0 ? (Number(r[yKey]) / maxVal) * 100 : 0;
+        const label = String(r[xKey] ?? '');
         return (
-          <div key={i} className="flex flex-col items-center gap-0.5 shrink-0 w-10">
-            <div className="w-full bg-gray-100 rounded-t flex-1 flex items-end min-h-[4px]" style={{ minHeight: '80px' }}>
+          <div key={i} className="flex flex-col items-center gap-1 shrink-0 w-12 min-w-[2.75rem] max-w-[5rem]">
+            <button
+              type="button"
+              title={`${label}: ${Number(r[yKey]) || 0} — click to drill down`}
+              onClick={() => onCountClick?.(r)}
+              className="w-full bg-gray-100 rounded-t flex-1 flex items-end min-h-[100px] hover:ring-2 hover:ring-indigo-300 transition cursor-pointer"
+            >
               <div
-                className="w-full bg-indigo-500 rounded-t transition-all"
+                className="w-full bg-indigo-500 rounded-t transition-all pointer-events-none"
                 style={{ height: `${h}%`, minHeight: h > 0 ? '4px' : 0 }}
               />
-            </div>
-            <span className="text-[10px] text-gray-500 truncate max-w-full" title={String(r[xKey])}>
-              {String(r[xKey]).slice(0, 6)}
+            </button>
+            <span
+              className="text-[9px] leading-tight text-gray-600 text-center break-words w-full line-clamp-3"
+              title={label}>
+              {label}
             </span>
           </div>
         );
@@ -171,11 +180,18 @@ export function ChartResult({ renderer, rows, onCountClick }) {
     return <HeatmapTable rows={rows} onCountClick={onCountClick} />;
   }
   if (renderer === 'stacked') return <StackedBarChart rows={rows} />;
-  if (renderer === 'bar') return <VBarChart rows={rows} />;
+  if (renderer === 'bar') return <VBarChart rows={rows} onCountClick={onCountClick} />;
   return <HBarChart rows={rows} onCountClick={onCountClick} />;
 }
 
-export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutoffYear = 2000, onDrilldown }) {
+export function ChartCard({
+  chart,
+  pipelineId,
+  subsetId = null,
+  topN = 20,
+  cutoffYear = 2000,
+  onDrilldown,
+}) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -212,12 +228,14 @@ export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutof
 
   const rows = data?.rows || [];
   const renderer = chart.renderer;
-  const buildDrilldownSql = (r) => {
-    return 'SELECT * FROM _fr_subset';
+
+  const handleDrill = (r) => {
+    const sql = buildChartDrilldownSql({ chartId: chart.id, row: r, cutoffYear });
+    if (sql) onDrilldown?.(sql);
   };
 
   return (
-    <div className="border border-gray-200 rounded-xl overflow-hidden">
+    <div id={`chart-${chart.id}`} className="border border-gray-200 rounded-xl overflow-hidden scroll-mt-4">
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
@@ -237,7 +255,7 @@ export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutof
           {error && <p className="text-xs text-red-500 py-2">{error}</p>}
           {data && !loading && (
             <>
-              <ChartResult renderer={renderer} rows={rows} onCountClick={(r) => onDrilldown?.(buildDrilldownSql(r))} />
+              <ChartResult renderer={renderer} rows={rows} onCountClick={handleDrill} />
               <p className="text-xs text-gray-400 mt-2 text-right">{rows.length} rows</p>
             </>
           )}

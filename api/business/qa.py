@@ -12,7 +12,7 @@ from api.business.qa_stats import (
     interpret_alpha,
     multilabel_code_metrics,
 )
-from api.business.subset_sql import normalize_subset_inner, validate_subset_inner
+from api.business.subset_sql import compose_subset_query, normalize_subset_inner, validate_subset_inner
 
 _VALID_FIELD = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -28,6 +28,80 @@ QA_FIELDS = [
     {"id": "llm_scope",               "label": "Value Chain",         "type": "multi"},
 ]
 
+FIELD_BY_ID = {f["id"]: f for f in QA_FIELDS}
+
+
+def read_llm_field_value(pipeline_db_path: Path, openalex_id: str, field: str) -> str | None:
+    """Read raw column value from the research DB (for storing alongside human rating)."""
+    if not _VALID_FIELD.match(field):
+        return None
+    try:
+        with sqlite3.connect(str(pipeline_db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                f'SELECT "{field}" FROM filtered_records WHERE openalex_id = ? LIMIT 1',
+                (openalex_id,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    v = row[field]
+    if v is None:
+        return None
+    return v if isinstance(v, str) else str(v)
+
+
+def list_distinct_field_labels(
+    pipeline_db_path: Path,
+    field: str,
+    subset_inner: str | None,
+    *,
+    limit: int = 150,
+) -> list[str]:
+    """Distinct label options for UI pills (subset-scoped when *subset_inner* is set)."""
+    if not _VALID_FIELD.match(field):
+        return []
+    meta = FIELD_BY_ID.get(field)
+    if not meta:
+        return []
+    t = meta.get("type")
+    qi = f'"{field}"'
+
+    def wrap(inner_sql: str) -> str:
+        if subset_inner:
+            return compose_subset_query(subset_inner, inner_sql)
+        return inner_sql.replace("_fr_subset", "filtered_records")
+
+    try:
+        with sqlite3.connect(str(pipeline_db_path)) as conn:
+            if t == "binary":
+                return ["0", "1"]
+
+            if t == "ordinal":
+                inner_sql = (
+                    f"SELECT DISTINCT {qi} AS v FROM _fr_subset WHERE {qi} IS NOT NULL "
+                    f"AND TRIM(CAST({qi} AS TEXT)) != '' ORDER BY v LIMIT ?"
+                )
+                rows = conn.execute(wrap(inner_sql), (limit,)).fetchall()
+                return [str(r[0]) for r in rows if r[0] is not None]
+
+            if t == "multi":
+                inner_sql = (
+                    f"SELECT DISTINCT TRIM(CAST(value AS TEXT)) AS v FROM _fr_subset, json_each({qi}) "
+                    f"WHERE value IS NOT NULL AND TRIM(CAST(value AS TEXT)) != '' "
+                    f"AND LOWER(TRIM(CAST(value AS TEXT))) NOT IN ('none', 'null') "
+                    f"ORDER BY v LIMIT ?"
+                )
+                rows = conn.execute(wrap(inner_sql), (limit,)).fetchall()
+                out = [str(r[0]) for r in rows if r[0] is not None]
+                return sorted(set(out), key=lambda x: x.lower())
+    except Exception:
+        return []
+
+    return []
+
+
 ANNOTATION_DIMENSIONS = [
     {"id": "primary_topic",    "label": "Primary Topic",         "type": "text"},
     {"id": "methodology",      "label": "Methodology",           "type": "text"},
@@ -36,6 +110,26 @@ ANNOTATION_DIMENSIONS = [
     {"id": "data_quality",     "label": "Data Quality",          "type": "ordinal"},
     {"id": "overall_quality",  "label": "Overall Quality",       "type": "ordinal"},
 ]
+
+
+def resolve_subset_inner(
+    meta_db: sqlite3.Connection,
+    pipeline_id: int,
+    subset_id: int | None,
+) -> str | None:
+    if subset_id is None:
+        return None
+    sub = meta_db.execute(
+        "SELECT sql_query FROM pipeline_subsets WHERE id=? AND pipeline_id=?",
+        (subset_id, pipeline_id),
+    ).fetchone()
+    if not sub:
+        return None
+    inner = normalize_subset_inner(sub[0])
+    err = validate_subset_inner(inner)
+    if err:
+        return None
+    return inner
 
 
 # ── Smart sample ──────────────────────────────────────────────────────────────
@@ -62,19 +156,9 @@ def get_qa_sample(
         ).fetchall()
     }
 
-    subset_inner: str | None = None
-    if subset_id is not None:
-        sub = meta_db.execute(
-            "SELECT sql_query FROM pipeline_subsets WHERE id=? AND pipeline_id=?",
-            (subset_id, pipeline_id),
-        ).fetchone()
-        if not sub:
-            return []
-        inner = normalize_subset_inner(sub[0])
-        err = validate_subset_inner(inner)
-        if err:
-            return []
-        subset_inner = inner
+    subset_inner = resolve_subset_inner(meta_db, pipeline_id, subset_id)
+    if subset_id is not None and subset_inner is None:
+        return []
 
     with sqlite3.connect(str(pipeline_db_path)) as conn:
         conn.row_factory = sqlite3.Row
@@ -82,10 +166,15 @@ def get_qa_sample(
         if field not in cols:
             return []
         has_confidence = "llm_confidence" in cols
+        abs_expr = (
+            "COALESCE(abstract_text, '') AS abstract_text"
+            if "abstract_text" in cols
+            else "'' AS abstract_text"
+        )
 
         if subset_inner:
             cte = f"WITH _fr_subset AS (\n{subset_inner}\n)\n"
-            base = f"{cte}SELECT openalex_id, title, doi, "
+            base = f"{cte}SELECT openalex_id, title, doi, {abs_expr}, "
             if has_confidence:
                 rows = conn.execute(
                     base
@@ -111,7 +200,7 @@ def get_qa_sample(
                 ).fetchall()
         elif has_confidence:
             rows = conn.execute(
-                f"""SELECT openalex_id, title, doi,
+                f"""SELECT openalex_id, title, doi, {abs_expr},
                            llm_confidence, {field} AS field_value
                     FROM filtered_records
                     WHERE {field} IS NOT NULL
@@ -124,7 +213,7 @@ def get_qa_sample(
             ).fetchall()
         else:
             rows = conn.execute(
-                f"""SELECT openalex_id, title, doi,
+                f"""SELECT openalex_id, title, doi, {abs_expr},
                            NULL AS llm_confidence, {field} AS field_value
                     FROM filtered_records
                     WHERE {field} IS NOT NULL
@@ -138,11 +227,10 @@ def get_qa_sample(
         if r["openalex_id"] in already_rated:
             continue
         results.append({
-            "openalex_id":    r["openalex_id"],
-            "title":          r["title"],
-            "doi":            r["doi"],
-            "llm_confidence": r["llm_confidence"],
-            "llm_value":      r["field_value"],
+            "openalex_id": r["openalex_id"],
+            "title":       r["title"],
+            "doi":         r["doi"],
+            "abstract":    (r["abstract_text"] or "").strip() if r["abstract_text"] is not None else "",
         })
         if len(results) >= size:
             break
@@ -198,10 +286,38 @@ def upsert_rating(
 
 # ── IRR ───────────────────────────────────────────────────────────────────────
 
+def _qa_rows_to_krippendorff_units(rows: list) -> list[dict]:
+    """Build Krippendorff unit list from qa_ratings rows.
+
+    Each human rating is one (unit, rater, value). For each (field, openalex_id) we also
+    attach the model once as rater ``"llm"`` when *llm_value* is present, so human vs.
+    model agreement counts as overlap (same paper, two ratings).
+    """
+    from collections import defaultdict
+
+    # field -> openalex_id -> {"humans": [(user_id, value), ...], "llm": str|None}
+    cells: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(lambda: {"humans": [], "llm": None}))
+    for r in rows:
+        field, oa_id, uid, human_val, llm_val = r[0], r[1], r[2], r[3], r[4]
+        c = cells[field][oa_id]
+        c["humans"].append((uid, human_val))
+        if llm_val is not None and str(llm_val).strip():
+            c["llm"] = llm_val if isinstance(llm_val, str) else str(llm_val)
+
+    units: list[dict] = []
+    for field, by_oa in cells.items():
+        for oa_id, c in by_oa.items():
+            for uid, human_val in c["humans"]:
+                units.append({"unit": oa_id, "rater": uid, "value": human_val})
+            if c["llm"] is not None:
+                units.append({"unit": oa_id, "rater": "llm", "value": c["llm"]})
+    return units
+
+
 def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
     """Compute Krippendorff's alpha per QA field for the pipeline."""
     rows = meta_db.execute(
-        "SELECT field, openalex_id, user_id, human_value FROM qa_ratings WHERE pipeline_id=?",
+        "SELECT field, openalex_id, user_id, human_value, llm_value FROM qa_ratings WHERE pipeline_id=?",
         (pipeline_id,),
     ).fetchall()
     if not rows:
@@ -210,12 +326,14 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
     from collections import defaultdict
     by_field: dict[str, list] = defaultdict(list)
     for r in rows:
-        by_field[r[0]].append({"unit": r[1], "rater": r[2], "value": r[3]})
+        by_field[r[0]].append(r)
 
-    field_meta = {f["id"]: f for f in QA_FIELDS}
+    for fid in list(by_field.keys()):
+        by_field[fid] = _qa_rows_to_krippendorff_units(by_field[fid])
+
     results = []
     for fid, units in by_field.items():
-        fmeta = field_meta.get(fid, {})
+        fmeta = FIELD_BY_ID.get(fid, {})
         vtype = "set" if fmeta.get("type") == "multi" else (
             "ordinal" if fmeta.get("type") == "ordinal" else "nominal"
         )
@@ -227,14 +345,20 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
                 by_unit[uid] = []
             by_unit[uid].append(u)
         overlap_units = sum(1 for lst in by_unit.values() if len(lst) >= 2)
+        n_raters = len({u["rater"] for u in units})
+        # Krippendorff α only applies when ≥2 ratings exist on the same unit (same paper + field).
+        if overlap_units == 0:
+            quality = "no overlapping ratings"
+        else:
+            quality = interpret_alpha(alpha)
         results.append({
             "field":          fid,
             "label":          fmeta.get("label", fid),
-            "raters":         len({u["rater"] for u in units}),
+            "raters":         n_raters,
             "units":          len({u["unit"] for u in units}),
             "overlap_units":  overlap_units,
             "alpha":          round(alpha, 4) if alpha is not None else None,
-            "quality":        interpret_alpha(alpha),
+            "quality":        quality,
         })
     return {"fields": results}
 

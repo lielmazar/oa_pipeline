@@ -2,28 +2,6 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../api/client';
 import { ChartCard, ChartResult } from './chartPrimitives.jsx';
 
-const ORTHO_DIMENSIONS = [
-  { key: 'llm_fuel_classification', json: true, tier: 1 },
-  { key: 'llm_ml_role', json: true, tier: 1 },
-  { key: 'llm_ml_algorithm', json: true, tier: 1 },
-  { key: 'llm_scope', json: true, tier: 1 },
-  { key: 'llm_ml_data_source', json: false, tier: 1 },
-  { key: 'matched_fuel_subgroups', json: true, tier: 2 },
-  { key: 'matched_impact_subgroups', json: true, tier: 2 },
-  { key: 'open_access_oa_status', json: false, tier: 2 },
-  { key: 'type', json: false, tier: 2 },
-  { key: 'publication_year', json: false, tier: 2 },
-];
-
-const ORTHO_PAIR_PRESETS = [
-  ['llm_fuel_classification', 'llm_ml_role'],
-  ['llm_ml_role', 'llm_ml_algorithm'],
-  ['llm_fuel_classification', 'llm_ml_algorithm'],
-  ['llm_fuel_classification', 'llm_ml_data_source'],
-  ['llm_scope', 'llm_ml_role'],
-  ['llm_scope', 'llm_fuel_classification'],
-];
-
 const DEFAULT_CHART_ORDER = [
   'publications_by_year',
   'top_countries',
@@ -41,6 +19,8 @@ const DEFAULT_CHART_ORDER = [
   'mlrole_x_algorithm',
   'fuelclass_x_algorithm',
   'fuelclass_x_datasource',
+  'scope_x_mlrole',
+  'scope_x_fuelclass',
   'fuel_subgroup_ml_cooccurrence',
   'fuel_impact_model_cooccurrence',
 ];
@@ -53,420 +33,89 @@ function formatStat(v) {
   return v.toExponential(3);
 }
 
-function downloadBlob(filename, content, mime) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function OrthogonalityPanel({ pipelineId, subsetId, onDrilldown }) {
-  const [schema, setSchema] = useState([]);
-  const [columnX, setColumnX] = useState('');
-  const [columnY, setColumnY] = useState('');
-  const [jsonX, setJsonX] = useState(true);
-  const [jsonY, setJsonY] = useState(true);
-  const [showAllCols, setShowAllCols] = useState(false);
+function OrthogonalityPresetOverview({ pipelineId, subsetId }) {
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [result, setResult] = useState(null);
-  const [overview, setOverview] = useState([]);
+
+  const goChart = (chartId) => {
+    const el = document.getElementById(`chart-${chartId}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
 
   useEffect(() => {
-    apiFetch(`/api/pipeline/${pipelineId}/schema`)
-      .then(r => r.ok ? r.json() : [])
-      .then(s => {
-        setSchema(s);
-        if (s.length >= 2) {
-          setColumnX(prev => prev || s[0].name);
-          setColumnY(prev => prev || s[1].name);
-        }
-      })
-      .catch(() => {});
-  }, [pipelineId]);
-
-  const run = async () => {
-    if (!subsetId || !columnX || !columnY) return;
+    if (!subsetId) {
+      setData(null);
+      return;
+    }
     setLoading(true);
-    setError('');
-    setResult(null);
-    try {
-      const res = await apiFetch(`/api/pipeline/${pipelineId}/orthogonality/pair`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          column_x: columnX,
-          column_y: columnY,
-          json_x: jsonX,
-          json_y: jsonY,
-          subset_id: subsetId,
-        }),
-      });
-      const d = await res.json();
-      if (!res.ok) { setError(d.detail || 'Request failed'); return; }
-      setResult(d);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const q = `?subset_id=${subsetId}`;
+    apiFetch(`/api/pipeline/${pipelineId}/orthogonality/preset-overview${q}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(setData)
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [pipelineId, subsetId]);
 
-  const schemaMap = new Map(schema.map(c => [c.name, c]));
-  const preferredCols = ORTHO_DIMENSIONS.filter(d => schemaMap.has(d.key)).map(d => d.key);
-  const allCols = schema.map(c => c.name);
-  const colOpts = showAllCols ? allCols : (preferredCols.length ? preferredCols : allCols);
-  const dimMeta = new Map(ORTHO_DIMENSIONS.map(d => [d.key, d]));
-  const availablePresets = ORTHO_PAIR_PRESETS.filter(([a, b]) => schemaMap.has(a) && schemaMap.has(b));
-
-  const applyPreset = (a, b) => {
-    const ma = dimMeta.get(a);
-    const mb = dimMeta.get(b);
-    setColumnX(a);
-    setColumnY(b);
-    setJsonX(!!ma?.json);
-    setJsonY(!!mb?.json);
-  };
-
-  const exportJson = () => {
-    if (!result) return;
-    const payload = {
-      dimensions: {
-        x: columnX,
-        y: columnY,
-        x_json: jsonX,
-        y_json: jsonY,
-        subset_id: subsetId,
-      },
-      stats: result.stats || {},
-      interpretation: result.interpretation || '',
-      row_labels: result.row_labels || [],
-      col_labels: result.col_labels || [],
-      matrix: result.matrix || [],
-      raw_rows: result.raw_rows || [],
-      exported_at: new Date().toISOString(),
-    };
-    downloadBlob(
-      `orthogonality_${columnX}_x_${columnY}.json`,
-      JSON.stringify(payload, null, 2),
-      'application/json;charset=utf-8',
+  if (!subsetId) {
+    return (
+      <p className="text-xs text-gray-500">Select a subset to load the pairwise association overview.</p>
     );
-  };
-
-  const exportCsv = () => {
-    if (!result) return;
-    const lines = [];
-    const stats = result.stats || {};
-    lines.push('section,key,value');
-    lines.push(`summary,dimension_x,"${String(columnX).replace(/"/g, '""')}"`);
-    lines.push(`summary,dimension_y,"${String(columnY).replace(/"/g, '""')}"`);
-    lines.push(`summary,chi2,${stats.chi2 ?? ''}`);
-    lines.push(`summary,df,${stats.df ?? ''}`);
-    lines.push(`summary,p_value,${stats.p_value ?? ''}`);
-    lines.push(`summary,cramers_v,${stats.cramers_v ?? ''}`);
-    lines.push(`summary,n,${stats.n ?? ''}`);
-    lines.push(`summary,interpretation,"${String(result.interpretation || '').replace(/"/g, '""')}"`);
-    lines.push('');
-    lines.push('matrix,row_label,col_label,count');
-    (result.row_labels || []).forEach((rl, i) => {
-      (result.col_labels || []).forEach((cl, j) => {
-        const val = result.matrix?.[i]?.[j];
-        lines.push(`matrix,"${String(rl).replace(/"/g, '""')}","${String(cl).replace(/"/g, '""')}",${val ?? ''}`);
-      });
-    });
-    downloadBlob(
-      `orthogonality_${columnX}_x_${columnY}.csv`,
-      lines.join('\n'),
-      'text/csv;charset=utf-8',
-    );
-  };
-
-  const computeOverview = async () => {
-    if (!subsetId) return;
-    setOverviewLoading(true);
-    const out = [];
-    for (const [a, b] of availablePresets) {
-      const ma = dimMeta.get(a);
-      const mb = dimMeta.get(b);
-      try {
-        const res = await apiFetch(`/api/pipeline/${pipelineId}/orthogonality/pair`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            column_x: a,
-            column_y: b,
-            json_x: !!ma?.json,
-            json_y: !!mb?.json,
-            subset_id: subsetId,
-          }),
-        });
-        const d = await res.json();
-        if (!res.ok) continue;
-        out.push({
-          a,
-          b,
-          chi2: d?.stats?.chi2,
-          df: d?.stats?.df,
-          p: d?.stats?.p_value,
-          v: d?.stats?.cramers_v,
-          n: d?.stats?.n,
-          interpretation: d?.interpretation || '',
-        });
-      } catch {
-        // ignore failed pair
-      }
-    }
-    out.sort((x, y) => (Number(y.v || 0) - Number(x.v || 0)));
-    setOverview(out);
-    setOverviewLoading(false);
-  };
-
+  }
+  if (loading) {
+    return <p className="text-xs text-gray-400 py-4 text-center">Computing meaningful pairs…</p>;
+  }
+  const pairs = data?.pairs || [];
   return (
-    <div className="space-y-4 text-xs">
+    <div className="space-y-3 text-xs">
       <p className="text-gray-600">
-        Chi-square independence test on the same cell counts as a heatmap (exploded JSON columns optional).
-        Low p-value suggests association (dimensions are not independent in this subset).
+        Precomputed χ² / Cramér&apos;s V for curated dimension pairs (same cell counts as the co-occurrence heatmaps
+        below). Use <em>View chart</em> to jump to the matching chart.
       </p>
-      <div className="bg-gray-50 border border-gray-200 rounded-lg p-2.5 space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-[11px] font-medium text-gray-600">Tier-1 meaningful presets</p>
-          <label className="inline-flex items-center gap-1.5 cursor-pointer text-[11px] text-gray-600">
-            <input type="checkbox" checked={showAllCols} onChange={e => setShowAllCols(e.target.checked)} />
-            Show all columns
-          </label>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {availablePresets.map(([a, b]) => (
-            <button
-              key={`${a}__${b}`}
-              type="button"
-              onClick={() => applyPreset(a, b)}
-              className="px-2 py-1 text-[11px] border rounded-lg bg-white hover:bg-blue-50 hover:border-blue-300"
-            >
-              {a} × {b}
-            </button>
-          ))}
-          {availablePresets.length === 0 && (
-            <span className="text-[11px] text-gray-400">No curated presets available in current schema.</span>
-          )}
-        </div>
+      <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
+        <table className="w-full text-[11px]">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="px-2 py-1 text-left">Pair</th>
+              <th className="px-2 py-1 text-left">χ²</th>
+              <th className="px-2 py-1 text-left">p</th>
+              <th className="px-2 py-1 text-left">V</th>
+              <th className="px-2 py-1 text-left">n</th>
+              <th className="px-2 py-1 text-left">Heatmap</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.map((row) => (
+              <tr key={row.id} className="border-t border-gray-100">
+                <td className="px-2 py-1 align-top">{row.label}</td>
+                <td className="px-2 py-1 font-mono">{row.error ? '—' : formatStat(row.stats?.chi2)}</td>
+                <td className="px-2 py-1 font-mono">{row.error ? '—' : formatStat(row.stats?.p_value)}</td>
+                <td className="px-2 py-1 font-mono">{row.error ? '—' : formatStat(row.stats?.cramers_v)}</td>
+                <td className="px-2 py-1">{row.error ? '—' : row.stats?.n ?? '—'}</td>
+                <td className="px-2 py-1">
+                  {row.chart_id ? (
+                    <button
+                      type="button"
+                      onClick={() => goChart(row.chart_id)}
+                      className="text-blue-700 underline hover:text-blue-900"
+                    >
+                      View chart
+                    </button>
+                  ) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <h4 className="text-[12px] font-semibold text-gray-700">Meaningful pairs overview</h4>
-          <button
-            type="button"
-            onClick={computeOverview}
-            disabled={overviewLoading || !subsetId}
-            className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-40"
-          >
-            {overviewLoading ? 'Computing…' : 'Precompute all meaningful pairs'}
-          </button>
-        </div>
-        {overview.length > 0 && (
-          <div className="overflow-x-auto border border-gray-200 rounded-lg">
-            <table className="w-full text-[11px]">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="px-2 py-1 text-left">Dimension A</th>
-                  <th className="px-2 py-1 text-left">Dimension B</th>
-                  <th className="px-2 py-1 text-left">χ²</th>
-                  <th className="px-2 py-1 text-left">df</th>
-                  <th className="px-2 py-1 text-left">p</th>
-                  <th className="px-2 py-1 text-left">Cramér&apos;s V</th>
-                  <th className="px-2 py-1 text-left">n</th>
-                  <th className="px-2 py-1 text-left">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {overview.map((r) => (
-                  <tr key={`${r.a}__${r.b}`} className="border-t border-gray-100">
-                    <td className="px-2 py-1">{r.a}</td>
-                    <td className="px-2 py-1">{r.b}</td>
-                    <td className="px-2 py-1">{formatStat(r.chi2)}</td>
-                    <td className="px-2 py-1">{formatStat(r.df)}</td>
-                    <td className="px-2 py-1">{formatStat(r.p)}</td>
-                    <td className="px-2 py-1 font-semibold">{formatStat(r.v)}</td>
-                    <td className="px-2 py-1">{formatStat(r.n)}</td>
-                    <td className="px-2 py-1">
-                      <button
-                        type="button"
-                        className="underline text-blue-700"
-                        onClick={() => {
-                          applyPreset(r.a, r.b);
-                          onDrilldown?.('SELECT * FROM _fr_subset');
-                        }}
-                      >
-                        Open records
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <label className="block">
-          <span className="text-gray-500 font-medium">Dimension A</span>
-          <select value={columnX} onChange={e => setColumnX(e.target.value)} className="mt-1 w-full border rounded-lg px-2 py-2">
-            {colOpts.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-gray-500 font-medium">Dimension B</span>
-          <select value={columnY} onChange={e => setColumnY(e.target.value)} className="mt-1 w-full border rounded-lg px-2 py-2">
-            {colOpts.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={jsonX} onChange={e => setJsonX(e.target.checked)} />
-          <span className="text-gray-600">A is JSON array (json_each)</span>
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={jsonY} onChange={e => setJsonY(e.target.checked)} />
-          <span className="text-gray-600">B is JSON array</span>
-        </label>
-      </div>
-      <button type="button" onClick={run} disabled={loading || !subsetId}
-        className="text-sm px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 disabled:opacity-40 font-medium">
-        {loading ? 'Computing…' : 'Run test'}
-      </button>
-      {error && <p className="text-red-600">{error}</p>}
-      {result && (
-        <div className="space-y-3 border border-gray-200 rounded-xl p-4 bg-gray-50/50">
-          <p className="text-sm text-gray-800 font-medium">{result.interpretation}</p>
-          <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="px-2 py-1 text-left font-medium text-gray-600">Variable</th>
-                  <th className="px-2 py-1 text-left font-medium text-gray-600">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">Dimension A</td><td className="px-2 py-1 font-mono">{columnX}</td></tr>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">Dimension B</td><td className="px-2 py-1 font-mono">{columnY}</td></tr>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">χ²</td><td className="px-2 py-1">{formatStat(result.stats?.chi2)}</td></tr>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">df</td><td className="px-2 py-1">{formatStat(result.stats?.df)}</td></tr>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">p-value</td><td className="px-2 py-1">{formatStat(result.stats?.p_value)}</td></tr>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">Cramér&apos;s V</td><td className="px-2 py-1">{formatStat(result.stats?.cramers_v)}</td></tr>
-                <tr className="border-t border-gray-100"><td className="px-2 py-1 text-gray-600">n</td><td className="px-2 py-1">{formatStat(result.stats?.n)}</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={exportCsv}
-              className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50"
-            >
-              Export CSV
-            </button>
-            <button
-              type="button"
-              onClick={exportJson}
-              className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50"
-            >
-              Export JSON
-            </button>
-          </div>
-          {result.stats && !result.stats.error && (
-            <div className="flex flex-wrap gap-4 text-gray-700">
-              <span>χ² = <strong>{result.stats.chi2}</strong></span>
-              <span>df = {result.stats.df}</span>
-              <span>p ≈ <strong>{result.stats.p_value ?? '—'}</strong></span>
-              <span>Cramér&apos;s V ≈ <strong>{result.stats.cramers_v ?? '—'}</strong></span>
-              <span>n = {result.stats.n}</span>
-            </div>
-          )}
-          {result.stats?.error && <p className="text-amber-800">{result.stats.error}</p>}
-          <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
-            <h4 className="text-[12px] font-semibold text-gray-700">Detailed explanation of statistics</h4>
-            <ul className="text-[11px] text-gray-600 space-y-1 list-disc pl-4">
-              <li><strong>χ² (Chi-square):</strong> Measures how far observed cross-tab counts deviate from counts expected under independence. Larger values imply stronger departure from independence.</li>
-              <li><strong>df (degrees of freedom):</strong> Determined by table size: (rows - 1) × (cols - 1). High df is common with many categories.</li>
-              <li><strong>p-value:</strong> Probability of seeing at least this χ² if the dimensions were independent. Very small values indicate the association is unlikely due to chance.</li>
-              <li><strong>Cramér&apos;s V:</strong> Effect-size measure (0 to 1) normalized for table size. Higher values indicate stronger practical association, not just statistical significance.</li>
-              <li><strong>n:</strong> Total observations contributing to the contingency table. Larger n increases sensitivity of the test.</li>
-              <li><strong>Interpretation note:</strong> Statistical association does not imply causality; it indicates structured co-occurrence between the chosen dimensions in this subset.</li>
-            </ul>
-            <div className="overflow-x-auto border border-gray-200 rounded-lg bg-gray-50">
-              <table className="w-full text-[11px]">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="px-2 py-1 text-left font-medium text-gray-600">Step</th>
-                    <th className="px-2 py-1 text-left font-medium text-gray-600">Rule</th>
-                    <th className="px-2 py-1 text-left font-medium text-gray-600">Interpretation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="border-t border-gray-100">
-                    <td className="px-2 py-1 text-gray-600">1. Significance</td>
-                    <td className="px-2 py-1 font-mono">p &gt;= 0.05</td>
-                    <td className="px-2 py-1">No statistically significant association.</td>
-                  </tr>
-                  <tr className="border-t border-gray-100">
-                    <td className="px-2 py-1 text-gray-600">2. Effect size</td>
-                    <td className="px-2 py-1 font-mono">0.00–0.10</td>
-                    <td className="px-2 py-1">Weak association.</td>
-                  </tr>
-                  <tr className="border-t border-gray-100">
-                    <td className="px-2 py-1 text-gray-600">2. Effect size</td>
-                    <td className="px-2 py-1 font-mono">0.10–0.30</td>
-                    <td className="px-2 py-1">Moderate association.</td>
-                  </tr>
-                  <tr className="border-t border-gray-100">
-                    <td className="px-2 py-1 text-gray-600">2. Effect size</td>
-                    <td className="px-2 py-1 font-mono">0.30–0.50</td>
-                    <td className="px-2 py-1">Strong association.</td>
-                  </tr>
-                  <tr className="border-t border-gray-100">
-                    <td className="px-2 py-1 text-gray-600">2. Effect size</td>
-                    <td className="px-2 py-1 font-mono">&gt; 0.50</td>
-                    <td className="px-2 py-1">Very strong association.</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p className="text-[11px] text-gray-500">
-              Use chi-square and Cramér&apos;s V together: chi-square/p-value tells whether association is statistically detectable; Cramér&apos;s V tells how strong it is. With large <span className="font-mono">n</span>, tiny effects can still be statistically significant.
-            </p>
-          </div>
-          {result.row_labels?.length > 0 && result.matrix && (
-            <div className="overflow-x-auto max-h-64 overflow-y-auto border border-gray-200 rounded-lg bg-white">
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr>
-                    <th className="px-2 py-1 text-left bg-gray-100"> </th>
-                    {result.col_labels.map(cl => (
-                      <th key={cl} className="px-2 py-1 text-left bg-gray-100 truncate max-w-[120px]">{cl}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.row_labels.map((rl, i) => (
-                    <tr key={rl} className="border-t border-gray-100">
-                      <td className="px-2 py-1 font-medium text-gray-600 truncate max-w-[120px]">{rl}</td>
-                      {result.matrix[i]?.map((cell, j) => (
-                        <td key={j} className="px-2 py-1">{cell}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+      {pairs.some((x) => x.error) && (
+        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-2 py-1">
+          Some pairs could not be computed (missing columns or insufficient categories). LLM charts require processed records.
+        </p>
       )}
     </div>
   );
 }
+
 
 function DynamicChartPanel({ pipelineId, subsetId }) {
   const [schema, setSchema] = useState([]);
@@ -782,10 +431,10 @@ function SavedChartCard({ pipelineId, item, onDeleted }) {
   );
 }
 
+const CHART_CARD_WRAP = 'flex-1 min-w-[min(100%,340px)] max-w-full';
+
 export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrilldown }) {
   const [charts, setCharts] = useState([]);
-  const [chartsOpen, setChartsOpen] = useState(true);
-  const [orthoOpen, setOrthoOpen] = useState(true);
   const [topN, setTopN] = useState(20);
   const [cutoffYear, setCutoffYear] = useState(2000);
 
@@ -807,6 +456,8 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrill
     'mlrole_x_algorithm',
     'fuelclass_x_algorithm',
     'fuelclass_x_datasource',
+    'scope_x_mlrole',
+    'scope_x_fuelclass',
     'fuel_subgroup_ml_cooccurrence',
     'fuel_impact_model_cooccurrence',
   ]);
@@ -815,87 +466,79 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, onDrill
   const dependencyCharts = orderedCharts.filter(c => dependencyIds.has(c.id));
 
   return (
-    <section className="space-y-3">
-      <div className="bg-white border border-gray-200 rounded-xl p-4">
-        <div className="flex items-center justify-between cursor-pointer" onClick={() => setChartsOpen(o => !o)}>
-          <h2 className="text-sm font-bold text-gray-900">Preset Charts</h2>
-          <span className="text-gray-400 text-xs">{chartsOpen ? '▲' : '▼'}</span>
+    <section className="bg-white border border-gray-200 rounded-xl p-4">
+      <h2 className="text-sm font-bold text-gray-900 mb-3">Charts & orthogonality</h2>
+      {!subsetId && (
+        <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 mb-3">
+          Select a subset to scope default charts to that slice (full dataset charts use all filtered records when no subset is selected — pick &quot;All&quot; or a saved subset).
+        </p>
+      )}
+      {subsetId && (
+        <div className="flex flex-wrap gap-3 text-xs items-end mb-4">
+          <label className="block">
+            <span className="text-gray-500">Top N (charts with top-N)</span>
+            <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={topN} min={1} max={500}
+              onChange={e => setTopN(Number(e.target.value) || 20)} />
+          </label>
+          <label className="block">
+            <span className="text-gray-500">Year cutoff (publications by year)</span>
+            <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={cutoffYear}
+              onChange={e => setCutoffYear(Number(e.target.value) || 2000)} />
+          </label>
         </div>
-        {chartsOpen && (
-          <div className="space-y-6 mt-3">
-            {!subsetId && (
-              <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-                Select a subset to scope default charts to that slice (full dataset charts use all filtered records when no subset is selected — pick &quot;All&quot; or a saved subset).
-              </p>
-            )}
-            {subsetId && (
-              <div className="flex flex-wrap gap-3 text-xs items-end">
-                <label className="block">
-                  <span className="text-gray-500">Top N (charts with top-N)</span>
-                  <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={topN} min={1} max={500}
-                    onChange={e => setTopN(Number(e.target.value) || 20)} />
-                </label>
-                <label className="block">
-                  <span className="text-gray-500">Year cutoff (publications by year)</span>
-                  <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={cutoffYear}
-                    onChange={e => setCutoffYear(Number(e.target.value) || 2000)} />
-                </label>
-              </div>
-            )}
-            {visibleCharts.length === 0 && (
-              <p className="text-sm text-gray-400 text-center py-8">
-                {llmOnly ? 'No LLM charts — run classification first.' : 'No charts.'}
-              </p>
-            )}
-            {metaCharts.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Metadata & corpus</h3>
-                <div className="space-y-2">
-                  {metaCharts.map(c => (
-                    <ChartCard key={c.id} chart={c} pipelineId={pipelineId} subsetId={subsetId}
-                      topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
-                  ))}
-                </div>
-              </div>
-            )}
-            {llmCharts.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">LLM classification</h3>
-                <div className="space-y-2">
-                  {llmCharts.map(c => (
-                    <ChartCard key={c.id} chart={c} pipelineId={pipelineId} subsetId={subsetId}
-                      topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
-                  ))}
-                </div>
-              </div>
-            )}
-            {dependencyCharts.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Cross-dimension dependency</h3>
-                <p className="text-[11px] text-gray-500 mb-2">
-                  Most meaningful for orthogonality context (association between dimensions).
-                </p>
-                <div className="space-y-2">
-                  {dependencyCharts.map(c => (
-                    <ChartCard key={c.id} chart={c} pipelineId={pipelineId} subsetId={subsetId}
-                      topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+      )}
+
+      <div className="flex flex-wrap gap-4 items-start">
+        {visibleCharts.length === 0 && (
+          <p className="text-sm text-gray-400 w-full text-center py-6 border border-dashed border-gray-200 rounded-xl bg-gray-50/50">
+            {llmOnly ? 'No LLM charts — run classification first.' : 'No preset charts.'}
+          </p>
         )}
-      </div>
-      <div className="bg-white border border-gray-200 rounded-xl p-4">
-        <div className="flex items-center justify-between cursor-pointer" onClick={() => setOrthoOpen(o => !o)}>
-          <h2 className="text-sm font-bold text-gray-900">Orthogonality Analysis</h2>
-          <span className="text-gray-400 text-xs">{orthoOpen ? '▲' : '▼'}</span>
+        {metaCharts.length > 0 && (
+          <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Metadata & corpus
+          </h3>
+        )}
+        {metaCharts.map(c => (
+          <div key={c.id} className={CHART_CARD_WRAP}>
+            <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
+              topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
+          </div>
+        ))}
+        {llmCharts.length > 0 && (
+          <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
+            LLM classification
+          </h3>
+        )}
+        {llmCharts.map(c => (
+          <div key={c.id} className={CHART_CARD_WRAP}>
+            <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
+              topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
+          </div>
+        ))}
+        {dependencyCharts.length > 0 && (
+          <>
+            <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
+              Cross-dimension dependency
+            </h3>
+            <p className="w-full basis-full text-[11px] text-gray-500 -mt-2 mb-0">
+              Most meaningful for orthogonality context (association between dimensions).
+            </p>
+          </>
+        )}
+        {dependencyCharts.map(c => (
+          <div key={c.id} className={CHART_CARD_WRAP}>
+            <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
+              topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
+          </div>
+        ))}
+
+        <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-2 border-t border-gray-100 pt-4">
+          Orthogonality
+        </h3>
+        <div className={`${CHART_CARD_WRAP} border border-gray-200 rounded-xl p-3 bg-gray-50/60`}>
+          <OrthogonalityPresetOverview pipelineId={pipelineId} subsetId={subsetId} />
         </div>
-        {orthoOpen && (
-          <div className="mt-3">
-            <OrthogonalityPanel pipelineId={pipelineId} subsetId={subsetId} onDrilldown={onDrilldown} />
-          </div>
-        )}
       </div>
     </section>
   );

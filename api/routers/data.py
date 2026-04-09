@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.business.chart_defs import get_chart_definition
+from api.business.ortho_presets import compute_ortho_preset_overview
 from api.business.dynamic_chart import build_dynamic_sql
 from api.business.subset_sql import apply_subset_to_chart_sql, compose_subset_query
 from api.config import settings
@@ -319,6 +320,25 @@ def orthogonality_pair(
         "interpretation": interp,
         "raw_rows": [{"x": a, "y": b, "count": c} for a, b, c in rows[:2000]],
     }
+
+
+@router.get("/{pipeline_id}/orthogonality/preset-overview")
+def orthogonality_preset_overview(
+    pipeline_id: int,
+    user: CurrentUser,
+    db: Db,
+    subset_id: int | None = None,
+):
+    """Precomputed χ² / Cramér's V for all meaningful dimension pairs (see heatmap charts)."""
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    subset_sql = None
+    if subset_id is not None:
+        sub = get_subset(db, pipeline_id, subset_id)
+        if not sub:
+            raise HTTPException(404, "subset not found")
+        subset_sql = sub["sql_query"]
+    pairs = compute_ortho_preset_overview(db_path, subset_sql)
+    return {"pairs": pairs}
 
 
 class DynamicChartBody(BaseModel):

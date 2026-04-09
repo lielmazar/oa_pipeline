@@ -84,7 +84,8 @@ CREATE TABLE IF NOT EXISTS pipeline_subsets (
     pipeline_id INTEGER NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
     name        TEXT NOT NULL,
     sql_query   TEXT NOT NULL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    preset_key  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_saved_charts (
@@ -106,11 +107,23 @@ def _open(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_pipeline_subsets(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ALTER TABLE pipeline_subsets ADD COLUMN preset_key TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_subsets_preset "
+        "ON pipeline_subsets(pipeline_id, preset_key) WHERE preset_key IS NOT NULL"
+    )
+
+
 def init_db() -> None:
     """Create tables on first run. Safe to call every startup."""
     settings.meta_db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = _open(settings.meta_db_path)
     conn.executescript(SCHEMA_SQL)
+    _migrate_pipeline_subsets(conn)
     conn.commit()
     conn.close()
 

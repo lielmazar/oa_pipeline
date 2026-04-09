@@ -49,7 +49,8 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "  COUNT(*) AS count "
             "FROM filtered_records "
             "GROUP BY 1 "
-            "ORDER BY MIN(COALESCE(publication_year, 0))"
+            "ORDER BY MIN(CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} "
+            "             THEN 0 ELSE publication_year END)"
         ),
         renderer="bar", x_key="year", y_key="count",
         params=("cutoff_year",),
@@ -257,6 +258,36 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "  AND llm_ml_data_source IS NOT NULL "
             "  AND LOWER(llm_ml_data_source) NOT IN ('none', '', 'null') "
             "GROUP BY f.value, y_label"
+        ),
+        renderer="heatmap", x_key="x_label", y_key="y_label",
+        llm_only=True,
+    ),
+    "scope_x_mlrole": ChartDefinition(
+        id="scope_x_mlrole",
+        title="Value-Chain Scope × ML Role",
+        sql_template=(
+            "SELECT s.value AS x_label, r.value AS y_label, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, "
+            "  json_each(llm_scope) s, json_each(llm_ml_role) r "
+            "WHERE LOWER(s.value) NOT IN ('none', '') AND s.value IS NOT NULL "
+            "  AND LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL "
+            "GROUP BY s.value, r.value"
+        ),
+        renderer="heatmap", x_key="x_label", y_key="y_label",
+        llm_only=True,
+    ),
+    "scope_x_fuelclass": ChartDefinition(
+        id="scope_x_fuelclass",
+        title="Value-Chain Scope × Fuel Classification",
+        sql_template=(
+            "SELECT s.value AS x_label, f.value AS y_label, "
+            "  COUNT(DISTINCT openalex_id) AS count "
+            "FROM filtered_records, "
+            "  json_each(llm_scope) s, json_each(llm_fuel_classification) f "
+            "WHERE LOWER(s.value) NOT IN ('none', '') AND s.value IS NOT NULL "
+            "  AND LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL "
+            "GROUP BY s.value, f.value"
         ),
         renderer="heatmap", x_key="x_label", y_key="y_label",
         llm_only=True,

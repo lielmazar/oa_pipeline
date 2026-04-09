@@ -23,7 +23,8 @@ export default function DatasetAccessSection({
 
   useEffect(() => {
     if (selectedSubsetId != null || subsets.length === 0) return;
-    const allSubset = subsets.find(s => String(s.name || '').trim().toLowerCase() === 'all');
+    const allSubset = subsets.find(s => s.preset_key === 'all')
+      || subsets.find(s => String(s.name || '').trim().toLowerCase() === 'all');
     onSelectSubset(allSubset ? allSubset.id : subsets[0].id);
   }, [selectedSubsetId, subsets, onSelectSubset]);
 
@@ -72,7 +73,7 @@ export default function DatasetAccessSection({
 
       {subsets.length === 0 ? (
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-          No subsets yet. Use the Research DB Viewer to filter records and save them as a subset.
+          No subsets available yet. Open the pipeline once the research database exists; preset subsets are created automatically.
         </p>
       ) : (
         <div className="space-y-2">
@@ -92,12 +93,16 @@ export default function DatasetAccessSection({
                   }`}>
                   <div className="flex justify-between gap-2">
                     <span className="text-sm font-medium text-gray-900 truncate pr-6">{s.name}</span>
-                    <button type="button" title="Delete subset" onClick={e => delSubset(e, s.id)}
-                      className="absolute top-2 right-2 text-gray-300 hover:text-red-500 text-lg leading-none opacity-0 group-hover:opacity-100 transition">
-                      ×
-                    </button>
+                    {!s.preset_key && (
+                      <button type="button" title="Delete subset" onClick={e => delSubset(e, s.id)}
+                        className="absolute top-2 right-2 text-gray-300 hover:text-red-500 text-lg leading-none opacity-0 group-hover:opacity-100 transition">
+                        ×
+                      </button>
+                    )}
                   </div>
-                  <div className="mt-1 text-xs text-gray-500 font-mono truncate" title={s.sql_query}>{s.sql_query}</div>
+                  {!s.preset_key && (
+                    <div className="mt-1 text-xs text-gray-500 font-mono truncate" title={s.sql_query}>{s.sql_query}</div>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-2 text-xs">
                     {rc != null && (
                       <span className="bg-white border border-gray-200 rounded px-2 py-0.5">
