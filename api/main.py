@@ -59,9 +59,21 @@ app.include_router(qa_router)
 
 # ── Unauthenticated API guard ─────────────────────────────────────────────────
 
+# #region agent log
+import json as _dj, time as _dt
+_DLOG = Path("/opt/oa-pipeline/debug-b7b538.log")
+def _dlog(msg, **kw):
+    try: _DLOG.open("a").write(_dj.dumps({"t":_dt.time(),"msg":msg,**kw})+"\n")
+    except: pass
+# #endregion
+
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
+    # #region agent log
+    if "/records/" in path and "view" not in path and "explain" not in path and "download" not in path:
+        _dlog("middleware_records_path", path=path, raw=str(request.url), method=request.method)
+    # #endregion
     public = {"/api/auth/login", "/api/docs", "/api/openapi.json"}
     if path.startswith("/api/") and path not in public:
         from api.config import settings as s

@@ -352,3 +352,59 @@ def delete_subset(db: sqlite3.Connection, pipeline_id: int, subset_id: int) -> b
     )
     db.commit()
     return cur.rowcount > 0
+
+
+def get_subset(db: sqlite3.Connection, pipeline_id: int, subset_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT * FROM pipeline_subsets WHERE id = ? AND pipeline_id = ?",
+        (subset_id, pipeline_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+# ── Saved charts (per user, per pipeline) ─────────────────────────────────────
+
+def list_saved_charts(db: sqlite3.Connection, pipeline_id: int, user_id: int) -> list[dict]:
+    return [
+        dict(r)
+        for r in db.execute(
+            """SELECT * FROM pipeline_saved_charts
+               WHERE pipeline_id = ? AND user_id = ?
+               ORDER BY created_at DESC""",
+            (pipeline_id, user_id),
+        ).fetchall()
+    ]
+
+
+def create_saved_chart(
+    db: sqlite3.Connection, pipeline_id: int, user_id: int, name: str, config_json: str
+) -> dict:
+    cur = db.execute(
+        """INSERT INTO pipeline_saved_charts (pipeline_id, user_id, name, config_json)
+           VALUES (?, ?, ?, ?)""",
+        (pipeline_id, user_id, name.strip(), config_json),
+    )
+    db.commit()
+    row = db.execute(
+        "SELECT * FROM pipeline_saved_charts WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return dict(row)
+
+
+def delete_saved_chart(db: sqlite3.Connection, pipeline_id: int, chart_id: int, user_id: int) -> bool:
+    cur = db.execute(
+        """DELETE FROM pipeline_saved_charts
+           WHERE id = ? AND pipeline_id = ? AND user_id = ?""",
+        (chart_id, pipeline_id, user_id),
+    )
+    db.commit()
+    return cur.rowcount > 0
+
+
+def get_saved_chart(db: sqlite3.Connection, pipeline_id: int, chart_id: int, user_id: int) -> dict | None:
+    row = db.execute(
+        """SELECT * FROM pipeline_saved_charts
+           WHERE id = ? AND pipeline_id = ? AND user_id = ?""",
+        (chart_id, pipeline_id, user_id),
+    ).fetchone()
+    return dict(row) if row else None

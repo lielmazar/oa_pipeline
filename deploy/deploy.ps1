@@ -79,10 +79,36 @@ if (-not $SkipBuild) {
             $NpmCmd = "npm"
         } catch {}
     }
+    # Vite/npm child processes must find node.exe — on Windows, PATH often lacks Node when npm is invoked by full path.
+    $nodeDirs = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in @(
+        "C:\Program Files\nodejs",
+        "${env:ProgramFiles}\nodejs",
+        "${env:LOCALAPPDATA}\Programs\nodejs"
+    )) { if (Test-Path (Join-Path $d "node.exe")) { [void]$nodeDirs.Add($d) } }
+    if ($NvmHome = $env:NVM_HOME) {
+        $nvmNode = Join-Path $NvmHome "nvm"
+        if (Test-Path $nvmNode) { [void]$nodeDirs.Add($nvmNode) }
+    }
+    if ($NpmCmd -match '[\\/]') {
+        $npmParent = Split-Path -Parent $NpmCmd
+        if (Test-Path (Join-Path $npmParent "node.exe")) { [void]$nodeDirs.Add($npmParent) }
+    } else {
+        $npmWhich = Get-Command "npm" -ErrorAction SilentlyContinue
+        if ($npmWhich -and $npmWhich.Source) {
+            $npmParent = Split-Path -Parent $npmWhich.Source
+            if (Test-Path (Join-Path $npmParent "node.exe")) { [void]$nodeDirs.Add($npmParent) }
+        }
+    }
+    foreach ($d in $nodeDirs) {
+        if ($env:PATH -notlike "*$d*") { $env:PATH = "$d;$env:PATH" }
+    }
     if ($null -ne $NpmCmd) {
         Push-Location $WebDir
         & $NpmCmd ci --silent
+        if (-not $?) { throw "npm ci failed" }
         & $NpmCmd run build
+        if (-not $?) { throw "npm run build failed (is node.exe on PATH?)" }
         Pop-Location
         Write-Host "    -> built to api/static/" -ForegroundColor DarkGray
     } else {

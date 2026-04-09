@@ -19,14 +19,18 @@ from api.business.runner import (
     poll_filter_run,
     start_filter_run_for,
 )
+from api.business.subset_sql import normalize_subset_inner, validate_subset_inner
 from api.config import settings
+from api.db.research import count_subset_rows, get_db_stats
 from api.db.pipelines import (
     STAGES,
     STAGE_LABELS,
     advance_pipeline_stage,
     create_pipeline,
+    create_saved_chart,
     create_subset,
     delete_pipeline,
+    delete_saved_chart,
     delete_subset,
     fork_pipeline,
     get_next_stage,
@@ -36,6 +40,7 @@ from api.db.pipelines import (
     go_back_pipeline_stage,
     list_all_pipelines,
     list_events,
+    list_saved_charts,
     list_subsets,
     record_event,
     set_pipeline_stage,
@@ -446,6 +451,10 @@ def add_subset(pipeline_id: int, body: SubsetBody, user: CurrentUser, db: Db):
     sql  = (body.sql_query or "").strip()
     if not name or not sql:
         raise HTTPException(400, "name and sql_query required")
+    inner = normalize_subset_inner(sql)
+    err = validate_subset_inner(inner)
+    if err:
+        raise HTTPException(400, err)
     return create_subset(db, pipeline_id, name, sql)
 
 
@@ -455,6 +464,75 @@ def remove_subset(pipeline_id: int, subset_id: int, user: CurrentUser, db: Db):
         raise HTTPException(404, "not found")
     if not delete_subset(db, pipeline_id, subset_id):
         raise HTTPException(404, "subset not found")
+    return {"ok": True}
+
+
+@router.get("/{pipeline_id}/subsets/summary")
+def subsets_summary(pipeline_id: int, user: CurrentUser, db: Db):
+    """Subsets with live row counts and total dataset size from the research DB."""
+    p = get_pipeline(db, pipeline_id, user["id"])
+    if not p:
+        raise HTTPException(404, "not found")
+    db_path_str = p.get("output_db_path")
+    path = Path(db_path_str) if db_path_str else None
+    dataset_total = None
+    if path and path.exists():
+        st = get_db_stats(path)
+        if st.get("exists"):
+            dataset_total = st.get("record_count")
+    subsets = list_subsets(db, pipeline_id)
+    enriched = []
+    for s in subsets:
+        row_count = None
+        if path and path.exists():
+            r = count_subset_rows(path, s["sql_query"])
+            row_count = r.get("count") if "error" not in r else None
+        enriched.append({**s, "row_count": row_count})
+    return {"dataset_total": dataset_total, "subsets": enriched}
+
+
+# ── Saved charts (dynamic chart configs) ───────────────────────────────────────
+
+class SavedChartBody(BaseModel):
+    name: str
+    config: dict
+
+
+@router.get("/{pipeline_id}/saved-charts")
+def list_saved_charts_route(pipeline_id: int, user: CurrentUser, db: Db):
+    if not get_pipeline(db, pipeline_id, user["id"]):
+        raise HTTPException(404, "not found")
+    rows = list_saved_charts(db, pipeline_id, user["id"])
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["config"] = json.loads(d.get("config_json") or "{}")
+        except json.JSONDecodeError:
+            d["config"] = {}
+        del d["config_json"]
+        out.append(d)
+    return out
+
+
+@router.post("/{pipeline_id}/saved-charts", status_code=201)
+def create_saved_chart_route(pipeline_id: int, body: SavedChartBody, user: CurrentUser, db: Db):
+    if not get_pipeline(db, pipeline_id, user["id"]):
+        raise HTTPException(404, "not found")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    row = create_saved_chart(db, pipeline_id, user["id"], name, json.dumps(body.config, ensure_ascii=False))
+    row["config"] = json.loads(row.pop("config_json") or "{}")
+    return row
+
+
+@router.delete("/{pipeline_id}/saved-charts/{chart_id}")
+def delete_saved_chart_route(pipeline_id: int, chart_id: int, user: CurrentUser, db: Db):
+    if not get_pipeline(db, pipeline_id, user["id"]):
+        raise HTTPException(404, "not found")
+    if not delete_saved_chart(db, pipeline_id, chart_id, user["id"]):
+        raise HTTPException(404, "saved chart not found")
     return {"ok": True}
 
 
