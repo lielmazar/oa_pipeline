@@ -11,9 +11,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.business.pipeline_status import build_stage_status
 from api.business.preset_subsets import ensure_preset_subsets
@@ -100,6 +100,7 @@ def llm_model_catalog():
         "default_model": default_model,
         "models": _serialize_llm_pricing_table(pricing),
         "model_ids": list(pricing.keys()),
+        "default_batch_limit": settings.llm_batch_default_limit,
     }
 
 
@@ -730,9 +731,68 @@ def _resolve_llm_subset_inner_sql(db, pipeline_id: int, subset_id: int | None) -
     return inner
 
 
+def _effective_llm_batch_limit(requested: int | None) -> int | None:
+    """Explicit client limit wins; otherwise optional server default (caps batch size when set)."""
+    if requested is not None:
+        return requested
+    return settings.llm_batch_default_limit
+
+
+def _llm_scope_stats(db_path: Path, inner_sql: str | None) -> dict:
+    """
+    Row counts for the same scope llm_classify uses: total rows, LLM finished, still pending (NULL llm_is_hydrocarbon).
+    """
+    if not db_path.is_file():
+        return {
+            "db_exists": False,
+            "total": 0,
+            "llm_done": 0,
+            "llm_pending": 0,
+            "has_llm_column": False,
+        }
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
+        except sqlite3.OperationalError:
+            return {
+                "db_exists": True,
+                "total": 0,
+                "llm_done": 0,
+                "llm_pending": 0,
+                "has_llm_column": False,
+            }
+        has_llm = "llm_is_hydrocarbon" in cols
+        if inner_sql:
+            clean_subset = inner_sql.strip().rstrip(";")
+            cte = f"WITH _fr_subset AS (\n{clean_subset}\n)\n"
+            frm = "_fr_subset"
+        else:
+            cte = ""
+            frm = "filtered_records"
+        total = conn.execute(f"{cte}SELECT COUNT(*) FROM {frm}").fetchone()[0]
+        if has_llm:
+            done = conn.execute(
+                f"{cte}SELECT COUNT(*) FROM {frm} WHERE llm_is_hydrocarbon IS NOT NULL"
+            ).fetchone()[0]
+        else:
+            done = 0
+        pending = max(0, total - done)
+        return {
+            "db_exists": True,
+            "total": int(total),
+            "llm_done": int(done),
+            "llm_pending": int(pending),
+            "has_llm_column": has_llm,
+        }
+    finally:
+        conn.close()
+
+
 class LlmEstimateBody(BaseModel):
     model: str = "gpt-5.4-nano"
     subset_id: int | None = None
+    limit: int | None = Field(default=None, gt=0)
 
 
 @router.post("/{pipeline_id}/llm/estimate")
@@ -745,6 +805,9 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
     cmd = _llm_classify_cmd(pipeline_id) + ["estimate", "--model", body.model]
     if inner:
         cmd += ["--subset-sql", inner]
+    eff = _effective_llm_batch_limit(body.limit)
+    if eff:
+        cmd += ["--limit", str(eff)]
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
         raise HTTPException(500, out[:2000])
@@ -753,8 +816,28 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
 
 class LlmSubmitBody(BaseModel):
     model: str = "gpt-5.4-nano"
-    limit: int | None = None
+    limit: int | None = Field(default=None, gt=0)
     subset_id: int | None = None
+
+
+@router.get("/{pipeline_id}/llm/stats")
+def llm_stats(
+    pipeline_id: int,
+    user: CurrentUser,
+    db: Db,
+    subset_id: int | None = Query(default=None),
+):
+    """Counts for the chosen subset scope (same as estimate/batch): total, LLM done, still to process."""
+    p = get_pipeline(db, pipeline_id, user["id"])
+    if not p:
+        raise HTTPException(404, "not found")
+    db_path = Path(p["output_db_path"]) if p.get("output_db_path") else None
+    if not db_path:
+        raise HTTPException(400, "pipeline has no research database path")
+    inner = _resolve_llm_subset_inner_sql(db, pipeline_id, subset_id)
+    stats = _llm_scope_stats(db_path, inner)
+    eff = _effective_llm_batch_limit(None)
+    return {**stats, "effective_default_limit": eff}
 
 
 @router.post("/{pipeline_id}/llm/submit")
@@ -772,20 +855,29 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
     cmd = _llm_classify_cmd(pipeline_id) + ["prepare", "--model", body.model]
     if inner:
         cmd += ["--subset-sql", inner]
-    if body.limit:
-        cmd += ["--limit", str(body.limit)]
+    eff_limit = _effective_llm_batch_limit(body.limit)
+    if eff_limit:
+        cmd += ["--limit", str(eff_limit)]
     # Only prepare + submit, don't poll (that's the frontend's job via /llm/status)
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
         raise HTTPException(500, out[:2000])
     _merge_batch_subset_meta(db, pipeline_id, body.subset_id)
+    st0 = _load_batch_state(pipeline_id) or {}
+    st0["effective_batch_limit"] = eff_limit
+    _save_batch_state(pipeline_id, st0)
     cmd2 = _llm_classify_cmd(pipeline_id) + ["submit"]
     rc2, out2 = _run_llm_cmd(cmd2, settings.pipeline_scripts_dir)
     if rc2 != 0:
         raise HTTPException(500, out2[:2000])
     record_event(db, pipeline_id, "llm_submitted")
     state = _load_batch_state(pipeline_id) or {}
-    return {"ok": True, "batch_id": state.get("batch_id"), "output": out2}
+    return {
+        "ok": True,
+        "batch_id": state.get("batch_id"),
+        "output": out2,
+        "effective_batch_limit": eff_limit,
+    }
 
 
 _TERMINAL_STATUSES = {"completed", "failed", "expired", "cancelled"}

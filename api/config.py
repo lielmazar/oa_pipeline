@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +27,13 @@ class Settings(BaseSettings):
     # DB browser
     db_page_size: int = 100
     db_query_max_rows: int = 5000
+
+    # LLM batch: when set, caps how many *unprocessed* rows are included per submit if the client omits limit.
+    llm_batch_default_limit: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OA_LLM_BATCH_DEFAULT_LIMIT", "LLM_BATCH_DEFAULT_LIMIT"),
+        gt=0,
+    )
 
     @property
     def repo_root(self) -> Path:

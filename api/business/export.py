@@ -18,10 +18,13 @@ from pathlib import Path
 from api.business.chart_defs import _CHART_DEFINITIONS
 from api.business.dynamic_chart import build_dynamic_sql
 from api.business.export_charts import (
+    is_mpl_available,
     render_dynamic_chart_png,
     render_preset_chart_png,
     rows_to_csv_text,
 )
+from api.business.ortho_presets import ORTHO_PRESET_ROWS, compute_ortho_preset_overview
+from api.business.orthogonality import contingency_from_labeled_counts
 from api.business.qa import compute_irr
 from api.business.subset_sql import normalize_subset_inner
 from api.db.pipelines import get_subset, list_saved_charts, list_subsets
@@ -51,6 +54,15 @@ _LLM_EXPORT_COLUMNS = [
 ]
 
 
+_CSV_EXCLUDE_COLUMNS = frozenset({
+    "llm_result_raw",
+    "llm_batch_id",
+    "llm_tokens_input",
+    "llm_tokens_output",
+    "llm_tokens_reasoning",
+})
+
+
 def _ensure_llm_columns(conn: sqlite3.Connection) -> None:
     for col, typedef in _LLM_EXPORT_COLUMNS:
         try:
@@ -76,13 +88,21 @@ def _png_add_watermark(png_bytes: bytes, text: str = "cservices.online") -> byte
 
 # ── CSV helpers ───────────────────────────────────────────────────────────────
 
-def _dump_table_csv(conn: sqlite3.Connection, table: str) -> str:
+def _dump_table_csv(
+    conn: sqlite3.Connection,
+    table: str,
+    exclude_cols: frozenset[str] | None = None,
+) -> str:
     try:
         cur  = conn.execute(f"SELECT * FROM [{table}]")  # noqa: S608
         cols = [d[0] for d in cur.description]
         rows = cur.fetchall()
     except Exception:
         return ""
+    if exclude_cols:
+        keep = [i for i, c in enumerate(cols) if c not in exclude_cols]
+        cols = [cols[i] for i in keep]
+        rows = [tuple(row[i] for i in keep) for row in rows]
     buf = io.StringIO()
     w   = csv.writer(buf)
     w.writerow(cols)
@@ -90,12 +110,21 @@ def _dump_table_csv(conn: sqlite3.Connection, table: str) -> str:
     return buf.getvalue()
 
 
-def _dump_table_csv_chunks(conn: sqlite3.Connection, table: str, chunk_mb: int) -> list[str]:
+def _dump_table_csv_chunks(
+    conn: sqlite3.Connection,
+    table: str,
+    chunk_mb: int,
+    exclude_cols: frozenset[str] | None = None,
+) -> list[str]:
     try:
         cur  = conn.execute(f"SELECT * FROM [{table}]")  # noqa: S608
         cols = [d[0] for d in cur.description]
     except Exception:
         return []
+    keep: list[int] | None = None
+    if exclude_cols:
+        keep = [i for i, c in enumerate(cols) if c not in exclude_cols]
+        cols = [cols[i] for i in keep]
     header_buf = io.StringIO()
     csv.writer(header_buf).writerow(cols)
     header = header_buf.getvalue()
@@ -105,7 +134,7 @@ def _dump_table_csv_chunks(conn: sqlite3.Connection, table: str, chunk_mb: int) 
     buf.write(header)
     w   = csv.writer(buf)
     for row in cur:
-        w.writerow(row)
+        w.writerow(tuple(row[i] for i in keep) if keep else row)
         if buf.tell() >= target:
             chunks.append(buf.getvalue())
             buf = io.StringIO()
@@ -184,6 +213,27 @@ def _cooc_query_sql(a: dict, b: dict) -> str:
     )
 
 
+_METADATA_AXIS_IDS = frozenset({"countries", "institutions", "work_type", "oa_status", "pub_year"})
+_LLM_AXIS_IDS = frozenset({"llm_fuel_cls", "llm_ml_role", "llm_ml_algo", "llm_scope"})
+
+
+def _is_meaningful_cooc_pair(a_id: str, b_id: str) -> bool:
+    """Filter co-occurrence pairs to research-relevant combinations only."""
+    if a_id in _METADATA_AXIS_IDS and b_id in _METADATA_AXIS_IDS:
+        return False
+    a_grp = a_id.split("_")[0] if "_" in a_id else a_id
+    b_grp = b_id.split("_")[0] if "_" in b_id else b_id
+    if {a_grp, b_grp} == {"0", "1"}:
+        return True
+    if a_id in _LLM_AXIS_IDS and b_id in _LLM_AXIS_IDS:
+        return True
+    if (a_grp in ("0", "1") and b_id in _LLM_AXIS_IDS) or (
+        b_grp in ("0", "1") and a_id in _LLM_AXIS_IDS
+    ):
+        return True
+    return False
+
+
 def _export_cooccurrence_data(
     zf: zipfile.ZipFile, prefix: str, db_path: Path, pipeline_config: dict,
 ) -> list[str]:
@@ -191,7 +241,12 @@ def _export_cooccurrence_data(
     written: list[str] = []
     if len(axes) < 2:
         return written
-    combos = [(a, b) for i, a in enumerate(axes[:10]) for j, b in enumerate(axes[:10]) if i != j]
+    combos = [
+        (a, b)
+        for i, a in enumerate(axes)
+        for j, b in enumerate(axes)
+        if i != j and _is_meaningful_cooc_pair(a["id"], b["id"])
+    ]
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA query_only = ON")
         for ax_a, ax_b in combos:
@@ -271,6 +326,91 @@ def _export_subsets_snapshot(
     )
 
 
+def _export_orthogonality(
+    zf: zipfile.ZipFile,
+    prefix: str,
+    db_path: Path,
+    subsets: list[dict],
+) -> list[str]:
+    """Export orthogonality statistics for all preset pairs across subsets.
+
+    Writes summary CSV/JSON and per-pair contingency matrices.
+    """
+    from api.db.research import fetch_pairwise_contingency
+
+    notes: list[str] = []
+    all_rows: list[dict] = []
+
+    scope_list: list[tuple[str | None, str, str | None]] = [
+        (None, "full_dataset", None),
+    ]
+    for s in subsets:
+        safe = _safe_filename_part(s.get("name", f"subset_{s['id']}"))
+        scope_list.append((s.get("sql_query"), safe, s.get("name")))
+
+    for subset_sql, scope_name, subset_label in scope_list:
+        inner_sql = normalize_subset_inner(subset_sql) if subset_sql else None
+        try:
+            pairs = compute_ortho_preset_overview(db_path, inner_sql)
+        except Exception as exc:
+            notes.append(f"orthogonality ({scope_name}): {exc}")
+            continue
+        for p in pairs:
+            stats = p.get("stats") or {}
+            all_rows.append({
+                "scope": subset_label or "Full dataset",
+                "pair_id": p["id"],
+                "pair_label": p["label"],
+                "column_a": p["a"],
+                "column_b": p["b"],
+                "chi2": stats.get("chi2"),
+                "p_value": stats.get("p_value"),
+                "cramers_v": stats.get("cramers_v"),
+                "cramers_v_ci_low": stats.get("cramers_v_ci_low"),
+                "cramers_v_ci_high": stats.get("cramers_v_ci_high"),
+                "ci_level": stats.get("cramers_v_ci_level"),
+                "n": stats.get("n"),
+                "df": stats.get("df"),
+                "interpretation": p.get("interpretation") or p.get("error") or "",
+            })
+
+            if p.get("error"):
+                continue
+            raw = fetch_pairwise_contingency(
+                db_path, inner_sql, p["a"], p["b"], p["json_x"], p["json_y"],
+            )
+            data_rows = raw.get("rows") or []
+            if not data_rows:
+                continue
+            rl_set, cl_set, matrix = contingency_from_labeled_counts(data_rows)
+            mat_buf = io.StringIO()
+            w = csv.writer(mat_buf)
+            w.writerow([""] + cl_set)
+            for ri, rl in enumerate(rl_set):
+                w.writerow([rl] + [int(matrix[ri][ci]) for ci in range(len(cl_set))])
+            zf.writestr(
+                f"{prefix}orthogonality/{scope_name}/{p['id']}_contingency.csv",
+                mat_buf.getvalue(),
+            )
+
+    if all_rows:
+        csv_cols = [
+            "scope", "pair_id", "pair_label", "column_a", "column_b",
+            "chi2", "p_value", "cramers_v", "cramers_v_ci_low", "cramers_v_ci_high",
+            "ci_level", "n", "df", "interpretation",
+        ]
+        csv_buf = io.StringIO()
+        w = csv.DictWriter(csv_buf, fieldnames=csv_cols)
+        w.writeheader()
+        w.writerows(all_rows)
+        zf.writestr(f"{prefix}orthogonality/summary.csv", csv_buf.getvalue())
+        zf.writestr(
+            f"{prefix}orthogonality/summary.json",
+            json.dumps(all_rows, indent=2, default=str),
+        )
+    return notes
+
+
 def _export_preset_charts_csv_png(
     zf: zipfile.ZipFile,
     prefix: str,
@@ -283,6 +423,9 @@ def _export_preset_charts_csv_png(
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
         pass
+    mpl_ok = is_mpl_available()
+    if not mpl_ok:
+        notes.append("PNG export unavailable: matplotlib not installed or failed to initialize")
     try:
         with sqlite3.connect(db_path) as conn:
             _ensure_llm_columns(conn)
@@ -296,9 +439,16 @@ def _export_preset_charts_csv_png(
                     notes.append(f"{spec.id}: {exc}")
                     continue
                 zf.writestr(f"{prefix}charts/data/{spec.id}.csv", rows_to_csv_text(cols, rows))
+                if not rows:
+                    notes.append(f"{spec.id}: PNG skipped (query returned no data)")
+                    continue
+                if not mpl_ok:
+                    continue
                 png = render_preset_chart_png(spec, cols, rows)
                 if png:
                     zf.writestr(f"{prefix}charts/png/{spec.id}.png", _png_add_watermark(png))
+                else:
+                    notes.append(f"{spec.id}: PNG rendering failed (unsupported renderer or data shape)")
     except Exception as exc:
         notes.append(f"preset charts: {exc}")
     return notes
@@ -336,8 +486,24 @@ def _export_saved_charts_bundle(
             if sub:
                 subset_inner = normalize_subset_inner(sub["sql_query"])
             else:
-                notes.append(f"saved chart {sc['id']}: subset {sid} not found")
-                continue
+                all_subs = list_subsets(meta_db, pid)
+                matched = next(
+                    (s for s in all_subs if s.get("preset_key") and str(s["id"]) == str(sid)),
+                    None,
+                )
+                if not matched:
+                    matched = next((s for s in all_subs), None)
+                if matched:
+                    notes.append(
+                        f"saved chart {sc['id']}: subset {sid} not found, "
+                        f"falling back to '{matched.get('name', matched['id'])}'"
+                    )
+                    subset_inner = normalize_subset_inner(matched["sql_query"])
+                else:
+                    notes.append(
+                        f"saved chart {sc['id']}: subset {sid} not found, "
+                        f"running against full dataset"
+                    )
         schema = get_schema(db_path)
         allowed = {c["name"] for c in schema}
         try:
@@ -423,7 +589,20 @@ def build_export_zip(
                 zf.write(str(kw), f"{prefix}keywords.json")
             sp = pipeline_dir / "pipeline_state.json"
             if sp.exists():
-                zf.write(str(sp), f"{prefix}pipeline_state.json")
+                try:
+                    raw_state = json.loads(sp.read_text(encoding="utf-8"))
+                    all_files = raw_state.get("all_files") or []
+                    raw_state["all_files_count"] = len(all_files)
+                    if all_files:
+                        raw_state["all_files_first"] = all_files[0]
+                        raw_state["all_files_last"] = all_files[-1]
+                    raw_state.pop("all_files", None)
+                    zf.writestr(
+                        f"{prefix}pipeline_state.json",
+                        json.dumps(raw_state, indent=2, default=str),
+                    )
+                except Exception:
+                    zf.write(str(sp), f"{prefix}pipeline_state.json")
             bs = pipeline_dir / "batch_runs" / "state.json"
             if bs.exists():
                 zf.write(str(bs), f"{prefix}batch_state.json")
@@ -458,11 +637,18 @@ def build_export_zip(
             export_notes.extend(_export_preset_charts_csv_png(zf, prefix, db_path))
             if meta_db is not None:
                 export_notes.extend(_export_saved_charts_bundle(zf, prefix, db_path, meta_db, pipeline))
-        if export_notes:
-            zf.writestr(
-                f"{prefix}export_notes.txt",
-                "Non-fatal export notes (charts or QA may be partial):\n\n" + "\n".join(export_notes),
-            )
+
+        # 3b. Orthogonality analysis
+        exported_subsets: list[dict] = []
+        if db_path and db_path.exists():
+            if meta_db is not None:
+                exported_subsets = list_subsets(meta_db, pipeline_id)
+            try:
+                export_notes.extend(
+                    _export_orthogonality(zf, prefix, db_path, exported_subsets)
+                )
+            except Exception as exc:
+                export_notes.append(f"orthogonality export: {exc}")
 
         # 4. Database export
         if db_path and db_path.exists() and tables:
@@ -479,7 +665,8 @@ def build_export_zip(
             if db_format in ("csv", "both"):
                 with sqlite3.connect(db_path) as conn:
                     for table in tables:
-                        csv_text = _dump_table_csv(conn, table)
+                        excl = _CSV_EXCLUDE_COLUMNS if table == "filtered_records" else None
+                        csv_text = _dump_table_csv(conn, table, exclude_cols=excl)
                         if csv_text:
                             zf.writestr(f"{prefix}data/{table}.csv", csv_text)
 
@@ -487,15 +674,16 @@ def build_export_zip(
                 use_mb_chunks = chunk_mb is not None and chunk_mb > 0
                 with sqlite3.connect(db_path) as conn:
                     for table in tables:
+                        excl = _CSV_EXCLUDE_COLUMNS if table == "filtered_records" else None
                         if use_mb_chunks:
-                            chunks = _dump_table_csv_chunks(conn, table, int(chunk_mb))
+                            chunks = _dump_table_csv_chunks(conn, table, int(chunk_mb), exclude_cols=excl)
                             if len(chunks) == 1:
                                 zf.writestr(f"{prefix}data/{table}.csv", chunks[0])
                             else:
                                 for i, chunk in enumerate(chunks):
                                     zf.writestr(f"{prefix}data/{table}_part{i+1:03d}.csv", chunk)
                         else:
-                            csv_text = _dump_table_csv(conn, table)
+                            csv_text = _dump_table_csv(conn, table, exclude_cols=excl)
                             if csv_text:
                                 zf.writestr(f"{prefix}data/{table}.csv", csv_text)
 
@@ -564,7 +752,7 @@ def build_export_zip(
         meta["config"] = pipeline_config
         zf.writestr(f"{prefix}pipeline_metadata.json", json.dumps(meta, indent=2, default=str))
 
-        # 8. README
+        # 8. Export manifest (structured, machine-readable)
         db_size_str = (
             f"{round(db_path.stat().st_size / 1024**2, 1)} MB"
             if db_path and db_path.exists() else "n/a"
@@ -578,6 +766,58 @@ def build_export_zip(
                 db_format_desc = "CSV (single file per table)"
         else:
             db_format_desc = db_format.upper()
+
+        manifest = {
+            "export_version": "1.1.0",
+            "timestamp_utc": ts,
+            "pipeline": {
+                "id": pipeline_id,
+                "name": pipeline.get("name"),
+            },
+            "record_count": record_count,
+            "db_size": db_size_str,
+            "db_format": db_format_desc,
+            "tables": {tbl: table_row_counts.get(tbl, 0) for tbl in tables},
+            "subsets": [
+                {"id": s["id"], "name": s.get("name"), "row_count": s.get("row_count")}
+                for s in exported_subsets
+            ] if exported_subsets else [],
+            "artifacts": {
+                "orthogonality": {
+                    "path": "orthogonality/",
+                    "description": "Chi-squared / Cramer's V for preset dimension pairs",
+                    "preset_pairs": [p["id"] for p in ORTHO_PRESET_ROWS],
+                },
+                "preset_charts": {
+                    "csv_dir": "charts/data/",
+                    "png_dir": "charts/png/",
+                    "count": len(_CHART_DEFINITIONS),
+                },
+                "cooccurrence": {
+                    "dir": "charts/cooccurrence/",
+                    "description": "Curated co-occurrence CSV matrices",
+                },
+                "qa": {
+                    "dir": "qa/",
+                    "description": "QA ratings, annotations, IRR summary",
+                },
+            },
+            "csv_excluded_columns": sorted(_CSV_EXCLUDE_COLUMNS),
+            "warnings": export_notes,
+        }
+        zf.writestr(
+            f"{prefix}export_manifest.json",
+            json.dumps(manifest, indent=2, default=str),
+        )
+
+        if export_notes:
+            zf.writestr(
+                f"{prefix}export_notes.txt",
+                "Non-fatal export notes (charts or QA may be partial):\n\n"
+                + "\n".join(export_notes),
+            )
+
+        # 9. README
         table_lines_md = "\n".join(
             f"- `{tbl}`: {table_row_counts.get(tbl, 0):,} rows" for tbl in tables
         ) or "*(no tables yet)*"
@@ -591,14 +831,16 @@ def build_export_zip(
             "## Files\n\n"
             "| File / Folder | Description |\n|---|---|\n"
             "| `keywords.json` | Keyword groups used to screen OpenAlex records |\n"
-            "| `pipeline_state.json` | Pipeline state: skip statistics, record counts |\n"
+            "| `pipeline_state.json` | Pipeline state: skip statistics, record counts (trimmed) |\n"
             "| `batch_state.json` | LLM batch API state |\n"
             "| `pipeline_metadata.json` | Full pipeline configuration |\n"
+            "| `export_manifest.json` | Structured export manifest with all artifact metadata |\n"
             "| `chart_queries.sql` | All SQL queries for charts |\n"
             "| `charts/data/` | Tabular CSV per preset chart (same data as plots) |\n"
             "| `charts/png/` | Matplotlib PNG exports for preset charts |\n"
             "| `charts/saved/` | Saved dynamic charts: `config.json`, `data.csv`, `chart.png` |\n"
-            "| `charts/cooccurrence/` | Co-occurrence CSV exports |\n"
+            "| `charts/cooccurrence/` | Co-occurrence CSV exports (curated pairs) |\n"
+            "| `orthogonality/` | Chi-squared / Cramer's V summary + contingency matrices |\n"
             "| `qa/` | QA ratings, annotations, `irr_summary.json` |\n"
             "| `subsets/subsets.json` | Subset definitions and live row counts |\n"
             f"| `data/` | Database export ({db_format_desc}) |\n"
@@ -606,6 +848,9 @@ def build_export_zip(
             "| `export_notes.txt` | Optional warnings if some chart queries failed |\n\n"
             "### Database tables\n\n"
             + table_lines_md
+            + "\n\n### CSV column exclusions\n\n"
+            "The following columns are excluded from CSV exports (present in SQLite only): "
+            + ", ".join(f"`{c}`" for c in sorted(_CSV_EXCLUDE_COLUMNS))
         )
         zf.writestr(f"{prefix}README.md", readme)
 

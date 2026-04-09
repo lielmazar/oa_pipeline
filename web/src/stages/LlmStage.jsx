@@ -21,6 +21,15 @@ function statusHeadline(status) {
   return map[s] || `Status: ${s.replace(/_/g, ' ') || 'unknown'}`;
 }
 
+/** Empty → use server default (if any) or all pending rows; otherwise a positive cap. */
+function parseBatchLimitInput(raw) {
+  const t = String(raw ?? '').trim();
+  if (!t) return { ok: true, value: null };
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 1) return { ok: false, value: null };
+  return { ok: true, value: Math.min(Number.MAX_SAFE_INTEGER, Math.floor(n)) };
+}
+
 function batchProgressParts(counts) {
   const total = Number(counts?.total) || 0;
   const completed = Number(counts?.completed) || 0;
@@ -103,6 +112,8 @@ export default function LlmStage({ pipeline }) {
   const [model, setModel]         = useState(null);
   const [subsetSummary, setSubsetSummary] = useState(null);
   const [subsetId, setSubsetId]   = useState(null);
+  const [batchLimit, setBatchLimit] = useState('');
+  const [llmStats, setLlmStats]   = useState(null);
   const [output, setOutput]       = useState('');
 
   useEffect(() => {
@@ -124,6 +135,22 @@ export default function LlmStage({ pipeline }) {
       .catch(() => setSubsetSummary(null));
   }, [pipeline.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const q = subsetId == null ? '' : `?subset_id=${subsetId}`;
+    apiFetch(`/api/pipeline/${pipeline.id}/llm/stats${q}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled) setLlmStats(d);
+      })
+      .catch(() => {
+        if (!cancelled) setLlmStats(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pipeline.id, subsetId]);
+
   const subsets = subsetSummary?.subsets ?? [];
 
   const fetchStatus = useCallback(async () => {
@@ -142,11 +169,16 @@ export default function LlmStage({ pipeline }) {
 
   const runEstimate = async () => {
     if (!catalogOk) return;
+    const lim = parseBatchLimitInput(batchLimit);
+    if (!lim.ok) {
+      setError('Batch limit must be a positive integer, or leave blank.');
+      return;
+    }
     setEstimating(true); setError(''); setOutput('');
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/estimate`, {
         method: 'POST',
-        body: JSON.stringify({ model, subset_id: subsetId }),
+        body: JSON.stringify({ model, subset_id: subsetId, limit: lim.value }),
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Estimate failed'); return; }
@@ -156,12 +188,24 @@ export default function LlmStage({ pipeline }) {
 
   const submit = async () => {
     if (!catalogOk) return;
-    if (!confirm('Submit LLM batch? This will incur API costs.')) return;
+    const lim = parseBatchLimitInput(batchLimit);
+    if (!lim.ok) {
+      setError('Batch limit must be a positive integer, or leave blank.');
+      return;
+    }
+    const pending = llmStats?.llm_pending;
+    const msg =
+      lim.value != null
+        ? `Submit LLM batch for up to ${lim.value.toLocaleString()} record(s)? This will incur API costs.`
+        : catalog?.default_batch_limit != null
+          ? `Submit LLM batch (server default: up to ${Number(catalog.default_batch_limit).toLocaleString()} unprocessed rows per run; clear cap in .env for unlimited)? This will incur API costs.`
+          : `Submit LLM batch${pending != null ? ` (${pending.toLocaleString()} pending in this scope)` : ''}? This will incur API costs.`;
+    if (!confirm(msg)) return;
     setSubmitting(true); setError(''); setOutput('');
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/submit`, {
         method: 'POST',
-        body: JSON.stringify({ model, subset_id: subsetId }),
+        body: JSON.stringify({ model, subset_id: subsetId, limit: lim.value }),
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Submit failed'); return; }
@@ -238,10 +282,38 @@ export default function LlmStage({ pipeline }) {
           Classify records via OpenAI Batch API. Requires{' '}
           <code className="bg-gray-100 px-1 rounded">OPENAI_API_KEY</code> on the server.
           Results are written back to the research database. Choose which subset to estimate and batch (same subsets as Dataset access).
+          Already-classified rows are skipped on the next run; use a batch limit to send at most N pending rows per submit.
           Model list and rates come from{' '}
           <code className="bg-gray-100 px-1 rounded">pipeline/llm_pricing.py</code> (Batch API; same source as{' '}
           <code className="bg-gray-100 px-1 rounded">llm_classify.py</code>).
         </p>
+
+        {llmStats && !llmStats.db_exists && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
+            Research database not found yet — counts appear after the pipeline produces <code className="bg-amber-100/80 px-1 rounded">output.sqlite</code>.
+          </p>
+        )}
+        {llmStats?.db_exists && (
+          <div className="text-xs text-gray-700 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2 mb-4 space-y-1">
+            <div>
+              <span className="font-medium text-gray-800">LLM progress in this scope: </span>
+              <span className="tabular-nums">{llmStats.llm_done.toLocaleString()}</span>
+              {' '}done ·{' '}
+              <span className="tabular-nums">{llmStats.llm_pending.toLocaleString()}</span>
+              {' '}still unprocessed
+              {!llmStats.has_llm_column && (
+                <span className="text-gray-500"> (no <code className="bg-white/80 px-1 rounded">llm_is_hydrocarbon</code> column yet — treating all rows as pending)</span>
+              )}
+            </div>
+            {catalog?.default_batch_limit != null && (
+              <div className="text-gray-600">
+                Server default batch cap:{' '}
+                <span className="font-mono font-medium">{Number(catalog.default_batch_limit).toLocaleString()}</span>
+                {' '}rows per submit when the limit field below is left blank (set <code className="bg-white/80 px-1 rounded">OA_LLM_BATCH_DEFAULT_LIMIT</code> on the server).
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Batch progress — always visible for orientation */}
         <div className="rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50/80 to-white p-4 mb-4">
@@ -298,10 +370,26 @@ export default function LlmStage({ pipeline }) {
                     </p>
                   )}
                 </div>
-                {typeof status.record_count === 'number' && (
-                  <div className="sm:col-span-2 pt-1 border-t border-gray-100 text-gray-600">
-                    <span className="text-gray-500">Records in prepared batch: </span>
-                    <span className="font-semibold text-gray-900 tabular-nums">{status.record_count.toLocaleString()}</span>
+                {(typeof status.record_count === 'number' || status.prepare_limit != null || status.effective_batch_limit != null) && (
+                  <div className="sm:col-span-2 pt-1 border-t border-gray-100 text-gray-600 space-y-0.5">
+                    {typeof status.record_count === 'number' && (
+                      <div>
+                        <span className="text-gray-500">Records in prepared batch: </span>
+                        <span className="font-semibold text-gray-900 tabular-nums">{status.record_count.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {status.prepare_limit != null && (
+                      <div className="text-[11px]">
+                        <span className="text-gray-500">Prepare limit: </span>
+                        <span className="font-mono">{Number(status.prepare_limit).toLocaleString()}</span>
+                      </div>
+                    )}
+                    {status.effective_batch_limit != null && (
+                      <div className="text-[11px]">
+                        <span className="text-gray-500">Effective cap for this submit: </span>
+                        <span className="font-mono">{Number(status.effective_batch_limit).toLocaleString()}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -401,6 +489,28 @@ export default function LlmStage({ pipeline }) {
           )}
           <p className="text-[11px] text-gray-500 mt-1.5">
             On submit, this scope is saved with the batch so the progress panel shows which preset the run used.
+          </p>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs text-gray-600 font-medium mb-1.5" htmlFor={`llm-batch-limit-${pipeline.id}`}>
+            Max records this batch
+          </label>
+          <input
+            id={`llm-batch-limit-${pipeline.id}`}
+            type="text"
+            inputMode="numeric"
+            value={batchLimit}
+            onChange={(e) => setBatchLimit(e.target.value)}
+            placeholder={
+              catalog?.default_batch_limit != null
+                ? `Blank = server cap (${Number(catalog.default_batch_limit).toLocaleString()})`
+                : 'Blank = all pending rows in scope'
+            }
+            className="w-full max-w-xs border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+          <p className="text-[11px] text-gray-500 mt-1.5">
+            Applies to Estimate and Submit. Rows already written by a previous successful Collect are not sent again.
           </p>
         </div>
 

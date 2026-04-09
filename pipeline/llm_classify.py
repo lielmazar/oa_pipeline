@@ -288,6 +288,7 @@ def phase_prepare(
     state = load_state()
     state["batch_file"]   = str(batch_files[0])
     state["record_count"] = len(rows)
+    state["prepare_limit"] = limit
     state["batch_input_file_count"] = len(batch_files)
     state["batch_input_filenames"] = [p.name for p in batch_files]
     state["prepared_at"]  = datetime.now().isoformat()

@@ -178,6 +178,7 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' "
             "  AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' "
             "  AND llm_models IS NOT NULL AND llm_models != '[]' AND llm_models != 'null' "
+            "  AND json_valid(llm_models) "
             "  AND json_extract(m.value, '$.type') IS NOT NULL "
         ),
         renderer="cooccurrence_3d", x_key="fuel_subgroup", y_key="impact_subgroup",

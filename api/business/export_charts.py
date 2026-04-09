@@ -23,6 +23,10 @@ def _ensure_mpl():
     return True
 
 
+def is_mpl_available() -> bool:
+    return _ensure_mpl()
+
+
 def rows_to_csv_text(columns: list[str], rows: list[tuple]) -> str:
     import csv
 
