@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from api.business.qa_stats import (
     interpret_alpha,
     multilabel_code_metrics,
 )
+from api.business.subset_sql import normalize_subset_inner, validate_subset_inner
+
+_VALID_FIELD = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 # ── Field definitions ─────────────────────────────────────────────────────────
@@ -43,9 +47,12 @@ def get_qa_sample(
     user_id: int,
     field: str = "llm_fuel_classification",
     size: int = 20,
+    subset_id: int | None = None,
 ) -> list[dict]:
     """Return smart-sampled records prioritised by low confidence / unrated."""
     size = min(size, 100)
+    if not _VALID_FIELD.match(field):
+        return []
 
     already_rated: set[str] = {
         row[0]
@@ -55,6 +62,20 @@ def get_qa_sample(
         ).fetchall()
     }
 
+    subset_inner: str | None = None
+    if subset_id is not None:
+        sub = meta_db.execute(
+            "SELECT sql_query FROM pipeline_subsets WHERE id=? AND pipeline_id=?",
+            (subset_id, pipeline_id),
+        ).fetchone()
+        if not sub:
+            return []
+        inner = normalize_subset_inner(sub[0])
+        err = validate_subset_inner(inner)
+        if err:
+            return []
+        subset_inner = inner
+
     with sqlite3.connect(str(pipeline_db_path)) as conn:
         conn.row_factory = sqlite3.Row
         cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
@@ -62,7 +83,33 @@ def get_qa_sample(
             return []
         has_confidence = "llm_confidence" in cols
 
-        if has_confidence:
+        if subset_inner:
+            cte = f"WITH _fr_subset AS (\n{subset_inner}\n)\n"
+            base = f"{cte}SELECT openalex_id, title, doi, "
+            if has_confidence:
+                rows = conn.execute(
+                    base
+                    + f"""llm_confidence, {field} AS field_value
+                    FROM _fr_subset
+                    WHERE {field} IS NOT NULL
+                    ORDER BY
+                      CASE llm_confidence
+                        WHEN 'Low' THEN 1 WHEN 'Medium' THEN 2 WHEN 'High' THEN 3 ELSE 4
+                      END, RANDOM()
+                    LIMIT ?""",
+                    (size * 5,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    base
+                    + f"""NULL AS llm_confidence, {field} AS field_value
+                    FROM _fr_subset
+                    WHERE {field} IS NOT NULL
+                    ORDER BY RANDOM()
+                    LIMIT ?""",
+                    (size * 5,),
+                ).fetchall()
+        elif has_confidence:
             rows = conn.execute(
                 f"""SELECT openalex_id, title, doi,
                            llm_confidence, {field} AS field_value
@@ -103,6 +150,17 @@ def get_qa_sample(
 
 
 # ── Ratings CRUD ──────────────────────────────────────────────────────────────
+
+def list_disagreements(meta_db: sqlite3.Connection, pipeline_id: int) -> list[dict]:
+    """Ratings where human value differs from stored LLM value."""
+    out: list[dict] = []
+    for r in list_ratings(meta_db, pipeline_id):
+        h = (r.get("human_value") or "").strip()
+        l = (r.get("llm_value") or "").strip()
+        if h != l:
+            out.append(r)
+    return out
+
 
 def list_ratings(meta_db: sqlite3.Connection, pipeline_id: int) -> list[dict]:
     return [
@@ -162,13 +220,21 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
             "ordinal" if fmeta.get("type") == "ordinal" else "nominal"
         )
         alpha = krippendorff_alpha(units, value_type=vtype)
+        by_unit: dict[str, list] = {}
+        for u in units:
+            uid = u["unit"]
+            if uid not in by_unit:
+                by_unit[uid] = []
+            by_unit[uid].append(u)
+        overlap_units = sum(1 for lst in by_unit.values() if len(lst) >= 2)
         results.append({
-            "field":      fid,
-            "label":      fmeta.get("label", fid),
-            "raters":     len({u["rater"] for u in units}),
-            "units":      len({u["unit"] for u in units}),
-            "alpha":      round(alpha, 4) if alpha is not None else None,
-            "quality":    interpret_alpha(alpha),
+            "field":          fid,
+            "label":          fmeta.get("label", fid),
+            "raters":         len({u["rater"] for u in units}),
+            "units":          len({u["unit"] for u in units}),
+            "overlap_units":  overlap_units,
+            "alpha":          round(alpha, 4) if alpha is not None else None,
+            "quality":        interpret_alpha(alpha),
         })
     return {"fields": results}
 

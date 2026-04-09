@@ -2,6 +2,134 @@ import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../api/client';
 import { ChartCard, ChartResult } from './chartPrimitives.jsx';
 
+function OrthogonalityPanel({ pipelineId, subsetId }) {
+  const [schema, setSchema] = useState([]);
+  const [columnX, setColumnX] = useState('');
+  const [columnY, setColumnY] = useState('');
+  const [jsonX, setJsonX] = useState(true);
+  const [jsonY, setJsonY] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    apiFetch(`/api/pipeline/${pipelineId}/schema`)
+      .then(r => r.ok ? r.json() : [])
+      .then(s => {
+        setSchema(s);
+        if (s.length >= 2) {
+          setColumnX(prev => prev || s[0].name);
+          setColumnY(prev => prev || s[1].name);
+        }
+      })
+      .catch(() => {});
+  }, [pipelineId]);
+
+  const run = async () => {
+    if (!subsetId || !columnX || !columnY) return;
+    setLoading(true);
+    setError('');
+    setResult(null);
+    try {
+      const res = await apiFetch(`/api/pipeline/${pipelineId}/orthogonality/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          column_x: columnX,
+          column_y: columnY,
+          json_x: jsonX,
+          json_y: jsonY,
+          subset_id: subsetId,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) { setError(d.detail || 'Request failed'); return; }
+      setResult(d);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const colOpts = schema.map(c => c.name);
+
+  return (
+    <div className="space-y-4 text-xs">
+      <p className="text-gray-600">
+        Chi-square independence test on the same cell counts as a heatmap (exploded JSON columns optional).
+        Low p-value suggests association (dimensions are not independent in this subset).
+      </p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <label className="block">
+          <span className="text-gray-500 font-medium">Dimension A</span>
+          <select value={columnX} onChange={e => setColumnX(e.target.value)} className="mt-1 w-full border rounded-lg px-2 py-2">
+            {colOpts.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-gray-500 font-medium">Dimension B</span>
+          <select value={columnY} onChange={e => setColumnY(e.target.value)} className="mt-1 w-full border rounded-lg px-2 py-2">
+            {colOpts.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={jsonX} onChange={e => setJsonX(e.target.checked)} />
+          <span className="text-gray-600">A is JSON array (json_each)</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={jsonY} onChange={e => setJsonY(e.target.checked)} />
+          <span className="text-gray-600">B is JSON array</span>
+        </label>
+      </div>
+      <button type="button" onClick={run} disabled={loading || !subsetId}
+        className="text-sm px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 disabled:opacity-40 font-medium">
+        {loading ? 'Computing…' : 'Run test'}
+      </button>
+      {error && <p className="text-red-600">{error}</p>}
+      {result && (
+        <div className="space-y-3 border border-gray-200 rounded-xl p-4 bg-gray-50/50">
+          <p className="text-sm text-gray-800 font-medium">{result.interpretation}</p>
+          {result.stats && !result.stats.error && (
+            <div className="flex flex-wrap gap-4 text-gray-700">
+              <span>χ² = <strong>{result.stats.chi2}</strong></span>
+              <span>df = {result.stats.df}</span>
+              <span>p ≈ <strong>{result.stats.p_value ?? '—'}</strong></span>
+              <span>Cramér&apos;s V ≈ <strong>{result.stats.cramers_v ?? '—'}</strong></span>
+              <span>n = {result.stats.n}</span>
+            </div>
+          )}
+          {result.stats?.error && <p className="text-amber-800">{result.stats.error}</p>}
+          {result.row_labels?.length > 0 && result.matrix && (
+            <div className="overflow-x-auto max-h-64 overflow-y-auto border border-gray-200 rounded-lg bg-white">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr>
+                    <th className="px-2 py-1 text-left bg-gray-100"> </th>
+                    {result.col_labels.map(cl => (
+                      <th key={cl} className="px-2 py-1 text-left bg-gray-100 truncate max-w-[120px]">{cl}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.row_labels.map((rl, i) => (
+                    <tr key={rl} className="border-t border-gray-100">
+                      <td className="px-2 py-1 font-medium text-gray-600 truncate max-w-[120px]">{rl}</td>
+                      {result.matrix[i]?.map((cell, j) => (
+                        <td key={j} className="px-2 py-1">{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DynamicChartPanel({ pipelineId, subsetId }) {
   const [schema, setSchema] = useState([]);
   const [chartType, setChartType] = useState('hbar');
@@ -203,6 +331,21 @@ function SavedChartCard({ pipelineId, item, onDeleted }) {
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
   const [renderer, setRenderer] = useState('hbar');
+  const [subsetMissing, setSubsetMissing] = useState(false);
+
+  useEffect(() => {
+    if (!cfg.subset_id) {
+      setSubsetMissing(false);
+      return;
+    }
+    apiFetch(`/api/pipeline/${pipelineId}/subsets/summary`)
+      .then(r => r.ok ? r.json() : null)
+      .then(s => {
+        const ids = new Set((s?.subsets || []).map(x => x.id));
+        setSubsetMissing(!ids.has(cfg.subset_id));
+      })
+      .catch(() => setSubsetMissing(false));
+  }, [pipelineId, cfg.subset_id]);
 
   const run = useCallback(async () => {
     setLoading(true);
@@ -282,6 +425,11 @@ function SavedChartCard({ pipelineId, item, onDeleted }) {
       </div>
       {open && (
         <div className="px-4 pb-4 border-t border-gray-100">
+          {subsetMissing && cfg.subset_id && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-2">
+              Saved subset #{cfg.subset_id} no longer exists. Re-save the chart after selecting a valid subset.
+            </p>
+          )}
           {loading && <p className="text-xs text-gray-400 py-4 text-center">Loading…</p>}
           {error && <p className="text-xs text-red-500 py-2">{error}</p>}
           {rows && !loading && (
@@ -318,6 +466,8 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly }) {
   useEffect(() => { if (tab === 'saved') loadSaved(); }, [tab, loadSaved]);
 
   const visibleCharts = llmOnly ? charts.filter(c => c.llm_only) : charts;
+  const metaCharts = visibleCharts.filter(c => !c.llm_only);
+  const llmCharts = visibleCharts.filter(c => c.llm_only);
 
   const Tab = ({ id, label }) => (
     <button type="button" onClick={() => setTab(id)}
@@ -332,14 +482,15 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly }) {
     <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
       <div className="px-4 pt-3 border-b border-gray-100">
         <h2 className="text-sm font-bold text-gray-900 mb-2">Explorer</h2>
-        {tab === 'dynamic' && !subsetId && (
+        {(tab === 'dynamic' || tab === 'orthogonality') && !subsetId && (
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-2">
-            Select a subset under Dataset access to run dynamic charts against that view.
+            Select a subset under Dataset access to run charts and orthogonality tests on that view.
           </p>
         )}
-        <div className="flex border-b border-gray-100 -mb-px">
+        <div className="flex flex-wrap border-b border-gray-100 -mb-px gap-x-1">
           <Tab id="dynamic" label="Dynamic charting" />
           <Tab id="default" label="Default charts" />
+          <Tab id="orthogonality" label="Orthogonality" />
           <Tab id="saved" label="Saved charts" />
         </div>
       </div>
@@ -348,16 +499,21 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly }) {
           <DynamicChartPanel pipelineId={pipelineId} subsetId={subsetId} />
         )}
         {tab === 'default' && (
-          <div className="space-y-3">
+          <div className="space-y-6">
+            {!subsetId && (
+              <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                Select a subset to scope default charts to that slice (full dataset charts use all filtered records when no subset is selected — pick &quot;All&quot; or a saved subset).
+              </p>
+            )}
             {subsetId && (
               <div className="flex flex-wrap gap-3 text-xs items-end">
                 <label className="block">
-                  <span className="text-gray-500">Top N (where applicable)</span>
+                  <span className="text-gray-500">Top N (charts with top-N)</span>
                   <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={topN} min={1} max={500}
                     onChange={e => setTopN(Number(e.target.value) || 20)} />
                 </label>
                 <label className="block">
-                  <span className="text-gray-500">Year cutoff (by year chart)</span>
+                  <span className="text-gray-500">Year cutoff (publications by year)</span>
                   <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={cutoffYear}
                     onChange={e => setCutoffYear(Number(e.target.value) || 2000)} />
                 </label>
@@ -368,13 +524,32 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly }) {
                 {llmOnly ? 'No LLM charts — run classification first.' : 'No charts.'}
               </p>
             )}
-            <div className="space-y-2">
-              {visibleCharts.map(c => (
-                <ChartCard key={c.id} chart={c} pipelineId={pipelineId} subsetId={subsetId}
-                  topN={topN} cutoffYear={cutoffYear} />
-              ))}
-            </div>
+            {metaCharts.length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Metadata & corpus</h3>
+                <div className="space-y-2">
+                  {metaCharts.map(c => (
+                    <ChartCard key={c.id} chart={c} pipelineId={pipelineId} subsetId={subsetId}
+                      topN={topN} cutoffYear={cutoffYear} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {llmCharts.length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">LLM classification</h3>
+                <div className="space-y-2">
+                  {llmCharts.map(c => (
+                    <ChartCard key={c.id} chart={c} pipelineId={pipelineId} subsetId={subsetId}
+                      topN={topN} cutoffYear={cutoffYear} />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+        )}
+        {tab === 'orthogonality' && (
+          <OrthogonalityPanel pipelineId={pipelineId} subsetId={subsetId} />
         )}
         {tab === 'saved' && (
           <div className="space-y-2">

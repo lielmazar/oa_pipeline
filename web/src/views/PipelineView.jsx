@@ -24,19 +24,19 @@ const STAGE_LABELS = {
   summary:            'Summary',
 };
 
-function StageComponent({ stage, pipeline, onPipelineChange, onFilterRunChange }) {
+function StageComponent({ stage, pipeline, onPipelineChange, onFilterRunChange, onOpenQA }) {
   switch (stage) {
     case 'keyword_selection':  return <KeywordStage  pipeline={pipeline} onChange={onPipelineChange} />;
     case 'openalex_search':    return <SearchStage   pipeline={pipeline} onChange={onPipelineChange} onRunMetaChange={onFilterRunChange} />;
-    case 'analysis':           return <AnalysisStage pipeline={pipeline} llmOnly={false} />;
+    case 'analysis':           return <AnalysisStage pipeline={pipeline} llmOnly={false} onOpenQA={onOpenQA} />;
     case 'llm_classification': return <LlmStage      pipeline={pipeline} onChange={onPipelineChange} />;
-    case 'llm_analysis':       return <AnalysisStage pipeline={pipeline} llmOnly={true} />;
+    case 'llm_analysis':       return <AnalysisStage pipeline={pipeline} llmOnly={true} onOpenQA={onOpenQA} />;
     case 'summary':            return <SummaryStage  pipeline={pipeline} />;
     default: return <div className="p-8 text-gray-400 text-sm">Unknown stage: {stage}</div>;
   }
 }
 
-export default function PipelineView({ initialPipeline, onBack, onFilterRunChange }) {
+export default function PipelineView({ initialPipeline, onBack, onFilterRunChange, onOpenQA }) {
   const [pipeline, setPipeline] = useState(initialPipeline);
   const [advancing, setAdvancing] = useState(false);
   const [goingBack, setGoingBack] = useState(false);
@@ -71,16 +71,24 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
   return (
     <div className="max-w-6xl mx-auto px-4 py-4">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-3 mb-4">
         <button onClick={onBack}
           className="text-sm text-gray-500 hover:text-gray-900 transition flex items-center gap-1">
           ← Pipelines
         </button>
         <span className="text-gray-300">/</span>
         <span className="text-xs text-gray-500 border border-gray-200 px-1.5 py-0.5 rounded">#{pipeline.id}</span>
-        <h1 className="font-bold text-gray-900 text-lg truncate">{pipeline.name}</h1>
+        <h1 className="font-bold text-gray-900 text-lg truncate flex-1 min-w-0">{pipeline.name}</h1>
         {pipeline.forked_from_id && (
           <span className="text-xs text-gray-400 border border-gray-200 px-1.5 py-0.5 rounded">forked</span>
+        )}
+        {onOpenQA && (
+          <button
+            type="button"
+            onClick={() => onOpenQA({ pipelineId: pipeline.id, subsetId: null })}
+            className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium shrink-0">
+            QA / IRR
+          </button>
         )}
       </div>
 
@@ -109,6 +117,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         pipeline={pipeline}
         onPipelineChange={setPipeline}
         onFilterRunChange={onFilterRunChange}
+        onOpenQA={onOpenQA}
       />
 
       {/* Navigation buttons */}

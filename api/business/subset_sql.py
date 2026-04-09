@@ -1,9 +1,7 @@
 """Normalize saved subset SQL and wrap queries scoped to a subset CTE (_fr_subset)."""
 from __future__ import annotations
 
-import json
 import re
-import time
 
 _FORBIDDEN_IN_SUBSET_QUERY = ("DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "ATTACH", "DETACH")
 
@@ -47,37 +45,6 @@ def normalize_subset_inner(sql: str) -> str:
     result = s
     if not re.match(r"^\s*(SELECT|WITH)\b", s, re.IGNORECASE | re.DOTALL):
         result = f"SELECT * FROM filtered_records WHERE {s}"
-
-    # #region agent log
-    try:
-        with open(
-            r"c:\Users\lielm\Desktop\oa_pipeline\debug-b7b538.log",
-            "a",
-            encoding="utf-8",
-        ) as _lf:
-            _lf.write(
-                json.dumps(
-                    {
-                        "sessionId": "b7b538",
-                        "hypothesisId": "H_inner",
-                        "location": "subset_sql.py:normalize_subset_inner",
-                        "message": "subset inner normalized",
-                        "data": {
-                            "inputFirst200": sql[:200],
-                            "outputFirst200": result[:200],
-                            "hasQuestionMark": "?" in result,
-                            "hasFrSubset": "_fr_subset" in result.lower(),
-                            "hasWithFrSubset": "with _fr_subset" in result.lower(),
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
 
     return result
 
@@ -207,37 +174,4 @@ def normalize_custom_scoped_sql(sql: str) -> str:
     s = strip_explain_placeholders(s)
     s = prefer_last_simple_fr_subset_select(s)
     out = s.strip()
-    # #region agent log
-    try:
-        with open(
-            r"c:\Users\lielm\Desktop\oa_pipeline\debug-b7b538.log",
-            "a",
-            encoding="utf-8",
-        ) as _lf:
-            _lf.write(
-                json.dumps(
-                    {
-                        "sessionId": "b7b538",
-                        "hypothesisId": "H1",
-                        "location": "subset_sql.py:normalize_custom_scoped_sql",
-                        "message": "custom SQL normalized",
-                        "data": {
-                            "rawHasAngleLimit": "<page_size>" in raw
-                            or bool(re.search(r"LIMIT\s+<", raw, re.I)),
-                            "outHasAngleLimit": "<page_size>" in out
-                            or bool(re.search(r"LIMIT\s+<", out, re.I)),
-                            "rawLen": len(raw),
-                            "outLen": len(out),
-                            "withFrCountRaw": raw.lower().count("with _fr_subset"),
-                            "withFrCountOut": out.lower().count("with _fr_subset"),
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
     return out

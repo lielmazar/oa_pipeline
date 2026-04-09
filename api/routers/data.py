@@ -17,8 +17,14 @@ from api.business.dynamic_chart import build_dynamic_sql
 from api.business.subset_sql import apply_subset_to_chart_sql, compose_subset_query
 from api.config import settings
 from api.db.pipelines import get_pipeline, get_subset
+from api.business.orthogonality import (
+    chi_square_cramers_residuals,
+    contingency_from_labeled_counts,
+    interpret_association,
+)
 from api.db.research import (
     explain_records_view_sql,
+    fetch_pairwise_contingency,
     get_column_distinct_values,
     get_db_stats,
     get_record_detail,
@@ -92,15 +98,6 @@ def db_records(
     return result
 
 
-# #region agent log
-import json as _dj2, time as _dt2
-from pathlib import Path as _P2
-_DL2 = _P2("/opt/oa-pipeline/debug-b7b538.log")
-def _dl2(msg, **kw):
-    try: _DL2.open("a").write(_dj2.dumps({"t":_dt2.time(),"msg":msg,**kw})+"\n")
-    except: pass
-# #endregion
-
 @router.get("/{pipeline_id}/record-detail")
 def db_record_detail_safe(
     pipeline_id: int,
@@ -109,9 +106,6 @@ def db_record_detail_safe(
     db: Db,
     subset_id: int | None = None,
 ):
-    # #region agent log
-    _dl2("record_detail_safe_reached", record_id=record_id, pipeline_id=pipeline_id, subset_id=subset_id)
-    # #endregion
     db_path = _resolve_db(db, pipeline_id, user["id"])
     if subset_id is not None:
         sub = get_subset(db, pipeline_id, subset_id)
@@ -280,6 +274,51 @@ def column_distinct_values(
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
+
+
+class OrthogonalityBody(BaseModel):
+    column_x: str
+    column_y: str
+    json_x: bool = False
+    json_y: bool = False
+    subset_id: int | None = None
+
+
+@router.post("/{pipeline_id}/orthogonality/pair")
+def orthogonality_pair(
+    pipeline_id: int, body: OrthogonalityBody, user: CurrentUser, db: Db
+):
+    """Chi-square / Cramér's V on pairwise counts (same construction as heatmap charts)."""
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    subset_sql = None
+    if body.subset_id is not None:
+        sub = get_subset(db, pipeline_id, body.subset_id)
+        if not sub:
+            raise HTTPException(404, "subset not found")
+        subset_sql = sub["sql_query"]
+    raw = fetch_pairwise_contingency(
+        db_path,
+        subset_sql,
+        body.column_x,
+        body.column_y,
+        body.json_x,
+        body.json_y,
+    )
+    if "error" in raw:
+        raise HTTPException(400, raw["error"])
+    rows = raw.get("rows") or []
+    row_labels, col_labels, matrix = contingency_from_labeled_counts(rows)
+    stats = chi_square_cramers_residuals(matrix)
+    err_msg = stats.get("error")
+    interp = err_msg or interpret_association(stats.get("cramers_v"), stats.get("p_value"))
+    return {
+        "row_labels": row_labels,
+        "col_labels": col_labels,
+        "matrix": matrix,
+        "stats": stats,
+        "interpretation": interp,
+        "raw_rows": [{"x": a, "y": b, "count": c} for a, b, c in rows[:2000]],
+    }
 
 
 class DynamicChartBody(BaseModel):

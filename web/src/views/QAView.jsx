@@ -1,15 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../api/client';
 
-const QA_FIELDS = [
-  { id: 'llm_fuel_classification', label: 'Fuel Classification', type: 'multi' },
-  { id: 'llm_is_hydrocarbon',      label: 'Is Hydrocarbon',      type: 'binary' },
-  { id: 'llm_ml_role',             label: 'ML Role',             type: 'multi' },
-  { id: 'llm_ml_algorithm',        label: 'ML Algorithm',        type: 'multi' },
-  { id: 'llm_confidence',          label: 'LLM Confidence',      type: 'ordinal' },
-  { id: 'llm_scope',               label: 'Value Chain',         type: 'multi' },
-];
-
 function QualityBadge({ quality }) {
   const colors = {
     'good agreement':        'bg-green-100 text-green-700',
@@ -60,7 +51,7 @@ function RatingCard({ record, field, onRate }) {
           placeholder="Your assessment…"
           className="flex-1 border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
         />
-        <button onClick={save} disabled={saving || !value.trim()}
+        <button type="button" onClick={save} disabled={saving || !value.trim()}
           className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition">
           {saving ? '…' : 'Rate'}
         </button>
@@ -69,15 +60,22 @@ function RatingCard({ record, field, onRate }) {
   );
 }
 
-export default function QAView() {
+export default function QAView({ initialContext, onContextConsumed }) {
   const [pipelines, setPipelines]   = useState([]);
   const [pipelineId, setPipelineId] = useState('');
+  const [subsetId, setSubsetId]     = useState('');
   const [field, setField]           = useState('llm_fuel_classification');
+  const [qaFields, setQaFields]     = useState([]);
+  const [annotationDims, setAnnotationDims] = useState([]);
   const [records, setRecords]       = useState([]);
   const [irr, setIrr]               = useState(null);
   const [rated, setRated]           = useState([]);
+  const [disagreements, setDisagreements] = useState([]);
+  const [annotations, setAnnotations] = useState([]);
   const [tab, setTab]               = useState('rate');
   const [loadingRec, setLoadingRec] = useState(false);
+  const [annForm, setAnnForm]       = useState({ openalex_id: '', dimension: '', human_value: '' });
+  const [annSaving, setAnnSaving]   = useState(false);
 
   useEffect(() => {
     apiFetch('/api/pipeline')
@@ -89,16 +87,37 @@ export default function QAView() {
         setPipelines(relevant);
         if (relevant.length === 1) setPipelineId(String(relevant[0].id));
       });
+    apiFetch('/api/pipeline/qa/fields')
+      .then(r => r.ok ? r.json() : {})
+      .then(d => {
+        setQaFields(d.qa_fields || []);
+        setAnnotationDims(d.annotation_dimensions || []);
+        if (d.qa_fields?.length && !field) setField(d.qa_fields[0].id);
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (qaFields.length && !qaFields.some(f => f.id === field)) setField(qaFields[0].id);
+  }, [qaFields, field]);
+
+  useEffect(() => {
+    if (!initialContext?.pipelineId) return;
+    setPipelineId(String(initialContext.pipelineId));
+    if (initialContext.subsetId != null) setSubsetId(String(initialContext.subsetId));
+    onContextConsumed?.();
+  }, [initialContext, onContextConsumed]);
 
   const loadSample = useCallback(async () => {
     if (!pipelineId) return;
     setLoadingRec(true);
     try {
-      const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/records?field=${field}&size=10`);
+      let url = `/api/pipeline/${pipelineId}/qa/records?field=${encodeURIComponent(field)}&size=10`;
+      if (subsetId) url += `&subset_id=${encodeURIComponent(subsetId)}`;
+      const res = await apiFetch(url);
       if (res.ok) { const d = await res.json(); setRecords(d.records || []); }
     } finally { setLoadingRec(false); }
-  }, [pipelineId, field]);
+  }, [pipelineId, field, subsetId]);
 
   const loadIrr = useCallback(async () => {
     if (!pipelineId) return;
@@ -110,11 +129,26 @@ export default function QAView() {
     if (ratingsRes.ok) setRated(await ratingsRes.json());
   }, [pipelineId]);
 
+  const loadDisagreements = useCallback(async () => {
+    if (!pipelineId) return;
+    const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/disagreements`);
+    if (res.ok) setDisagreements(await res.json());
+  }, [pipelineId]);
+
+  const loadAnnotations = useCallback(async () => {
+    if (!pipelineId) return;
+    const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/annotations`);
+    if (res.ok) setAnnotations(await res.json());
+  }, [pipelineId]);
+
   useEffect(() => {
     if (!pipelineId) return;
     if (tab === 'rate') loadSample();
-    else loadIrr();
-  }, [pipelineId, field, tab]); // eslint-disable-line
+    else if (tab === 'irr') loadIrr();
+    else if (tab === 'log') loadIrr();
+    else if (tab === 'disagree') loadDisagreements();
+    else if (tab === 'annotate') loadAnnotations();
+  }, [pipelineId, field, tab, loadSample, loadIrr, loadDisagreements, loadAnnotations]);
 
   const handleRate = async (oaId, humanVal, llmVal) => {
     await apiFetch(`/api/pipeline/${pipelineId}/qa/ratings`, {
@@ -127,8 +161,38 @@ export default function QAView() {
     if (records.length <= 3) loadSample();
   };
 
+  const submitAnnotation = async () => {
+    const { openalex_id, dimension, human_value } = annForm;
+    if (!openalex_id.trim() || !dimension || !human_value.trim()) return;
+    setAnnSaving(true);
+    try {
+      const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/annotations`, {
+        method: 'POST',
+        body: JSON.stringify({
+          openalex_id: openalex_id.trim(),
+          dimension,
+          human_value: human_value.trim(),
+        }),
+      });
+      if (res.ok) {
+        setAnnForm({ openalex_id: '', dimension: annForm.dimension, human_value: '' });
+        loadAnnotations();
+      }
+    } finally { setAnnSaving(false); }
+  };
+
+  const exportDisagreements = () => {
+    const blob = new Blob([JSON.stringify(disagreements, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `qa_disagreements_${pipelineId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const Tab = ({ id, label }) => (
-    <button onClick={() => setTab(id)}
+    <button type="button" onClick={() => setTab(id)}
       className={`text-sm px-4 py-2 border-b-2 font-medium transition ${
         tab === id ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700'
       }`}>
@@ -136,11 +200,12 @@ export default function QAView() {
     </button>
   );
 
+  const fieldLabel = qaFields.find(f => f.id === field)?.label || field;
+
   return (
     <div className="max-w-4xl mx-auto p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">QA / Inter-Rater Reliability</h1>
 
-      {/* Pipeline + field selector */}
       <div className="flex flex-wrap gap-3 mb-6">
         <select
           value={pipelineId}
@@ -155,35 +220,49 @@ export default function QAView() {
           value={field}
           onChange={e => setField(e.target.value)}
           className="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400">
-          {QA_FIELDS.map(f => (
+          {qaFields.map(f => (
             <option key={f.id} value={f.id}>{f.label}</option>
           ))}
         </select>
+        <label className="flex items-center gap-2 text-sm text-gray-600">
+          <span>Subset ID (optional)</span>
+          <input
+            value={subsetId}
+            onChange={e => setSubsetId(e.target.value.replace(/\D/g, ''))}
+            placeholder="e.g. 8"
+            className="border rounded-lg px-2 py-1.5 w-24 text-sm"
+          />
+        </label>
       </div>
+      {subsetId && (
+        <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4">
+          Sampling restricted to subset #{subsetId} (must exist on this pipeline).
+        </p>
+      )}
 
       {!pipelineId ? (
         <div className="text-center py-20 text-gray-400 text-sm">
           Select a pipeline to begin QA annotation.
-          {pipelines.length === 0 && ' (No pipelines with LLM data yet.)'}
+          {pipelines.length === 0 && ' (No pipelines in analysis or later stages yet.)'}
         </div>
       ) : (
         <>
-          <div className="flex border-b border-gray-200 mb-4">
+          <div className="flex flex-wrap border-b border-gray-200 mb-4">
             <Tab id="rate" label="Rate Records" />
-            <Tab id="irr"  label={`IRR${irr ? ` (${irr.fields?.length} fields)` : ''}`} />
+            <Tab id="irr"  label={`IRR${irr?.fields?.length ? ` (${irr.fields.length})` : ''}`} />
+            <Tab id="disagree" label={`Disagreements${disagreements.length ? ` (${disagreements.length})` : ''}`} />
+            <Tab id="annotate" label="Annotations" />
             <Tab id="log"  label={`Ratings Log${rated.length ? ` (${rated.length})` : ''}`} />
           </div>
 
-          {/* Rate tab */}
           {tab === 'rate' && (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <p className="text-sm text-gray-600">
-                  Rate the LLM's classification for{' '}
-                  <strong>{QA_FIELDS.find(f => f.id === field)?.label}</strong>.
-                  Records are sampled prioritising low-confidence items.
+                  Rate the LLM&apos;s classification for <strong>{fieldLabel}</strong>.
+                  {subsetId ? ' Records sampled from the selected subset only.' : ' Records prioritise low-confidence items.'}
                 </p>
-                <button onClick={loadSample} disabled={loadingRec}
+                <button type="button" onClick={loadSample} disabled={loadingRec}
                   className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 transition shrink-0">
                   {loadingRec ? 'Loading…' : '↻ New batch'}
                 </button>
@@ -192,8 +271,8 @@ export default function QAView() {
                 <p className="text-sm text-gray-400 text-center py-8">Loading records…</p>
               ) : records.length === 0 ? (
                 <p className="text-sm text-gray-400 text-center py-8">
-                  No unrated records found for this field.{' '}
-                  <button onClick={loadSample} className="text-blue-600 hover:underline">Try again</button>
+                  No unrated records found for this field and scope.{' '}
+                  <button type="button" onClick={loadSample} className="text-blue-600 hover:underline">Try again</button>
                 </p>
               ) : (
                 records.map(r => (
@@ -203,14 +282,13 @@ export default function QAView() {
             </div>
           )}
 
-          {/* IRR tab */}
           {tab === 'irr' && (
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <p className="text-sm text-gray-600">
-                  Krippendorff's alpha measures agreement between raters.
+                  Krippendorff&apos;s alpha measures agreement between raters. Overlap units = records with ≥2 ratings.
                 </p>
-                <button onClick={loadIrr}
+                <button type="button" onClick={loadIrr}
                   className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 transition">
                   ↻ Refresh
                 </button>
@@ -226,10 +304,11 @@ export default function QAView() {
                     <span className="font-medium text-gray-900 text-sm">{f.label}</span>
                     <QualityBadge quality={f.quality} />
                   </div>
-                  <div className="flex gap-6 text-xs text-gray-600">
+                  <div className="flex flex-wrap gap-4 text-xs text-gray-600">
                     <span>α = <strong className="text-gray-900">{f.alpha ?? '—'}</strong></span>
                     <span>{f.raters} rater{f.raters !== 1 ? 's' : ''}</span>
                     <span>{f.units} units</span>
+                    <span>{f.overlap_units ?? '—'} overlap units</span>
                   </div>
                 </div>
               ))}
@@ -239,7 +318,103 @@ export default function QAView() {
             </div>
           )}
 
-          {/* Log tab */}
+          {tab === 'disagree' && (
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <p className="text-sm text-gray-600">Human rating differs from stored LLM value.</p>
+                <button type="button" onClick={exportDisagreements} disabled={!disagreements.length}
+                  className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 disabled:opacity-40">
+                  Export JSON
+                </button>
+              </div>
+              {disagreements.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">No disagreements (or no ratings yet).</p>
+              ) : (
+                <div className="overflow-x-auto border border-gray-200 rounded-xl max-h-96 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        {['OpenAlex ID','Field','LLM','Human','Rater'].map(h => (
+                          <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {disagreements.map(r => (
+                        <tr key={`${r.id}-${r.openalex_id}`} className="border-t border-gray-100">
+                          <td className="px-3 py-1.5 font-mono truncate max-w-40">{r.openalex_id}</td>
+                          <td className="px-3 py-1.5">{r.field}</td>
+                          <td className="px-3 py-1.5 max-w-40 truncate">{r.llm_value || '—'}</td>
+                          <td className="px-3 py-1.5 max-w-40 truncate font-medium text-amber-800">{r.human_value}</td>
+                          <td className="px-3 py-1.5">{r.user_id}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'annotate' && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Free-form dimensions (topic, methodology, quality ordinals). Stored per record and annotator.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-3 bg-gray-50 border border-gray-200 rounded-xl p-4">
+                <label className="block text-xs">
+                  <span className="text-gray-500">openalex_id</span>
+                  <input value={annForm.openalex_id} onChange={e => setAnnForm(f => ({ ...f, openalex_id: e.target.value }))}
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm" placeholder="https://openalex.org/…" />
+                </label>
+                <label className="block text-xs">
+                  <span className="text-gray-500">Dimension</span>
+                  <select value={annForm.dimension} onChange={e => setAnnForm(f => ({ ...f, dimension: e.target.value }))}
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm">
+                    <option value="">Select…</option>
+                    {annotationDims.map(d => (
+                      <option key={d.id} value={d.id}>{d.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-xs sm:col-span-2">
+                  <span className="text-gray-500">Value</span>
+                  <input value={annForm.human_value} onChange={e => setAnnForm(f => ({ ...f, human_value: e.target.value }))}
+                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm" placeholder="Your annotation" />
+                </label>
+                <button type="button" onClick={submitAnnotation} disabled={annSaving}
+                  className="sm:col-span-2 text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                  {annSaving ? 'Saving…' : 'Save annotation'}
+                </button>
+              </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      {['OpenAlex ID','Dimension','Value','Date'].map(h => (
+                        <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {annotations.length === 0 ? (
+                      <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">No annotations yet.</td></tr>
+                    ) : (
+                      annotations.map(a => (
+                        <tr key={a.id} className="border-t border-gray-100">
+                          <td className="px-3 py-1.5 font-mono truncate max-w-40">{a.openalex_id}</td>
+                          <td className="px-3 py-1.5">{a.dimension}</td>
+                          <td className="px-3 py-1.5 truncate max-w-48">{a.human_value}</td>
+                          <td className="px-3 py-1.5 text-gray-400">{a.created_at?.slice(0, 10)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {tab === 'log' && (
             <div>
               {rated.length === 0 ? (

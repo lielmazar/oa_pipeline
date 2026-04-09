@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from api.business.pipeline_status import build_stage_status
@@ -21,7 +21,7 @@ from api.business.runner import (
 )
 from api.business.subset_sql import normalize_subset_inner, validate_subset_inner
 from api.config import settings
-from api.db.research import count_subset_rows, get_db_stats
+from api.db.research import count_subset_rows, get_db_stats, iter_subset_openalex_csv
 from api.db.pipelines import (
     STAGES,
     STAGE_LABELS,
@@ -36,6 +36,7 @@ from api.db.pipelines import (
     get_next_stage,
     get_pipeline,
     get_prev_stage,
+    get_subset,
     get_active_run as db_get_active_run,
     go_back_pipeline_stage,
     list_all_pipelines,
@@ -465,6 +466,46 @@ def remove_subset(pipeline_id: int, subset_id: int, user: CurrentUser, db: Db):
     if not delete_subset(db, pipeline_id, subset_id):
         raise HTTPException(404, "subset not found")
     return {"ok": True}
+
+
+@router.get("/{pipeline_id}/subsets/{subset_id}/export-ids")
+def export_subset_openalex_ids(
+    pipeline_id: int,
+    subset_id: int,
+    user: CurrentUser,
+    db: Db,
+    limit: int = 100_000,
+):
+    """Download CSV of openalex_id values in a subset (capped)."""
+    p = get_pipeline(db, pipeline_id, user["id"])
+    if not p:
+        raise HTTPException(404, "not found")
+    db_path_str = p.get("output_db_path")
+    if not db_path_str:
+        raise HTTPException(404, "pipeline has no database yet")
+    db_path = Path(db_path_str)
+    if not db_path.exists():
+        raise HTTPException(404, "database file not found")
+    sub = get_subset(db, pipeline_id, subset_id)
+    if not sub:
+        raise HTTPException(404, "subset not found")
+    try:
+        it = iter_subset_openalex_csv(db_path, sub["sql_query"], limit)
+        first = next(it)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    def gen():
+        yield first
+        yield from it
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="subset_{subset_id}_openalex_ids.csv"',
+        },
+    )
 
 
 @router.get("/{pipeline_id}/subsets/summary")

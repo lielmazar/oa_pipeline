@@ -6,10 +6,8 @@ SQLite level, independent of the query-level guards in run_query().
 """
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
-import time
 from pathlib import Path
 
 from api.business.subset_sql import (
@@ -373,35 +371,6 @@ def get_records_view(
     except ValueError as exc:
         return {"error": str(exc)}
     except Exception as exc:
-        # #region agent log
-        try:
-            with open(
-                r"c:\Users\lielm\Desktop\oa_pipeline\debug-b7b538.log",
-                "a",
-                encoding="utf-8",
-            ) as _lf:
-                _lf.write(
-                    json.dumps(
-                        {
-                            "sessionId": "b7b538",
-                            "hypothesisId": "H3",
-                            "location": "research.py:get_records_view",
-                            "message": "records view failed",
-                            "data": {
-                                "exc": str(exc)[:500],
-                                "hadCustom": bool(
-                                    custom_sql and str(custom_sql).strip()
-                                ),
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
         return {"error": str(exc)}
 
 
@@ -503,3 +472,87 @@ def run_query(
             }
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def fetch_pairwise_contingency(
+    db_path: Path,
+    subset_inner_sql: str | None,
+    column_x: str,
+    column_y: str,
+    json_x: bool,
+    json_y: bool,
+) -> dict:
+    """Run heatmap-style grouped counts for orthogonality analysis."""
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    from api.business.dynamic_chart import build_dynamic_sql
+
+    try:
+        with _connect_ro(db_path) as conn:
+            allowed = _available_cols(conn)
+    except Exception as exc:
+        return {"error": str(exc)}
+    if column_x not in allowed or column_y not in allowed:
+        return {"error": f"Invalid column(s): {column_x!r}, {column_y!r}"}
+    try:
+        sql, _ = build_dynamic_sql(
+            chart_type="heatmap",
+            column_x=column_x,
+            column_y=column_y,
+            stack_column=None,
+            json_x=json_x,
+            json_y=json_y,
+            top_n=500,
+            allowed_cols=allowed,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    if subset_inner_sql and subset_inner_sql.strip():
+        inner = normalize_subset_inner(subset_inner_sql)
+        err = validate_subset_inner(inner)
+        if err:
+            return {"error": err}
+    else:
+        inner = "SELECT * FROM filtered_records"
+    full_sql = compose_subset_query(inner, sql)
+    try:
+        with _connect_ro(db_path) as conn:
+            cur = conn.execute(full_sql)
+            col_names = [d[0] for d in cur.description] if cur.description else []
+            raw_rows = cur.fetchall()
+    except Exception as exc:
+        return {"error": str(exc)}
+    rows: list[tuple] = []
+    for r in raw_rows:
+        if len(r) >= 3:
+            try:
+                cnt = int(r[2])
+            except (TypeError, ValueError):
+                cnt = 0
+            rows.append((r[0], r[1], cnt))
+    return {"rows": rows, "columns": col_names}
+
+
+def iter_subset_openalex_csv(db_path: Path, subset_inner_sql: str, limit: int = 100_000):
+    """Yield CSV text chunks (header first) of openalex_id values in subset. Raises ValueError if invalid."""
+    inner = normalize_subset_inner(subset_inner_sql)
+    err = validate_subset_inner(inner)
+    if err:
+        raise ValueError(err)
+    lim = max(1, min(int(limit), 500_000))
+    sql = (
+        f"WITH _fr_subset AS (\n{inner}\n) "
+        f"SELECT openalex_id FROM _fr_subset WHERE openalex_id IS NOT NULL LIMIT ?"
+    )
+    yield "openalex_id\n"
+    with _connect_ro(db_path) as conn:
+        cur = conn.execute(sql, (lim,))
+        for row in cur:
+            oid = row[0]
+            if oid is None:
+                continue
+            s = str(oid).replace('"', '""')
+            if "," in s or "\n" in s or '"' in s:
+                yield f'"{s}"\n'
+            else:
+                yield f"{s}\n"

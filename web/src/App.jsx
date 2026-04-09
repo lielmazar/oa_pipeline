@@ -13,6 +13,7 @@ export default function App() {
   const [activePipeline, setActivePipeline] = useState(null);
   const [globalRunMeta, setGlobalRunMeta]   = useState(null);
   const [stageRunMeta, setStageRunMeta]     = useState(null);
+  const [qaContext, setQaContext]           = useState(null);
 
   const toRunMeta = useCallback((data) => {
     const run = data?.run;
@@ -56,8 +57,23 @@ export default function App() {
     fetch('/api/auth/me')
       .then(r => r.ok ? r.json() : null)
       .then(u => {
-        if (u) { setMe(u); setView('home'); }
-        else   { setView('login'); }
+        if (u) {
+          setMe(u);
+          const params = new URLSearchParams(window.location.search);
+          if (params.get('qa') === '1' || params.get('view') === 'qa') {
+            const pid = params.get('pipeline');
+            const sid = params.get('subset');
+            setQaContext({
+              pipelineId: pid ? Number(pid) : null,
+              subsetId: sid ? Number(sid) : null,
+            });
+            setView('qa');
+          } else {
+            setView('home');
+          }
+        } else {
+          setView('login');
+        }
       })
       .catch(() => setView('login'));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -129,7 +145,7 @@ export default function App() {
             view={view}
             filterRunMeta={filterRunMeta}
             onShowHome={() => { setActivePipeline(null); setStageRunMeta(null); setView('home'); }}
-            onShowQA={()   => setView('qa')}
+            onShowQA={()   => { setQaContext(null); setView('qa'); }}
             onRunPillClick={openRunningPipeline}
             onLogout={handleLogout}
           />
@@ -146,11 +162,27 @@ export default function App() {
               initialPipeline={activePipeline}
               onBack={() => { setView('home'); setActivePipeline(null); setStageRunMeta(null); }}
               onFilterRunChange={setStageRunMeta}
+              onOpenQA={(ctx) => {
+                setQaContext(ctx);
+                setView('qa');
+                try {
+                  const u = new URL(window.location.href);
+                  u.searchParams.set('qa', '1');
+                  if (ctx?.pipelineId) u.searchParams.set('pipeline', String(ctx.pipelineId));
+                  else u.searchParams.delete('pipeline');
+                  if (ctx?.subsetId) u.searchParams.set('subset', String(ctx.subsetId));
+                  else u.searchParams.delete('subset');
+                  window.history.replaceState({}, '', `${u.pathname}${u.search}`);
+                } catch { /* ignore */ }
+              }}
             />
           )}
 
           {view === 'qa' && (
-            <QAView />
+            <QAView
+              initialContext={qaContext}
+              onContextConsumed={() => setQaContext(null)}
+            />
           )}
         </>
       )}

@@ -12,6 +12,7 @@ from api.business.qa import (
     compute_irr,
     get_qa_sample,
     list_annotations,
+    list_disagreements,
     list_ratings,
     upsert_annotation,
     upsert_rating,
@@ -51,10 +52,21 @@ def qa_records(
     db: Db,
     field: str = "llm_fuel_classification",
     size: int = 20,
+    subset_id: int | None = None,
 ):
     db_path = _resolve_pipeline_db(db, pipeline_id, user["id"])
-    records = get_qa_sample(db, db_path, pipeline_id, user["id"], field=field, size=size)
+    records = get_qa_sample(
+        db, db_path, pipeline_id, user["id"],
+        field=field, size=size, subset_id=subset_id,
+    )
     return {"records": records, "field": field, "count": len(records)}
+
+
+@router.get("/{pipeline_id}/qa/disagreements")
+def qa_disagreements(pipeline_id: int, user: CurrentUser, db: Db):
+    if not get_pipeline(db, pipeline_id, user["id"]):
+        raise HTTPException(404, "not found")
+    return list_disagreements(db, pipeline_id)
 
 
 # ── Ratings ───────────────────────────────────────────────────────────────────
