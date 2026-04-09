@@ -3,13 +3,37 @@ import { apiFetch } from '../api/client';
 import DatasetAccessSection from './analysis/DatasetAccessSection.jsx';
 import ExplorerSection from './analysis/ExplorerSection.jsx';
 import ResearchDbViewer from './analysis/ResearchDbViewer.jsx';
+import { loadAnalysisStagePrefs, saveAnalysisStagePrefs } from './analysis/analysisStageStorage.js';
 
 export default function AnalysisStage({ pipeline, llmOnly }) {
-  const [selectedSubsetId, setSelectedSubsetId] = useState(null);
+  const [selectedSubsetId, setSelectedSubsetIdState] = useState(() => loadAnalysisStagePrefs(pipeline.id).subsetId);
+  const [datasetSectionOpen, setDatasetSectionOpenState] = useState(() => loadAnalysisStagePrefs(pipeline.id).datasetOpen);
   const [selectedSubsetMeta, setSelectedSubsetMeta] = useState(null);
   const [viewerSubset, setViewerSubset] = useState(null);
   const [viewerCustomSql, setViewerCustomSql] = useState('');
   const [subsetsKey, setSubsetsKey] = useState(0);
+
+  useEffect(() => {
+    const p = loadAnalysisStagePrefs(pipeline.id);
+    setSelectedSubsetIdState(p.subsetId);
+    setDatasetSectionOpenState(p.datasetOpen);
+  }, [pipeline.id]);
+
+  const setSelectedSubsetId = useCallback(
+    (id) => {
+      setSelectedSubsetIdState(id);
+      saveAnalysisStagePrefs(pipeline.id, { subsetId: id });
+    },
+    [pipeline.id],
+  );
+
+  const setDatasetSectionOpen = useCallback(
+    (open) => {
+      setDatasetSectionOpenState(open);
+      saveAnalysisStagePrefs(pipeline.id, { datasetOpen: open });
+    },
+    [pipeline.id],
+  );
 
   useEffect(() => {
     if (!selectedSubsetId) {
@@ -41,6 +65,8 @@ export default function AnalysisStage({ pipeline, llmOnly }) {
         selectedSubsetId={selectedSubsetId}
         onSelectSubset={setSelectedSubsetId}
         onOpenViewer={setViewerSubset}
+        sectionOpen={datasetSectionOpen}
+        onSectionOpenChange={setDatasetSectionOpen}
       />
 
       <ExplorerSection

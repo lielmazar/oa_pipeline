@@ -1,5 +1,17 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { apiFetch } from '../../api/client';
+import { useRecordStars } from './useRecordStars.js';
+
+const DB_VIEWER_W_KEY = (pid) => `oa-db-viewer-width-${pid}`;
+
+function readPanelWidth(pipelineId) {
+  try {
+    const n = Number(sessionStorage.getItem(DB_VIEWER_W_KEY(pipelineId)));
+    if (Number.isFinite(n) && n >= 320) return Math.min(n, typeof window !== 'undefined' ? window.innerWidth - 40 : 1600);
+  } catch { /* */ }
+  return typeof window !== 'undefined' ? Math.min(1120, Math.floor(window.innerWidth * 0.92)) : 960;
+}
 
 /* ── ops by type ───────────────────────────────────────────────────────────── */
 const TEXT_OPS  = [
@@ -55,8 +67,9 @@ function stripOuterFrSubsetCte(sql) {
 
 function renderCell(value, colName) {
   const s = String(value ?? '');
-  if (colName === 'abstract_text' && s.length > 60)
-    return <span className="whitespace-normal line-clamp-3 leading-snug">{s}</span>;
+  if (colName === 'abstract_text' && s.length > 60) {
+    return <span className="whitespace-normal line-clamp-[8] leading-relaxed text-[11px]">{s}</span>;
+  }
   return s;
 }
 
@@ -90,6 +103,13 @@ function Chevron({ open }) {
 }
 
 function filterChipLabel(f) {
+  if (f.op === 'in') {
+    const arr = Array.isArray(f.value) ? f.value : [];
+    const shown = arr.slice(0, 3).map((x) => String(x));
+    const more = arr.length > 3 ? ` +${arr.length - 3}` : '';
+    const blank = f.include_null ? ' · ∅' : '';
+    return `${f.column} ∈ (${shown.join(', ')}${more})${blank}`;
+  }
   const v = f.value != null && f.value !== '' ? String(f.value) : '';
   const short = v.length > 28 ? `${v.slice(0, 28)}…` : v;
   const op = (() => {
@@ -103,7 +123,12 @@ function filterChipLabel(f) {
   return `${f.column} ${op} ${short}`;
 }
 
-/* ── Column filter popover with distinct-value suggestions ─────────────────── */
+function valKey(v) {
+  if (v === null || v === undefined) return '__null__';
+  return `${typeof v}:${String(v)}`;
+}
+
+/* ── Excel-style column filter (checkboxes + blanks) + sort ─────────────────── */
 function ColumnFilterPopover({
   pipelineId,
   subsetId,
@@ -115,107 +140,257 @@ function ColumnFilterPopover({
   onClose,
   onSortAsc,
   onSortDesc,
+  fixedPosition,
 }) {
-  const ops = opsForType(colType);
-  const [op, setOp]       = useState(filter?.op || ops[0].id);
-  const [val, setVal]     = useState(filter?.value ?? '');
   const [distinct, setDistinct] = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const needsValue = !['is_null', 'is_not_null'].includes(op);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [checked, setChecked] = useState(() => new Set());
+  const [includeBlank, setIncludeBlank] = useState(false);
+  const [advOpen, setAdvOpen] = useState(false);
+  const ops = opsForType(colType);
+  const [advOp, setAdvOp] = useState(filter?.op && filter.op !== 'in' ? filter.op : ops[0].id);
+  const [advVal, setAdvVal] = useState(filter?.value != null && filter.op !== 'in' ? String(filter.value) : '');
   const ref = useRef(null);
 
+  const isNum = ['INT', 'INTEGER', 'REAL', 'FLOAT', 'NUMERIC', 'DOUBLE'].some((k) =>
+    (colType || '').toUpperCase().includes(k));
+
   useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    const h = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [onClose]);
 
   useEffect(() => {
     setLoading(true);
-    const q = subsetId != null ? `?subset_id=${subsetId}` : '';
-    apiFetch(`/api/pipeline/${pipelineId}/column-values/${encodeURIComponent(col)}${q}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setDistinct(d); })
+    const q = new URLSearchParams();
+    if (subsetId != null) q.set('subset_id', String(subsetId));
+    q.set('limit', '2500');
+    apiFetch(`/api/pipeline/${pipelineId}/column-values/${encodeURIComponent(col)}?${q}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) setDistinct(d);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [pipelineId, subsetId, col]);
 
-  const showPickList = needsValue && distinct && !distinct.truncated && distinct.values?.length > 0
-    && ['eq', 'neq'].includes(op);
+  useEffect(() => {
+    if (!distinct) return;
+    const valuesList = distinct.values || [];
+    const bc = distinct.blank_count ?? 0;
+    if (!filter) {
+      setChecked(new Set(valuesList.map(valKey)));
+      setIncludeBlank(bc > 0);
+      return;
+    }
+    if (filter.op === 'in' && Array.isArray(filter.value)) {
+      setChecked(new Set(filter.value.map(valKey)));
+      setIncludeBlank(!!filter.include_null);
+    } else if (filter.op === 'eq') {
+      setChecked(new Set([valKey(filter.value)]));
+      setIncludeBlank(!!filter.include_null);
+    } else {
+      setChecked(new Set());
+      setIncludeBlank(false);
+    }
+  }, [distinct, filter]);
 
-  const isNum = ['INT', 'INTEGER', 'REAL', 'FLOAT', 'NUMERIC', 'DOUBLE'].some(k =>
-    (colType || '').toUpperCase().includes(k));
+  const values = distinct?.values || [];
+  const blankCount = distinct?.blank_count ?? 0;
+  const filteredVals = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    if (!s) return values;
+    return values.filter((v) => String(v).toLowerCase().includes(s));
+  }, [values, search]);
+
+  const toggleKey = (k) => {
+    setChecked((prev) => {
+      const n = new Set(prev);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
+  };
+
+  const selectAllVisible = () => {
+    setChecked((prev) => {
+      const n = new Set(prev);
+      filteredVals.forEach((v) => n.add(valKey(v)));
+      return n;
+    });
+  };
+
+  const clearSelection = () => {
+    setChecked(new Set());
+    setIncludeBlank(false);
+  };
+
+  const applyExcel = () => {
+    const picked = [];
+    values.forEach((v) => {
+      if (checked.has(valKey(v))) picked.push(v);
+    });
+    const allValuesChecked = values.length > 0 && values.every((v) => checked.has(valKey(v)));
+    const blankRowNeeded = blankCount > 0;
+    const blankOk = !blankRowNeeded || includeBlank;
+    if (allValuesChecked && blankOk) {
+      onClear();
+      onClose();
+      return;
+    }
+    if (picked.length === 0 && !includeBlank) {
+      onClear();
+      onClose();
+      return;
+    }
+    onApply('in', picked, includeBlank);
+    onClose();
+  };
+
+  const applyAdvanced = () => {
+    if (['is_null', 'is_not_null'].includes(advOp)) {
+      onApply(advOp, null, false);
+    } else {
+      onApply(advOp, isNum && advVal !== '' ? Number(advVal) : advVal, false);
+    }
+    onClose();
+  };
+
+  const posClass = fixedPosition
+    ? 'fixed z-[100] bg-white border border-gray-300 rounded-lg shadow-2xl w-[min(26rem,calc(100vw-1rem))] max-h-[min(32rem,calc(100vh-2rem))] flex flex-col overflow-hidden'
+    : 'absolute top-full left-0 mt-1 z-50 bg-white border border-gray-300 rounded-lg shadow-2xl w-[min(26rem,calc(100vw-1rem))] max-h-96 flex flex-col overflow-hidden';
 
   return (
-    <div ref={ref}
-      className="absolute top-full left-0 mt-1 z-50 bg-white border border-gray-300 rounded-md shadow-xl w-72 space-y-2 overflow-hidden"
-      onClick={e => e.stopPropagation()}>
-      <div className="bg-gray-50 border-b border-gray-200 px-2.5 py-2">
+    <div
+      ref={ref}
+      style={fixedPosition ? { top: fixedPosition.top, left: fixedPosition.left } : undefined}
+      className={posClass}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="bg-gray-50 border-b border-gray-200 px-2.5 py-2 shrink-0">
         <p className="text-[11px] font-semibold text-gray-800 truncate" title={col}>{col}</p>
         <div className="flex gap-1.5 mt-2">
           <button
             type="button"
-            onClick={() => { onSortAsc?.(); onClose(); }}
-            className="flex-1 text-[11px] px-2 py-1.5 rounded border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-200 font-medium text-gray-800">
-            {isNum ? 'Sort smallest → largest' : 'Sort A → Z'}
+            onClick={() => {
+              onSortAsc?.();
+              onClose();
+            }}
+            className="flex-1 text-[11px] px-2 py-1.5 rounded border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-200 font-medium text-gray-800"
+          >
+            {isNum ? 'Sort ↑ smallest' : 'Sort A → Z'}
           </button>
           <button
             type="button"
-            onClick={() => { onSortDesc?.(); onClose(); }}
-            className="flex-1 text-[11px] px-2 py-1.5 rounded border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-200 font-medium text-gray-800">
-            {isNum ? 'Sort largest → smallest' : 'Sort Z → A'}
+            onClick={() => {
+              onSortDesc?.();
+              onClose();
+            }}
+            className="flex-1 text-[11px] px-2 py-1.5 rounded border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-200 font-medium text-gray-800"
+          >
+            {isNum ? 'Sort ↓ largest' : 'Sort Z → A'}
           </button>
         </div>
       </div>
-      <div className="px-2.5 pb-2.5 space-y-2">
-      <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide pt-1">Filter</p>
-      <select value={op} onChange={e => setOp(e.target.value)}
-        className="w-full border rounded px-2 py-1 text-xs">
-        {ops.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
-      </select>
 
-      {needsValue && !showPickList && (
-        <input value={val} onChange={e => setVal(e.target.value)} autoFocus placeholder="Value…"
+      <div className="px-2.5 py-2 flex-1 min-h-0 flex flex-col gap-2">
+        <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">Filter by values</p>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search values…"
           className="w-full border rounded px-2 py-1 text-xs"
-          onKeyDown={e => { if (e.key === 'Enter') { onApply(op, val); onClose(); } }} />
-      )}
-
-      {showPickList && (
-        <div className="max-h-40 overflow-y-auto border rounded divide-y divide-gray-50">
-          {loading && <p className="text-[10px] text-gray-400 px-2 py-1">Loading…</p>}
-          {distinct.values.map((v, i) => {
-            const sv = String(v);
-            const selected = val === sv;
-            return (
-              <button key={i} type="button"
-                onClick={() => { setVal(sv); onApply(op, sv); onClose(); }}
-                className={`w-full text-left px-2 py-1 text-xs truncate hover:bg-blue-50 ${selected ? 'bg-blue-50 font-medium text-blue-700' : 'text-gray-700'}`}>
-                {sv || <span className="italic text-gray-400">(empty)</span>}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {needsValue && showPickList && (
-        <input value={val} onChange={e => setVal(e.target.value)} placeholder="Or type value…"
-          className="w-full border rounded px-2 py-1 text-[11px] text-gray-500"
-          onKeyDown={e => { if (e.key === 'Enter') { onApply(op, val); onClose(); } }} />
-      )}
-
-      <div className="flex gap-1.5 pt-1">
-        <button type="button"
-          onClick={() => { onApply(op, val); onClose(); }}
-          className="flex-1 text-[11px] px-2 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium">
-          Apply filter
-        </button>
-        {filter && (
-          <button type="button" onClick={() => { onClear(); onClose(); }}
-            className="flex-1 text-[11px] px-2 py-1.5 border border-gray-200 rounded-md hover:bg-gray-50">
-            Clear filter
+        />
+        <div className="flex gap-1.5">
+          <button type="button" onClick={selectAllVisible} className="text-[10px] px-2 py-0.5 border rounded bg-white hover:bg-gray-50">
+            Select all shown
           </button>
+          <button type="button" onClick={clearSelection} className="text-[10px] px-2 py-0.5 border rounded bg-white hover:bg-gray-50">
+            Clear
+          </button>
+        </div>
+        {distinct?.truncated && (
+          <p className="text-[9px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-1.5 py-0.5">
+            List truncated — narrow with search or use advanced filter.
+          </p>
         )}
-      </div>
+        <div className="flex-1 min-h-[8rem] overflow-y-auto border rounded bg-white divide-y divide-gray-100">
+          {loading && <p className="text-[10px] text-gray-400 px-2 py-2">Loading values…</p>}
+          {!loading && blankCount > 0 && (
+            <label className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 cursor-pointer text-xs">
+              <input
+                type="checkbox"
+                checked={includeBlank}
+                onChange={(e) => setIncludeBlank(e.target.checked)}
+                className="rounded border-gray-300"
+              />
+              <span className="text-gray-500 italic">(Blanks)</span>
+              <span className="text-gray-400 text-[10px] ml-auto">{blankCount}</span>
+            </label>
+          )}
+          {!loading &&
+            filteredVals.map((v, i) => {
+              const k = valKey(v);
+              const label = v === null || v === '' ? '(empty)' : String(v);
+              return (
+                <label key={i} className="flex items-center gap-2 px-2 py-1 hover:bg-blue-50/50 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    checked={checked.has(k)}
+                    onChange={() => toggleKey(k)}
+                    className="rounded border-gray-300 shrink-0"
+                  />
+                  <span className="truncate" title={label}>{label}</span>
+                </label>
+              );
+            })}
+          {!loading && filteredVals.length === 0 && !blankCount && (
+            <p className="text-[10px] text-gray-400 px-2 py-2">No values</p>
+          )}
+        </div>
+
+        <div className="flex gap-1.5 pt-1">
+          <button
+            type="button"
+            onClick={applyExcel}
+            className="flex-1 text-[11px] px-2 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium"
+          >
+            OK
+          </button>
+          {filter && (
+            <button type="button" onClick={() => { onClear(); onClose(); }} className="text-[11px] px-2 py-1.5 border border-gray-200 rounded-md hover:bg-gray-50">
+              Clear
+            </button>
+          )}
+        </div>
+
+        <button type="button" onClick={() => setAdvOpen((o) => !o)} className="text-[10px] text-blue-700 hover:underline text-left">
+          {advOpen ? '▼' : '▶'} Advanced text / number filter
+        </button>
+        {advOpen && (
+          <div className="border rounded p-2 space-y-1.5 bg-gray-50/80">
+            <select value={advOp} onChange={(e) => setAdvOp(e.target.value)} className="w-full border rounded px-2 py-1 text-xs">
+              {ops.map((o) => (
+                <option key={o.id} value={o.id}>{o.label}</option>
+              ))}
+            </select>
+            {!['is_null', 'is_not_null'].includes(advOp) && (
+              <input
+                value={advVal}
+                onChange={(e) => setAdvVal(e.target.value)}
+                placeholder="Value…"
+                className="w-full border rounded px-2 py-1 text-xs"
+              />
+            )}
+            <button type="button" onClick={applyAdvanced} className="w-full text-[11px] py-1 bg-white border rounded hover:bg-gray-50">
+              Apply advanced
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -242,7 +417,12 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   const [sqlOpen, setSqlOpen] = useState(false);
   const [customSqlPanelOpen, setCustomSqlPanelOpen] = useState(false);
   const [colPickerOpen, setColPickerOpen] = useState(false);
-  const [filterPopCol, setFilterPopCol] = useState(null);
+  /** { col, top, left } — fixed-position popover anchored to filter button */
+  const [filterPop, setFilterPop] = useState(null);
+  const [panelWidth, setPanelWidth] = useState(() => readPanelWidth(pipelineId));
+  const resizeActive = useRef(false);
+
+  const { isStarred, toggleStar } = useRecordStars(pipelineId);
 
   const customSqlRef = useRef(customSql);
   customSqlRef.current = customSql;
@@ -265,6 +445,18 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     sortRules.forEach((s, i) => { m[s.column] = { dir: s.dir, idx: i + 1 }; });
     return m;
   }, [sortRules]);
+
+  /** Always request openalex_id from the API so expand / detail / star work even when the column is hidden. */
+  const visibleColsForQuery = useMemo(() => {
+    if (!colNames.includes('openalex_id')) return visibleCols;
+    return [...new Set(['openalex_id', ...visibleCols])];
+  }, [visibleCols, colNames]);
+
+  const apiCols = table?.columns || visibleColsForQuery;
+  const displayCols = useMemo(
+    () => visibleCols.filter((c) => apiCols.includes(c)),
+    [visibleCols, apiCols],
+  );
 
   useEffect(() => {
     apiFetch(`/api/pipeline/${pipelineId}/schema`)
@@ -297,6 +489,51 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
+  useEffect(() => {
+    if (!filterPop) return;
+    const close = () => setFilterPop(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [filterPop]);
+
+  useEffect(() => {
+    setPanelWidth(readPanelWidth(pipelineId));
+  }, [pipelineId]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(DB_VIEWER_W_KEY(pipelineId), String(panelWidth));
+    } catch { /* */ }
+  }, [pipelineId, panelWidth]);
+
+  const startResize = useCallback(
+    (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = panelWidth;
+      const onMove = (ev) => {
+        const next = Math.min(Math.max(320, startW + (startX - ev.clientX)), window.innerWidth - 40);
+        setPanelWidth(next);
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        resizeActive.current = false;
+      };
+      resizeActive.current = true;
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [panelWidth],
+  );
+
   /* ── Explain SQL ─────────────────────────────────────────────────────────── */
   const refreshExplain = useCallback(async () => {
     if (!subset?.id) return;
@@ -307,9 +544,11 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subset_id: subset.id,
-          filters: filters.map(({ column, op, value }) => ({ column, op, value })),
+          filters: filters.map(({ column, op, value, include_null }) => ({
+            column, op, value, include_null: !!include_null,
+          })),
           sort: sortRules.map(({ column, dir }) => ({ column, dir })),
-          visible_cols: visibleCols,
+          visible_cols: visibleColsForQuery,
           custom_sql: useCustomSql ? (customSqlRef.current.trim() || null) : null,
         }),
       });
@@ -317,7 +556,7 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
       if (!res.ok) { setSqlError(d.detail || 'Explain failed'); return; }
       if (!useCustomSql) setBuilderSql(d.sql || '');
     } finally { setExplainLoading(false); }
-  }, [pipelineId, subset?.id, filters, sortRules, visibleCols, useCustomSql]);
+  }, [pipelineId, subset?.id, filters, sortRules, visibleColsForQuery, useCustomSql]);
 
   useEffect(() => { refreshExplain(); }, [refreshExplain]);
 
@@ -331,9 +570,11 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subset_id: subset.id,
-          filters: filters.map(({ column, op, value }) => ({ column, op, value })),
+          filters: filters.map(({ column, op, value, include_null }) => ({
+            column, op, value, include_null: !!include_null,
+          })),
           sort: sortRules.map(({ column, dir }) => ({ column, dir })),
-          page: pg, page_size: pageSize, visible_cols: visibleCols,
+          page: pg, page_size: pageSize, visible_cols: visibleColsForQuery,
           custom_sql: useCustomSql ? (customSqlRef.current.trim() || null) : null,
         }),
       });
@@ -341,13 +582,13 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
       if (!res.ok) { setSqlError(d.detail || 'Load failed'); setTable(null); return; }
       setTable(d); setPage(pg);
     } finally { setLoading(false); }
-  }, [pipelineId, subset?.id, filters, sortRules, pageSize, visibleCols, useCustomSql]);
+  }, [pipelineId, subset?.id, filters, sortRules, pageSize, visibleColsForQuery, useCustomSql]);
 
   useEffect(() => {
     if (!subset?.id) return;
     if (useCustomSql && !customSqlRef.current.trim()) return;
     loadTable(1);
-  }, [subset?.id, filters, sortRules, pageSize, visibleCols, useCustomSql, customSql, loadTable]);
+  }, [subset?.id, filters, sortRules, pageSize, visibleColsForQuery, useCustomSql, customSql, loadTable]);
 
   /* ── Expand row: fetch ALL fields ────────────────────────────────────────── */
   const toggleExpand = async (i, oid) => {
@@ -383,13 +624,48 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   };
 
   /* ── Column-header filter helpers ────────────────────────────────────────── */
-  const applyFilter = (col, op, val) => {
-    setFilters(prev => {
-      const rest = prev.filter(f => f.column !== col);
-      return [...rest, { id: uid(), column: col, op, value: val }];
+  const applyColumnFilter = (col, op, val, includeNull = false) => {
+    setFilters((prev) => {
+      const rest = prev.filter((f) => f.column !== col);
+      if (op === 'in' && (!val || val.length === 0) && !includeNull) return rest;
+      return [...rest, { id: uid(), column: col, op, value: val, include_null: !!includeNull }];
     });
   };
-  const clearFilter = col => setFilters(prev => prev.filter(f => f.column !== col));
+  const clearFilter = (col) => setFilters((prev) => prev.filter((f) => f.column !== col));
+
+  const downloadCsv = async () => {
+    if (!subset?.id) return;
+    try {
+      const res = await apiFetch(`/api/pipeline/${pipelineId}/records/export-csv`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subset_id: subset.id,
+          filters: filters.map(({ column, op, value, include_null }) => ({
+            column, op, value, include_null: !!include_null,
+          })),
+          sort: sortRules.map(({ column, dir }) => ({ column, dir })),
+          visible_cols: visibleColsForQuery,
+          custom_sql: useCustomSql ? (customSqlRef.current.trim() || null) : null,
+          max_rows: 500_000,
+        }),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        alert(t || 'Export failed');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pipeline_${pipelineId}_subset_${subset.id}_records.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.message || 'Export failed');
+    }
+  };
   const toggleCol = name => setVisibleCols(v => (v.includes(name) ? v.filter(x => x !== name) : [...v, name]));
 
   const openDetail = async openalexId => {
@@ -398,17 +674,33 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     if (res.ok) setDetail(await res.json());
   };
 
-  const cols = table?.columns || visibleCols;
-  const isAbstractCol = c => c === 'abstract_text';
+  const isAbstractCol = (c) => c === 'abstract_text';
   const activeSortCount = sortRules.length;
 
   /* ═══════════════════════════════════════════════════════════════════════════ */
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-gray-50 rounded-2xl shadow-2xl w-full max-w-[95vw] max-h-[94vh] overflow-hidden flex flex-col border border-gray-200">
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 bg-black/40 z-[90] cursor-default border-0 p-0"
+        aria-label="Close viewer"
+        onClick={onClose}
+      />
+      <div
+        className="fixed top-0 right-0 bottom-0 z-[95] flex flex-col bg-gray-50 shadow-[-8px_0_32px_rgba(0,0,0,0.12)] border-l border-gray-200 max-h-screen"
+        style={{ width: panelWidth }}
+      >
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          tabIndex={0}
+          onMouseDown={startResize}
+          className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize z-[96] hover:bg-blue-500/25 active:bg-blue-500/40 select-none touch-none"
+          title="Drag to resize"
+        />
 
         {/* ── Header ────────────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between px-5 py-2.5 border-b border-gray-200 bg-white shrink-0">
+        <div className="flex items-center justify-between pl-4 pr-4 py-2.5 border-b border-gray-200 bg-white shrink-0">
           <div className="flex items-center gap-3 flex-wrap min-w-0">
             <div className="min-w-0">
               <h2 className="text-sm font-bold text-gray-900">Research DB Viewer</h2>
@@ -488,6 +780,11 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
                       </label>
                     ))}
                   </div>
+                  {colNames.includes('openalex_id') && !visibleCols.includes('openalex_id') && (
+                    <p className="text-[10px] text-gray-500 mt-2 leading-snug border-t border-gray-100 pt-2">
+                      <code className="text-[10px] bg-gray-100 px-1 rounded">openalex_id</code> is still loaded for expand, detail, and star when hidden.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -503,6 +800,16 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
 
             <button type="button" onClick={() => loadTable(page)} disabled={loading}
               className="px-2 py-1 border rounded-lg hover:bg-gray-50 disabled:opacity-50 text-gray-600" title="Refresh">↻</button>
+
+            <button
+              type="button"
+              onClick={downloadCsv}
+              disabled={loading || !table?.total}
+              className="px-2 py-1 border rounded-lg hover:bg-gray-50 disabled:opacity-40 text-gray-700 text-[11px] font-medium"
+              title="Download all matching rows as CSV"
+            >
+              ⭳ CSV
+            </button>
           </div>
         </div>
 
@@ -592,50 +899,60 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
             <table className="w-full text-xs border-collapse">
               <thead className="bg-gray-100 sticky top-0 z-10 border-b-2 border-gray-300 shadow-sm">
                 <tr>
-                  <th className="w-7 px-1 bg-gray-100 border-r border-gray-200" />
-                  {cols.map(c => {
+                  <th className="w-7 px-1 bg-gray-100 border-r border-gray-200 align-top" />
+                  <th className="w-8 px-0.5 bg-gray-100 border-r border-gray-200 align-top text-center text-[10px] text-gray-400 font-normal">★</th>
+                  {displayCols.map((c) => {
                     const si = sortMap[c];
                     const hasFilter = !!filterMap[c];
                     return (
-                      <th key={c} className={`relative px-2 py-2 text-left text-[11px] font-semibold whitespace-nowrap select-none group/th bg-gray-100 border-r border-gray-200 last:border-r-0
-                        ${isAbstractCol(c) ? 'min-w-[260px]' : 'min-w-[88px]'}
-                        ${hasFilter ? 'text-blue-800 bg-blue-50/50' : 'text-gray-800'}`}>
-                        <div className="flex items-center gap-0.5">
-                          <span className="cursor-pointer hover:underline decoration-blue-400 truncate flex-1 min-w-0"
-                            onClick={e => cycleSort(c, e.shiftKey)}>
-                            {c}
-                          </span>
-                          <SortIcon dir={si?.dir} index={activeSortCount > 1 ? si?.idx : 0} />
-                          <button type="button"
-                            className="ml-0.5 shrink-0 p-1 rounded border border-transparent hover:bg-white hover:border-gray-300"
-                            title="Filter and sort"
-                            onClick={e => { e.stopPropagation(); setFilterPopCol(prev => prev === c ? null : c); }}>
+                      <th
+                        key={c}
+                        className={`relative align-top px-1.5 py-1.5 text-left select-none group/th bg-gray-100 border-r border-gray-200 last:border-r-0
+                        ${isAbstractCol(c) ? 'min-w-[min(28rem,50vw)] max-w-[min(48rem,72vw)]' : 'min-w-[104px] max-w-[200px]'}
+                        ${hasFilter ? 'bg-blue-50/60' : ''}`}
+                      >
+                        <div className="flex flex-col gap-1">
+                          <button
+                            type="button"
+                            className={`flex items-start gap-1 w-full text-left rounded px-0.5 py-0.5 -mx-0.5 hover:bg-gray-200/70 ${hasFilter ? 'text-blue-900' : 'text-gray-900'}`}
+                            title="Sort (Shift+click for multi-sort)"
+                            onClick={(e) => cycleSort(c, e.shiftKey)}
+                          >
+                            <span
+                              className={`font-semibold text-[11px] leading-snug flex-1 min-w-0 text-left ${isAbstractCol(c) ? 'break-words' : 'truncate'}`}
+                            >
+                              {c}
+                            </span>
+                            <span className="shrink-0 pt-0.5">
+                              <SortIcon dir={si?.dir} index={activeSortCount > 1 ? si?.idx : 0} />
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`w-full flex items-center justify-center gap-1 rounded border px-1 py-0.5 text-[10px] font-medium
+                              ${hasFilter ? 'border-blue-300 bg-blue-50 text-blue-900' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
+                            title="Filter this column"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const r = e.currentTarget.getBoundingClientRect();
+                              const popoverW = 288;
+                              const left = Math.min(Math.max(8, r.left), window.innerWidth - popoverW - 8);
+                              setFilterPop((prev) => (prev?.col === c ? null : { col: c, top: r.bottom + 4, left }));
+                            }}
+                          >
                             <FunnelIcon active={hasFilter} />
+                            <span>Filter</span>
                           </button>
                         </div>
-                        {filterPopCol === c && (
-                          <ColumnFilterPopover
-                            pipelineId={pipelineId}
-                            subsetId={subset?.id}
-                            col={c}
-                            colType={colTypeMap[c]}
-                            filter={filterMap[c]}
-                            onApply={(op, val) => applyFilter(c, op, val)}
-                            onClear={() => clearFilter(c)}
-                            onClose={() => setFilterPopCol(null)}
-                            onSortAsc={() => setSortRules([{ id: uid(), column: c, dir: 'asc' }])}
-                            onSortDesc={() => setSortRules([{ id: uid(), column: c, dir: 'desc' }])}
-                          />
-                        )}
                       </th>
                     );
                   })}
-                  <th className="w-12 px-1 bg-gray-100 text-gray-500 font-medium border-l border-gray-200">Detail</th>
+                  <th className="w-12 px-1 bg-gray-100 text-gray-500 font-medium border-l border-gray-200 align-top">Detail</th>
                 </tr>
               </thead>
               <tbody className="bg-white">
                 {table.rows.map((row, i) => {
-                  const oidIdx = cols.indexOf('openalex_id');
+                  const oidIdx = apiCols.indexOf('openalex_id');
                   const oid = oidIdx >= 0 ? row[oidIdx] : null;
                   const isOpen = expanded[i];
                   const fullRec = oid ? expandedDetails[oid] : null;
@@ -649,13 +966,33 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
                             {isOpen ? '▼' : '▶'}
                           </button>
                         </td>
-                        {row.map((cell, j) => (
-                          <td key={j}
-                            className={`px-2 py-1.5 ${isAbstractCol(cols[j]) ? 'max-w-[360px] text-[11px] leading-relaxed text-gray-700' : 'max-w-[200px] truncate'}`}
-                            title={!isAbstractCol(cols[j]) ? String(cell ?? '') : undefined}>
-                            {renderCell(cell, cols[j])}
-                          </td>
-                        ))}
+                        <td className="px-0.5 pt-1.5 text-center align-top">
+                          {oid ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleStar(oid)}
+                              className={`text-base leading-none ${isStarred(oid) ? 'text-amber-500' : 'text-gray-300 hover:text-amber-400'}`}
+                              title={isStarred(oid) ? 'Unstar' : 'Star record'}
+                            >
+                              ★
+                            </button>
+                          ) : '—'}
+                        </td>
+                        {displayCols.map((c) => {
+                          const j = apiCols.indexOf(c);
+                          const cell = j >= 0 ? row[j] : null;
+                          return (
+                            <td
+                              key={c}
+                              className={`px-2 py-1.5 align-top ${isAbstractCol(c)
+                                ? 'min-w-[min(20rem,40vw)] max-w-[min(48rem,72vw)] text-[11px] leading-relaxed text-gray-700'
+                                : 'max-w-[200px] truncate'}`}
+                              title={!isAbstractCol(c) ? String(cell ?? '') : undefined}
+                            >
+                              {renderCell(cell, c)}
+                            </td>
+                          );
+                        })}
                         <td className="px-1 pt-1.5">
                           {oid && <button type="button" onClick={() => openDetail(oid)}
                             className="text-blue-600 hover:underline text-[10px]">Open</button>}
@@ -664,9 +1001,10 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
                       {isOpen && (
                         <tr className="bg-slate-50 border-t border-gray-100">
                           <td />
-                          <td colSpan={cols.length + 1} className="px-3 py-3 text-[11px] text-gray-700">
+                          <td />
+                          <td colSpan={displayCols.length + 1} className="px-3 py-3 text-[11px] text-gray-700">
                             {fullRec ? (
-                              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 max-h-[50vh] overflow-y-auto">
+                              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 max-h-[min(72vh,52rem)] overflow-y-auto">
                                 {allColNames.map(c => {
                                   const val = fullRec[c];
                                   if (val == null || val === '') return null;
@@ -710,19 +1048,36 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
         )}
 
         {/* ── Detail modal ──────────────────────────────────────────────── */}
+        {filterPop && createPortal(
+          <ColumnFilterPopover
+            pipelineId={pipelineId}
+            subsetId={subset?.id}
+            col={filterPop.col}
+            colType={colTypeMap[filterPop.col]}
+            filter={filterMap[filterPop.col]}
+            fixedPosition={{ top: filterPop.top, left: filterPop.left }}
+            onApply={(op, val, includeNull = false) => applyColumnFilter(filterPop.col, op, val, includeNull)}
+            onClear={() => clearFilter(filterPop.col)}
+            onClose={() => setFilterPop(null)}
+            onSortAsc={() => setSortRules([{ id: uid(), column: filterPop.col, dir: 'asc' }])}
+            onSortDesc={() => setSortRules([{ id: uid(), column: filterPop.col, dir: 'desc' }])}
+          />,
+          document.body,
+        )}
+
         {detail && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-6">
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[110] p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6">
               <div className="flex justify-between items-start mb-4">
                 <h3 className="font-bold text-gray-900 text-sm flex-1 pr-4">{detail.title}</h3>
                 <button type="button" onClick={() => setDetail(null)} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
               </div>
-              <div className="space-y-1.5 max-h-[70vh] overflow-y-auto">
+              <div className="space-y-1.5 max-h-[min(78vh,52rem)] overflow-y-auto">
                 {Object.entries(detail).map(([k, v]) => v != null && v !== '' && (
                   <div key={k} className={`flex gap-2 text-xs border-b border-gray-50 pb-1 ${k === 'abstract_text' ? 'flex-col' : ''}`}>
                     <span className={`text-gray-500 font-medium ${k === 'abstract_text' ? '' : 'w-44 shrink-0'}`}>{k}</span>
                     {k === 'abstract_text' ? (
-                      <p className="text-gray-800 whitespace-pre-wrap leading-relaxed text-[13px]">{String(v)}</p>
+                      <p className="text-gray-800 whitespace-pre-wrap leading-relaxed text-[14px]">{String(v)}</p>
                     ) : (
                       <span className="text-gray-800 break-words flex-1">{
                         typeof v === 'string' && (v.startsWith('[') || v.startsWith('{'))
@@ -738,6 +1093,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
         )}
 
       </div>
-    </div>
+    </>
   );
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../api/client';
-import { ChartCard, ChartResult } from './chartPrimitives.jsx';
+import { ChartCard, ChartResult, loadExplorerChartPrefs, mergeExplorerChartPrefs } from './chartPrimitives.jsx';
 
 const DEFAULT_CHART_ORDER = [
   'publications_by_year',
@@ -436,8 +436,16 @@ const CHART_CARD_WRAP = 'min-w-0 w-full max-w-xl mx-auto';
 
 export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadataChartsOnly = false, onDrilldown }) {
   const [charts, setCharts] = useState([]);
-  const [topN, setTopN] = useState(20);
-  const [cutoffYear, setCutoffYear] = useState(2000);
+  const [chartPrefs, setChartPrefs] = useState(() => loadExplorerChartPrefs(pipelineId));
+
+  useEffect(() => {
+    setChartPrefs(loadExplorerChartPrefs(pipelineId));
+  }, [pipelineId]);
+
+  const onChartPrefsChange = useCallback(
+    (patch) => setChartPrefs(mergeExplorerChartPrefs(pipelineId, patch)),
+    [pipelineId],
+  );
 
   useEffect(() => {
     apiFetch(`/api/pipeline/${pipelineId}/charts`)
@@ -481,21 +489,6 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
           Select a subset to scope default charts to that slice (full dataset charts use all filtered records when no subset is selected — pick &quot;All&quot; or a saved subset).
         </p>
       )}
-      {subsetId && (
-        <div className="flex flex-wrap gap-3 text-xs items-end mb-4">
-          <label className="block">
-            <span className="text-gray-500">Top N (charts with top-N)</span>
-            <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={topN} min={1} max={500}
-              onChange={e => setTopN(Number(e.target.value) || 20)} />
-          </label>
-          <label className="block">
-            <span className="text-gray-500">Year cutoff (publications by year)</span>
-            <input type="number" className="mt-1 border rounded px-2 py-1 w-24" value={cutoffYear}
-              onChange={e => setCutoffYear(Number(e.target.value) || 2000)} />
-          </label>
-        </div>
-      )}
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 w-full items-stretch">
         {visibleCharts.length === 0 && (
           <p className="lg:col-span-2 text-sm text-gray-400 w-full text-center py-6 border border-dashed border-gray-200 rounded-xl bg-gray-50/50">
@@ -510,7 +503,7 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
         {metaCharts.map(c => (
           <div key={c.id} className={CHART_CARD_WRAP}>
             <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
-              topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
+              chartPrefs={chartPrefs} onChartPrefsChange={onChartPrefsChange} onDrilldown={onDrilldown} />
           </div>
         ))}
         {!metadataChartsOnly && llmCharts.length > 0 && (
@@ -521,7 +514,7 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
         {!metadataChartsOnly && llmCharts.map(c => (
           <div key={c.id} className={CHART_CARD_WRAP}>
             <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
-              topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
+              chartPrefs={chartPrefs} onChartPrefsChange={onChartPrefsChange} onDrilldown={onDrilldown} />
           </div>
         ))}
         {!metadataChartsOnly && dependencyCharts.length > 0 && (
@@ -537,7 +530,7 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
         {!metadataChartsOnly && dependencyCharts.map(c => (
           <div key={c.id} className={CHART_CARD_WRAP}>
             <ChartCard chart={c} pipelineId={pipelineId} subsetId={subsetId}
-              topN={topN} cutoffYear={cutoffYear} onDrilldown={onDrilldown} />
+              chartPrefs={chartPrefs} onChartPrefsChange={onChartPrefsChange} onDrilldown={onDrilldown} />
           </div>
         ))}
 

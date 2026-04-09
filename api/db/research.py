@@ -6,9 +6,12 @@ SQLite level, independent of the query-level guards in run_query().
 """
 from __future__ import annotations
 
+import csv
+import io
 import re
 import sqlite3
 from pathlib import Path
+from typing import Iterator
 
 from api.business.subset_sql import (
     compose_subset_query,
@@ -72,27 +75,34 @@ def get_column_distinct_values(
     db_path: Path,
     subset_inner_sql: str,
     column: str,
-    limit: int = 50,
+    limit: int = 500,
 ) -> dict:
-    """Return distinct non-null values for *column* within the subset, capped at *limit*."""
+    """Return distinct non-null values for *column* within the subset, capped at *limit*.
+
+    Also returns *blank_count*: rows where the column is NULL or empty string (Excel \"blanks\").
+    """
     if not db_path.exists():
         return {"error": "Database not found"}
+    lim = max(1, min(int(limit), 5000))
     try:
         inner = normalize_subset_inner(subset_inner_sql)
         inner_err = validate_subset_inner(inner)
         if inner_err:
             return {"error": inner_err}
         qi = f'"{column}"'
+        cte = f"WITH _fr_subset AS (\n{inner}\n)\n"
         sql = (
-            f"WITH _fr_subset AS (\n{inner}\n)\n"
+            f"{cte}"
             f"SELECT DISTINCT {qi} AS v FROM _fr_subset "
-            f"WHERE {qi} IS NOT NULL AND {qi} != '' "
+            f"WHERE {qi} IS NOT NULL AND CAST({qi} AS TEXT) != '' "
             f"ORDER BY {qi} LIMIT ?"
         )
+        blank_sql = f"{cte}SELECT COUNT(*) FROM _fr_subset WHERE {qi} IS NULL OR CAST({qi} AS TEXT) = ''"
         with _connect_ro(db_path) as conn:
-            rows = conn.execute(sql, (limit + 1,)).fetchall()
-        values = [r[0] for r in rows[: limit]]
-        return {"values": values, "truncated": len(rows) > limit}
+            rows = conn.execute(sql, (lim + 1,)).fetchall()
+            blank_count = int(conn.execute(blank_sql).fetchone()[0])
+        values = [r[0] for r in rows[:lim]]
+        return {"values": values, "truncated": len(rows) > lim, "blank_count": blank_count}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -269,6 +279,25 @@ def _build_filter_sql(filters: list[dict], allowed: set[str]) -> tuple[str, list
                 params.append(float(val))
             except (TypeError, ValueError):
                 params.append(0.0)
+        elif op == "in":
+            # Excel-style multi-select: (col IN (?,...) OR col IS NULL for "blanks")
+            inc_null = f.get("include_null") is True
+            raw = val
+            if not isinstance(raw, list):
+                raw = []
+            ors: list[str] = []
+            for item in raw:
+                ors.append(f"{qi} = ?")
+                params.append(item)
+            null_cond = f"({qi} IS NULL OR CAST({qi} AS TEXT) = '')"
+            if ors and inc_null:
+                parts.append(f"(({' OR '.join(ors)}) OR {null_cond})")
+            elif ors:
+                parts.append(f"({' OR '.join(ors)})")
+            elif inc_null:
+                parts.append(f"({null_cond})")
+            else:
+                parts.append("(0=1)")
     where = " AND ".join(parts) if parts else "1=1"
     return where, params
 
@@ -385,6 +414,89 @@ def get_records_view(
         return {"error": str(exc)}
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _csv_format_row(values: list) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+    w.writerow(values)
+    return buf.getvalue()
+
+
+def iter_records_view_csv(
+    db_path: Path,
+    subset_inner_sql: str,
+    *,
+    filters: list[dict],
+    sort_rules: list[dict],
+    visible_cols: list[str] | None,
+    custom_sql: str | None,
+    max_rows: int = 500_000,
+) -> Iterator[str]:
+    """Yield CSV lines (header first) for the same logical query as get_records_view, without pagination."""
+    if not db_path.exists():
+        return
+    cap = max(1, min(int(max_rows), 2_000_000))
+    try:
+        with _connect_ro(db_path) as conn:
+            allowed = _available_cols(conn)
+            inner = normalize_subset_inner(subset_inner_sql)
+            inner_err = validate_subset_inner(inner)
+            if inner_err:
+                return
+            cte = f"WITH _fr_subset AS (\n{inner}\n)\n"
+
+            if custom_sql and custom_sql.strip():
+                cust = normalize_custom_scoped_sql(custom_sql)
+                err = validate_subset_scoped_select(cust)
+                if err:
+                    return
+                where_sql, filt_params = _build_filter_sql(filters or [], allowed)
+                default_sort = "publication_year" if "publication_year" in allowed else next(iter(allowed), "openalex_id")
+                order_sql = _build_order_sql(sort_rules or [], allowed, default_sort)
+                if visible_cols:
+                    select_cols = ", ".join(_quote_col(c, allowed) for c in visible_cols if c in allowed)
+                    if not select_cols:
+                        select_cols = "*"
+                else:
+                    select_cols = "*"
+                base = f"{cte}, _q AS ({cust})"
+                page_sql = (
+                    f"{base} SELECT {select_cols} FROM _q WHERE {where_sql} ORDER BY {order_sql}"
+                )
+                cur = conn.execute(page_sql, list(filt_params))
+            else:
+                where_sql, params = _build_filter_sql(filters or [], allowed)
+                default_sort = "publication_year" if "publication_year" in allowed else next(iter(allowed), "openalex_id")
+                order_sql = _build_order_sql(sort_rules or [], allowed, default_sort)
+
+                if visible_cols:
+                    select_cols = ", ".join(_quote_col(c, allowed) for c in visible_cols if c in allowed)
+                    if not select_cols:
+                        select_cols = "*"
+                else:
+                    select_cols = "*"
+
+                data_sql = (
+                    f"{cte}SELECT {select_cols} FROM _fr_subset WHERE {where_sql} "
+                    f"ORDER BY {order_sql}"
+                )
+                cur = conn.execute(data_sql, list(params))
+
+            columns = [d[0] for d in cur.description]
+            yield _csv_format_row(columns)
+            data_count = 0
+            while data_count < cap:
+                batch = cur.fetchmany(1000)
+                if not batch:
+                    break
+                for row in batch:
+                    if data_count >= cap:
+                        return
+                    yield _csv_format_row(list(row))
+                    data_count += 1
+    except Exception:
+        return
 
 
 def explain_records_view_sql(

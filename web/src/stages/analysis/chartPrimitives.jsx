@@ -3,6 +3,43 @@ import { apiFetch } from '../../api/client';
 import { buildChartDrilldownSql } from './chartDrilldown.js';
 
 const CHART_LAYOUT_STORAGE_KEY = 'oa-pipeline-chart-bar-layout';
+const EXPLORER_CHART_PREFS_KEY = 'oa-pipeline-explorer-chart-prefs';
+
+/** Top-N + year cutoff for scoped chart queries (sessionStorage per pipeline). */
+export function loadExplorerChartPrefs(pipelineId) {
+  try {
+    const raw = sessionStorage.getItem(EXPLORER_CHART_PREFS_KEY);
+    const o = raw ? JSON.parse(raw) : {};
+    const p = o[String(pipelineId)] || {};
+    return {
+      topN: Math.min(500, Math.max(1, Number(p.topN) || 20)),
+      cutoffYear: Number.isFinite(Number(p.cutoffYear)) ? Number(p.cutoffYear) : 2000,
+    };
+  } catch {
+    return { topN: 20, cutoffYear: 2000 };
+  }
+}
+
+export function mergeExplorerChartPrefs(pipelineId, patch) {
+  const cur = loadExplorerChartPrefs(pipelineId);
+  const n = {
+    topN: patch.topN != null
+      ? Math.min(500, Math.max(1, Number(patch.topN) || 20))
+      : cur.topN,
+    cutoffYear: patch.cutoffYear != null && Number.isFinite(Number(patch.cutoffYear))
+      ? Number(patch.cutoffYear)
+      : cur.cutoffYear,
+  };
+  try {
+    const raw = sessionStorage.getItem(EXPLORER_CHART_PREFS_KEY);
+    const o = raw ? JSON.parse(raw) : {};
+    o[String(pipelineId)] = n;
+    sessionStorage.setItem(EXPLORER_CHART_PREFS_KEY, JSON.stringify(o));
+  } catch {
+    /* ignore */
+  }
+  return n;
+}
 
 /** Charts that support a ⚙ bar orientation override (stored per pipeline + chart id). */
 export const CHARTS_WITH_DISPLAY_CONFIG = new Set(['publications_by_year', 'work_types']);
@@ -31,31 +68,31 @@ function writeBarLayout(pipelineId, chartId, layout) {
   }
 }
 
-const VBAR_TRACK_PX = 128;
-const COL_W = 'clamp(2.75rem, 4vw, 4.5rem)';
+const VBAR_TRACK_PX = 88;
+const COL_W = 'clamp(1.5rem, 2.2vw, 2.75rem)';
 
 export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const slice = rows.slice(0, maxRows);
   const maxVal = Math.max(...slice.map(r => Number(r[yKey]) || 0), 1);
   return (
-    <div className="space-y-2 min-w-0">
+    <div className="space-y-1.5 min-w-0">
       {slice.map((r, i) => {
         const pct = maxVal > 0 ? (Number(r[yKey]) / maxVal) * 100 : 0;
         const lab = String(r[xKey] ?? '');
         return (
           <div
             key={i}
-            className="grid grid-cols-1 sm:grid-cols-[minmax(5rem,38%)_1fr_auto] gap-x-2 gap-y-1 items-center text-xs min-w-0"
+            className="grid grid-cols-1 sm:grid-cols-[minmax(4rem,36%)_1fr_auto] gap-x-1.5 gap-y-0.5 items-center text-[11px] min-w-0"
           >
             <span
               className="text-gray-700 break-words sm:text-right line-clamp-2 sm:line-clamp-3 leading-snug"
               title={lab}>
               {lab}
             </span>
-            <div className="min-w-[48px] h-6 sm:h-5 bg-gray-100 rounded-md overflow-hidden border border-gray-200/80">
+            <div className="min-w-[40px] h-4 sm:h-3.5 bg-slate-100 rounded overflow-hidden border border-slate-200/90 shadow-inner">
               <div
-                className="h-full bg-blue-500 rounded-md transition-all duration-300"
+                className="h-full rounded-sm transition-all duration-300 bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-600 shadow-[2px_0_6px_rgba(37,99,235,0.35)]"
                 style={{ width: `${pct}%` }}
               />
             </div>
@@ -79,8 +116,8 @@ export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 48, onCountClick
   const slice = rows.slice(0, maxRows);
   const maxVal = Math.max(...slice.map(r => Number(r[yKey]) || 0), 1);
   return (
-    <div className="overflow-x-auto pb-1 pt-1 -mx-1 px-1">
-      <div className="flex items-end gap-1.5" style={{ minHeight: VBAR_TRACK_PX + 40 }}>
+    <div className="overflow-x-auto pb-0.5 pt-0.5 -mx-1 px-1">
+      <div className="flex items-end gap-1" style={{ minHeight: VBAR_TRACK_PX + 32 }}>
         {slice.map((r, i) => {
           const v = Number(r[yKey]) || 0;
           const barH = maxVal > 0 ? Math.round((v / maxVal) * VBAR_TRACK_PX) : 0;
@@ -88,26 +125,26 @@ export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 48, onCountClick
           return (
             <div
               key={i}
-              className="flex flex-col items-center gap-1.5 shrink-0"
-              style={{ width: COL_W, minWidth: '2.75rem', maxWidth: '5rem' }}
+              className="flex flex-col items-center gap-1 shrink-0"
+              style={{ width: COL_W, minWidth: '1.5rem', maxWidth: '3rem' }}
             >
               <div
-                className="relative w-full rounded-t-md border border-gray-200/80 bg-gray-100 overflow-hidden"
+                className="relative w-full rounded-t border border-slate-200/90 bg-gradient-to-b from-slate-50 to-slate-100 overflow-hidden shadow-inner"
                 style={{ height: VBAR_TRACK_PX }}
               >
                 <div
-                  className="absolute bottom-0 left-0 right-0 bg-indigo-500 rounded-t-md pointer-events-none transition-all duration-300"
+                  className="absolute bottom-0 left-0 right-0 rounded-t pointer-events-none transition-all duration-300 bg-gradient-to-t from-indigo-700 via-indigo-500 to-violet-400 shadow-[0_-3px_10px_rgba(79,70,229,0.35)]"
                   style={{ height: Math.max(barH, v > 0 ? 3 : 0) }}
                 />
                 <button
                   type="button"
                   title={`${label}: ${v} — click to drill down`}
                   onClick={() => onCountClick?.(r)}
-                  className="absolute inset-0 w-full h-full bg-transparent hover:ring-2 hover:ring-indigo-400 ring-inset rounded-t-md cursor-pointer"
+                  className="absolute inset-0 w-full h-full bg-transparent hover:ring-1 hover:ring-indigo-400 ring-inset rounded-t cursor-pointer"
                 />
               </div>
               <span
-                className="text-[9px] leading-tight text-gray-600 text-center break-words w-full line-clamp-4 px-px"
+                className="text-[8px] leading-tight text-gray-600 text-center break-words w-full line-clamp-3 px-px"
                 title={label}>
                 {label}
               </span>
@@ -122,7 +159,7 @@ export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 48, onCountClick
 const PIE_HEX = ['#3b82f6', '#22c55e', '#eab308', '#a855f7', '#ef4444', '#6366f1', '#ec4899', '#f97316', '#14b8a6', '#06b6d4'];
 
 /** SVG pie + scrollable legend (used for Open Access and other pie renderer charts). */
-export function PieSvgChart({ rows, xKey = 0, yKey = 1, onCountClick, size = 168 }) {
+export function PieSvgChart({ rows, xKey = 0, yKey = 1, onCountClick, size = 128 }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const total = rows.reduce((s, r) => s + (Number(r[yKey]) || 0), 0);
   if (total <= 0) return <PieTable rows={rows} onCountClick={onCountClick} />;
@@ -152,28 +189,36 @@ export function PieSvgChart({ rows, xKey = 0, yKey = 1, onCountClick, size = 168
   });
 
   return (
-    <div className="flex flex-col sm:flex-row gap-4 items-start min-w-0">
+    <div className="flex flex-col sm:flex-row gap-2 items-start min-w-0">
       <svg
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
-        className="shrink-0 mx-auto sm:mx-0"
+        className="shrink-0 mx-auto sm:mx-0 drop-shadow-md"
         role="img"
         aria-label="Pie chart"
       >
+        <defs>
+          {arcs.map((a, j) => (
+            <radialGradient key={`g-${a.key}`} id={`pieGrad-${a.key}`} cx="35%" cy="35%" r="75%">
+              <stop offset="0%" stopColor={PIE_HEX[j % PIE_HEX.length]} stopOpacity="1" />
+              <stop offset="100%" stopColor={PIE_HEX[j % PIE_HEX.length]} stopOpacity="0.75" />
+            </radialGradient>
+          ))}
+        </defs>
         {arcs.map((a) => (
           <path
             key={a.key}
             d={a.d}
-            fill={a.color}
+            fill={`url(#pieGrad-${a.key})`}
             stroke="#fff"
-            strokeWidth="1"
-            className="cursor-pointer hover:opacity-85 transition-opacity"
+            strokeWidth="1.5"
+            className="cursor-pointer hover:opacity-90 transition-opacity"
             onClick={() => onCountClick?.(a.row)}
           />
         ))}
       </svg>
-      <div className="flex-1 min-w-0 w-full max-h-56 overflow-y-auto space-y-1 pr-1 text-xs border border-gray-100 rounded-lg p-2 bg-gray-50/50">
+      <div className="flex-1 min-w-0 w-full max-h-44 overflow-y-auto space-y-0.5 pr-1 text-[11px] border border-gray-100 rounded-md p-1.5 bg-gray-50/50">
         {slices.map((s, j) => {
           const pct = (s.v / total) * 100;
           return (
@@ -318,10 +363,12 @@ export function ChartCard({
   chart,
   pipelineId,
   subsetId = null,
-  topN = 20,
-  cutoffYear = 2000,
+  chartPrefs = { topN: 20, cutoffYear: 2000 },
+  onChartPrefsChange = () => {},
   onDrilldown,
 }) {
+  const topN = chartPrefs.topN;
+  const cutoffYear = chartPrefs.cutoffYear;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -331,6 +378,7 @@ export function ChartCard({
   const cfgRef = useRef(null);
 
   const showDisplayConfig = CHARTS_WITH_DISPLAY_CONFIG.has(chart.id);
+  const isPubYear = chart.id === 'publications_by_year';
 
   useEffect(() => {
     setBarLayout(readBarLayout(pipelineId, chart.id));
@@ -386,12 +434,12 @@ export function ChartCard({
   };
 
   return (
-    <div id={`chart-${chart.id}`} className="border border-gray-200 rounded-xl overflow-hidden scroll-mt-4">
+    <div id={`chart-${chart.id}`} className="border border-gray-200/90 rounded-xl overflow-hidden scroll-mt-4 bg-white shadow-sm">
       <div className="flex items-stretch bg-white">
         <button
           type="button"
           onClick={() => setOpen(o => !o)}
-          className="flex-1 flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition text-left min-w-0">
+          className="flex-1 flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition text-left min-w-0">
           <div className="min-w-0">
             <span className="font-medium text-gray-900 text-sm">{chart.title}</span>
             {chart.llm_only && (
@@ -418,12 +466,51 @@ export function ChartCard({
             </button>
             {cfgOpen && (
               <div
-                className="absolute right-0 top-full mt-1 z-30 w-52 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs"
+                className={`absolute right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-lg shadow-lg p-2.5 text-xs ${isPubYear ? 'w-64' : 'w-52'}`}
                 onMouseDown={e => e.stopPropagation()}
               >
-                <div className="font-semibold text-gray-800 mb-2">Bar layout</div>
-                <p className="text-[10px] text-gray-500 mb-2">Applies to this chart in this browser only.</p>
-                <div className="space-y-1.5">
+                {isPubYear && (
+                  <>
+                    <div className="font-semibold text-gray-800 mb-1.5">Chart data</div>
+                    <p className="text-[10px] text-gray-500 mb-2">
+                      Year cutoff filters the series and drill-down. Top N applies when a subset scopes the chart.
+                    </p>
+                    <label className="block mb-2">
+                      <span className="text-[10px] text-gray-600 font-medium">Top N</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={topN}
+                        disabled={subsetId == null}
+                        onChange={(e) => {
+                          const v = Number(e.target.value) || 20;
+                          onChartPrefsChange({ topN: v });
+                        }}
+                        className="mt-0.5 w-full border border-gray-200 rounded px-2 py-1 text-xs disabled:bg-gray-50 disabled:text-gray-400"
+                      />
+                      {subsetId == null && (
+                        <span className="text-[9px] text-amber-700 mt-0.5 block">Select a subset to use Top N on this chart.</span>
+                      )}
+                    </label>
+                    <label className="block mb-3">
+                      <span className="text-[10px] text-gray-600 font-medium">Year cutoff</span>
+                      <input
+                        type="number"
+                        value={cutoffYear}
+                        onChange={(e) => {
+                          const v = Number(e.target.value) || 2000;
+                          onChartPrefsChange({ cutoffYear: v });
+                        }}
+                        className="mt-0.5 w-full border border-gray-200 rounded px-2 py-1 text-xs"
+                      />
+                    </label>
+                    <div className="border-t border-gray-100 pt-2 mb-2" />
+                  </>
+                )}
+                <div className="font-semibold text-gray-800 mb-1.5">Bar layout</div>
+                <p className="text-[10px] text-gray-500 mb-2">This chart only — stored in this browser.</p>
+                <div className="space-y-1">
                   {[
                     { id: null, label: `Default (${chart.renderer === 'hbar' ? 'horizontal' : 'vertical'})` },
                     { id: 'bar', label: 'Vertical bars' },
@@ -451,15 +538,15 @@ export function ChartCard({
       </div>
 
       {open && (
-        <div className="px-3 pb-3 pt-1 border-t border-gray-100 bg-white">
-          {loading && <p className="text-xs text-gray-400 py-4 text-center">Loading…</p>}
+        <div className="px-2 pb-2 pt-0.5 border-t border-gray-100 bg-white">
+          {loading && <p className="text-xs text-gray-400 py-3 text-center">Loading…</p>}
           {error && <p className="text-xs text-red-500 py-2">{error}</p>}
           {data && !loading && (
             <>
-              <div className="max-w-xl mx-auto w-full max-h-64 overflow-auto">
+              <div className="max-w-xl mx-auto w-full max-h-52 overflow-auto">
                 <ChartResult renderer={renderer} rows={rows} onCountClick={handleDrill} />
               </div>
-              <p className="text-xs text-gray-400 mt-2 text-right">{rows.length} rows</p>
+              <p className="text-[11px] text-gray-400 mt-1.5 text-right">{rows.length} rows</p>
             </>
           )}
         </div>

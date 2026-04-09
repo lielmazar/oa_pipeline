@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -33,6 +34,7 @@ from api.db.research import (
     get_records,
     get_records_view,
     get_schema,
+    iter_records_view_csv,
     run_query,
 )
 from api.deps import CurrentUser, Db
@@ -194,7 +196,8 @@ def data_version(pipeline_id: int, user: CurrentUser, db: Db):
 class FilterRule(BaseModel):
     column: str
     op: str = "eq"
-    value: str | int | float | None = None
+    value: Any = None
+    include_null: bool = False
 
 
 class SortRule(BaseModel):
@@ -241,6 +244,57 @@ def db_records_view(pipeline_id: int, body: RecordsViewBody, user: CurrentUser, 
     return result
 
 
+class RecordsExportBody(BaseModel):
+    subset_id: int
+    filters: list[FilterRule] = Field(default_factory=list)
+    sort: list[SortRule] = Field(default_factory=list)
+    visible_cols: list[str] | None = None
+    custom_sql: str | None = None
+    max_rows: int = 500_000
+
+
+@router.post("/{pipeline_id}/records/export-csv")
+def db_records_export_csv(pipeline_id: int, body: RecordsExportBody, user: CurrentUser, db: Db):
+    """Download all rows matching the current Research DB Viewer query as CSV (up to max_rows)."""
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    sub = get_subset(db, pipeline_id, body.subset_id)
+    if not sub:
+        raise HTTPException(404, "subset not found")
+    filt = [f.model_dump() for f in body.filters]
+    sort_d = [s.model_dump() for s in body.sort]
+    probe = get_records_view(
+        db_path,
+        sub["sql_query"],
+        filters=filt,
+        sort_rules=sort_d,
+        page=1,
+        per_page=1,
+        visible_cols=body.visible_cols,
+        custom_sql=body.custom_sql,
+    )
+    if "error" in probe:
+        raise HTTPException(400, probe["error"])
+
+    def generate():
+        for line in iter_records_view_csv(
+            db_path,
+            sub["sql_query"],
+            filters=filt,
+            sort_rules=sort_d,
+            visible_cols=body.visible_cols,
+            custom_sql=body.custom_sql,
+            max_rows=body.max_rows,
+        ):
+            yield line.encode("utf-8")
+
+    fname = f"pipeline_{pipeline_id}_subset_{body.subset_id}_records.csv"
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @router.post("/{pipeline_id}/records/explain-sql")
 def db_records_explain_sql(pipeline_id: int, body: RecordsExplainBody, user: CurrentUser, db: Db):
     db_path = _resolve_db(db, pipeline_id, user["id"])
@@ -262,8 +316,12 @@ def db_records_explain_sql(pipeline_id: int, body: RecordsExplainBody, user: Cur
 
 @router.get("/{pipeline_id}/column-values/{column}")
 def column_distinct_values(
-    pipeline_id: int, column: str, user: CurrentUser, db: Db,
+    pipeline_id: int,
+    column: str,
+    user: CurrentUser,
+    db: Db,
     subset_id: int | None = None,
+    limit: int = 500,
 ):
     db_path = _resolve_db(db, pipeline_id, user["id"])
     subset_sql = "SELECT * FROM filtered_records"
@@ -271,7 +329,7 @@ def column_distinct_values(
         sub = get_subset(db, pipeline_id, subset_id)
         if sub:
             subset_sql = sub["sql_query"]
-    result = get_column_distinct_values(db_path, subset_sql, column)
+    result = get_column_distinct_values(db_path, subset_sql, column, limit=limit)
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result

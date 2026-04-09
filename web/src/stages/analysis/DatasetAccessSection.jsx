@@ -6,9 +6,16 @@ export default function DatasetAccessSection({
   selectedSubsetId,
   onSelectSubset,
   onOpenViewer,
+  sectionOpen = true,
+  onSectionOpenChange,
 }) {
   const [summary, setSummary] = useState(null);
-  const [open, setOpen] = useState(true);
+  const [internalOpen, setInternalOpen] = useState(true);
+  const open = onSectionOpenChange ? sectionOpen : internalOpen;
+  const toggleOpen = () => {
+    if (onSectionOpenChange) onSectionOpenChange(!sectionOpen);
+    else setInternalOpen((o) => !o);
+  };
 
   const load = useCallback(() => {
     apiFetch(`/api/pipeline/${pipelineId}/subsets/summary`)
@@ -59,7 +66,7 @@ export default function DatasetAccessSection({
     <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={toggleOpen}
         className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 transition border-b border-gray-100">
         <div>
           <h2 className="text-sm font-bold text-gray-900">Data</h2>
