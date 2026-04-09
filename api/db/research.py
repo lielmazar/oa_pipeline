@@ -321,11 +321,24 @@ def get_records_view(
                 err = validate_subset_scoped_select(cust)
                 if err:
                     return {"error": err}
-                count_sql = f"{cte}, _q AS ({cust}) SELECT COUNT(*) FROM _q"
-                total = conn.execute(count_sql).fetchone()[0]
+                where_sql, filt_params = _build_filter_sql(filters or [], allowed)
+                default_sort = "publication_year" if "publication_year" in allowed else next(iter(allowed), "openalex_id")
+                order_sql = _build_order_sql(sort_rules or [], allowed, default_sort)
+                if visible_cols:
+                    select_cols = ", ".join(_quote_col(c, allowed) for c in visible_cols if c in allowed)
+                    if not select_cols:
+                        select_cols = "*"
+                else:
+                    select_cols = "*"
+                base = f"{cte}, _q AS ({cust})"
+                count_sql = f"{base} SELECT COUNT(*) FROM _q WHERE {where_sql}"
+                total = conn.execute(count_sql, list(filt_params)).fetchone()[0]
                 offset = (page - 1) * per_page
-                page_sql = f"{cte}, _q AS ({cust}) SELECT * FROM _q LIMIT ? OFFSET ?"
-                cur = conn.execute(page_sql, (per_page, offset))
+                page_sql = (
+                    f"{base} SELECT {select_cols} FROM _q WHERE {where_sql} "
+                    f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
+                )
+                cur = conn.execute(page_sql, list(filt_params) + [per_page, offset])
                 columns = [d[0] for d in cur.description]
                 rows = [list(r) for r in cur.fetchall()]
                 return {
@@ -400,7 +413,19 @@ def explain_records_view_sql(
                 err = validate_subset_scoped_select(cust)
                 if err:
                     return {"error": err}
-                sql = f"{cte}, _q AS ({cust}) SELECT * FROM _q"
+                where_sql, _ = _build_filter_sql(filters or [], allowed)
+                default_sort = "publication_year" if "publication_year" in allowed else next(iter(allowed), "openalex_id")
+                order_sql = _build_order_sql(sort_rules or [], allowed, default_sort)
+                if visible_cols:
+                    select_cols = ", ".join(_quote_col(c, allowed) for c in visible_cols if c in allowed)
+                    if not select_cols:
+                        select_cols = "*"
+                else:
+                    select_cols = "*"
+                sql = (
+                    f"{cte}, _q AS ({cust}) SELECT {select_cols} FROM _q WHERE {where_sql} "
+                    f"ORDER BY {order_sql}  -- pagination adds LIMIT/OFFSET"
+                )
                 return {"sql": sql.strip(), "mode": "custom_sql"}
 
             where_sql, _ = _build_filter_sql(filters or [], allowed)

@@ -31,7 +31,7 @@ function writeBarLayout(pipelineId, chartId, layout) {
   }
 }
 
-const VBAR_TRACK_PX = 176;
+const VBAR_TRACK_PX = 128;
 const COL_W = 'clamp(2.75rem, 4vw, 4.5rem)';
 
 export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40, onCountClick }) {
@@ -80,7 +80,7 @@ export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 48, onCountClick
   const maxVal = Math.max(...slice.map(r => Number(r[yKey]) || 0), 1);
   return (
     <div className="overflow-x-auto pb-1 pt-1 -mx-1 px-1">
-      <div className="flex items-end gap-1.5 min-h-[220px]" style={{ minHeight: VBAR_TRACK_PX + 44 }}>
+      <div className="flex items-end gap-1.5" style={{ minHeight: VBAR_TRACK_PX + 40 }}>
         {slice.map((r, i) => {
           const v = Number(r[yKey]) || 0;
           const barH = maxVal > 0 ? Math.round((v / maxVal) * VBAR_TRACK_PX) : 0;
@@ -122,7 +122,7 @@ export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 48, onCountClick
 const PIE_HEX = ['#3b82f6', '#22c55e', '#eab308', '#a855f7', '#ef4444', '#6366f1', '#ec4899', '#f97316', '#14b8a6', '#06b6d4'];
 
 /** SVG pie + scrollable legend (used for Open Access and other pie renderer charts). */
-export function PieSvgChart({ rows, xKey = 0, yKey = 1, onCountClick, size = 200 }) {
+export function PieSvgChart({ rows, xKey = 0, yKey = 1, onCountClick, size = 168 }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const total = rows.reduce((s, r) => s + (Number(r[yKey]) || 0), 0);
   if (total <= 0) return <PieTable rows={rows} onCountClick={onCountClick} />;
@@ -451,12 +451,14 @@ export function ChartCard({
       </div>
 
       {open && (
-        <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-white">
+        <div className="px-3 pb-3 pt-1 border-t border-gray-100 bg-white">
           {loading && <p className="text-xs text-gray-400 py-4 text-center">Loading…</p>}
           {error && <p className="text-xs text-red-500 py-2">{error}</p>}
           {data && !loading && (
             <>
-              <ChartResult renderer={renderer} rows={rows} onCountClick={handleDrill} />
+              <div className="max-w-xl mx-auto w-full max-h-64 overflow-auto">
+                <ChartResult renderer={renderer} rows={rows} onCountClick={handleDrill} />
+              </div>
               <p className="text-xs text-gray-400 mt-2 text-right">{rows.length} rows</p>
             </>
           )}

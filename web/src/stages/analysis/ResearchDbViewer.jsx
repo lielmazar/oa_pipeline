@@ -89,8 +89,33 @@ function Chevron({ open }) {
   );
 }
 
+function filterChipLabel(f) {
+  const v = f.value != null && f.value !== '' ? String(f.value) : '';
+  const short = v.length > 28 ? `${v.slice(0, 28)}…` : v;
+  const op = (() => {
+    if (f.op === 'contains') return 'contains';
+    if (f.op === 'starts_with') return 'starts with';
+    if (f.op === 'is_null') return 'is null';
+    if (f.op === 'is_not_null') return 'is not null';
+    return f.op;
+  })();
+  if (f.op === 'is_null' || f.op === 'is_not_null') return `${f.column} ${op}`;
+  return `${f.column} ${op} ${short}`;
+}
+
 /* ── Column filter popover with distinct-value suggestions ─────────────────── */
-function ColumnFilterPopover({ pipelineId, subsetId, col, colType, filter, onApply, onClear, onClose }) {
+function ColumnFilterPopover({
+  pipelineId,
+  subsetId,
+  col,
+  colType,
+  filter,
+  onApply,
+  onClear,
+  onClose,
+  onSortAsc,
+  onSortDesc,
+}) {
   const ops = opsForType(colType);
   const [op, setOp]       = useState(filter?.op || ops[0].id);
   const [val, setVal]     = useState(filter?.value ?? '');
@@ -118,11 +143,32 @@ function ColumnFilterPopover({ pipelineId, subsetId, col, colType, filter, onApp
   const showPickList = needsValue && distinct && !distinct.truncated && distinct.values?.length > 0
     && ['eq', 'neq'].includes(op);
 
+  const isNum = ['INT', 'INTEGER', 'REAL', 'FLOAT', 'NUMERIC', 'DOUBLE'].some(k =>
+    (colType || '').toUpperCase().includes(k));
+
   return (
     <div ref={ref}
-      className="absolute top-full left-0 mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-xl p-2.5 w-64 space-y-2"
+      className="absolute top-full left-0 mt-1 z-50 bg-white border border-gray-300 rounded-md shadow-xl w-72 space-y-2 overflow-hidden"
       onClick={e => e.stopPropagation()}>
-      <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide truncate">Filter: {col}</p>
+      <div className="bg-gray-50 border-b border-gray-200 px-2.5 py-2">
+        <p className="text-[11px] font-semibold text-gray-800 truncate" title={col}>{col}</p>
+        <div className="flex gap-1.5 mt-2">
+          <button
+            type="button"
+            onClick={() => { onSortAsc?.(); onClose(); }}
+            className="flex-1 text-[11px] px-2 py-1.5 rounded border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-200 font-medium text-gray-800">
+            {isNum ? 'Sort smallest → largest' : 'Sort A → Z'}
+          </button>
+          <button
+            type="button"
+            onClick={() => { onSortDesc?.(); onClose(); }}
+            className="flex-1 text-[11px] px-2 py-1.5 rounded border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-200 font-medium text-gray-800">
+            {isNum ? 'Sort largest → smallest' : 'Sort Z → A'}
+          </button>
+        </div>
+      </div>
+      <div className="px-2.5 pb-2.5 space-y-2">
+      <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide pt-1">Filter</p>
       <select value={op} onChange={e => setOp(e.target.value)}
         className="w-full border rounded px-2 py-1 text-xs">
         {ops.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -160,15 +206,16 @@ function ColumnFilterPopover({ pipelineId, subsetId, col, colType, filter, onApp
       <div className="flex gap-1.5 pt-1">
         <button type="button"
           onClick={() => { onApply(op, val); onClose(); }}
-          className="flex-1 text-[11px] px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">
-          Apply
+          className="flex-1 text-[11px] px-2 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium">
+          Apply filter
         </button>
         {filter && (
           <button type="button" onClick={() => { onClear(); onClose(); }}
-            className="flex-1 text-[11px] px-2 py-1 border rounded hover:bg-gray-50">
-            Clear
+            className="flex-1 text-[11px] px-2 py-1.5 border border-gray-200 rounded-md hover:bg-gray-50">
+            Clear filter
           </button>
         )}
+      </div>
       </div>
     </div>
   );
@@ -252,7 +299,8 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
 
   /* ── Explain SQL ─────────────────────────────────────────────────────────── */
   const refreshExplain = useCallback(async () => {
-    if (!subset?.id || useCustomSql) return;
+    if (!subset?.id) return;
+    if (useCustomSql && !customSqlRef.current.trim()) return;
     setExplainLoading(true); setSqlError('');
     try {
       const res = await apiFetch(`/api/pipeline/${pipelineId}/records/explain-sql`, {
@@ -261,12 +309,13 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
           subset_id: subset.id,
           filters: filters.map(({ column, op, value }) => ({ column, op, value })),
           sort: sortRules.map(({ column, dir }) => ({ column, dir })),
-          visible_cols: visibleCols, custom_sql: null,
+          visible_cols: visibleCols,
+          custom_sql: useCustomSql ? (customSqlRef.current.trim() || null) : null,
         }),
       });
       const d = await res.json();
       if (!res.ok) { setSqlError(d.detail || 'Explain failed'); return; }
-      setBuilderSql(d.sql || '');
+      if (!useCustomSql) setBuilderSql(d.sql || '');
     } finally { setExplainLoading(false); }
   }, [pipelineId, subset?.id, filters, sortRules, visibleCols, useCustomSql]);
 
@@ -295,15 +344,10 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   }, [pipelineId, subset?.id, filters, sortRules, pageSize, visibleCols, useCustomSql]);
 
   useEffect(() => {
-    if (!subset?.id || useCustomSql) return;
+    if (!subset?.id) return;
+    if (useCustomSql && !customSqlRef.current.trim()) return;
     loadTable(1);
-  }, [subset?.id, filters, sortRules, pageSize, visibleCols, useCustomSql, loadTable]);
-  useEffect(() => {
-    if (!subset?.id || !useCustomSql) return;
-    const t = customSqlRef.current.trim();
-    if (!t) return;
-    loadTable(1);
-  }, [subset?.id, useCustomSql, loadTable]);
+  }, [subset?.id, filters, sortRules, pageSize, visibleCols, useCustomSql, customSql, loadTable]);
 
   /* ── Expand row: fetch ALL fields ────────────────────────────────────────── */
   const toggleExpand = async (i, oid) => {
@@ -356,7 +400,6 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
 
   const cols = table?.columns || visibleCols;
   const isAbstractCol = c => c === 'abstract_text';
-  const activeFilterCount = filters.length;
   const activeSortCount = sortRules.length;
 
   /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -378,23 +421,47 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2 shrink-0">×</button>
         </div>
 
-        {/* ── Toolbar ───────────────────────────────────────────────────── */}
-        <div className="flex items-center gap-2 px-4 py-1.5 bg-white border-b border-gray-100 shrink-0 flex-wrap text-xs">
-          {activeFilterCount > 0 && (
-            <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 rounded-full px-2.5 py-0.5 font-medium">
-              {activeFilterCount} filter{activeFilterCount > 1 ? 's' : ''}
-              <button type="button" onClick={() => setFilters([])} className="text-blue-400 hover:text-blue-700 ml-0.5" title="Clear all filters">×</button>
-            </span>
-          )}
-          {activeSortCount > 0 && (
-            <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 rounded-full px-2.5 py-0.5 font-medium">
-              {activeSortCount} sort{activeSortCount > 1 ? 's' : ''}
-              <button type="button" onClick={() => setSortRules([])} className="text-indigo-400 hover:text-indigo-700 ml-0.5" title="Clear all sorts">×</button>
-            </span>
-          )}
-          {useCustomSql && <span className="bg-amber-50 text-amber-700 rounded-full px-2.5 py-0.5 font-medium">custom SQL</span>}
+        {/* ── Toolbar (Excel-style filter/sort summary) ───────────────── */}
+        <div className="flex items-start gap-2 px-4 py-2 bg-white border-b border-gray-200 shrink-0 flex-wrap text-xs">
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
+            {filters.map(f => (
+              <span
+                key={f.id}
+                className="inline-flex items-center gap-1 max-w-full bg-blue-50 border border-blue-200 text-blue-900 rounded px-2 py-0.5 font-mono text-[10px]">
+                <span className="truncate" title={filterChipLabel(f)}>{filterChipLabel(f)}</span>
+                <button
+                  type="button"
+                  className="text-blue-400 hover:text-blue-800 shrink-0 font-sans"
+                  title="Remove filter"
+                  onClick={() => setFilters(prev => prev.filter(x => x.id !== f.id))}>
+                  ×
+                </button>
+              </span>
+            ))}
+            {filters.length > 1 && (
+              <button type="button" onClick={() => setFilters([])} className="text-[10px] text-blue-600 hover:underline">
+                Clear all filters
+              </button>
+            )}
+            {sortRules.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-0.5">
+                <span className="text-gray-500 font-medium">Sort:</span>
+                <span className="font-mono">
+                  {sortRules.map(s => `${s.column} ${s.dir === 'desc' ? '↓' : '↑'}`).join(' → ')}
+                </span>
+                <button type="button" onClick={() => setSortRules([])} className="text-gray-400 hover:text-gray-700" title="Clear sort">×</button>
+              </span>
+            )}
+            {useCustomSql && (
+              <span className="bg-amber-50 border border-amber-200 text-amber-900 rounded px-2 py-0.5 text-[10px] font-medium">
+                Drilldown / custom SQL — filters &amp; sort apply on top of this query
+              </span>
+            )}
+          </div>
 
-          <span className="text-[10px] text-gray-400 ml-1 hidden sm:inline">Click header to sort · Shift+click for multi-sort · Funnel to filter</span>
+          <span className="text-[10px] text-gray-500 hidden lg:inline max-w-[220px] text-right leading-snug">
+            Header: click sort · Shift+click multi-sort · ▼ filter &amp; sort
+          </span>
 
           <div className="ml-auto flex items-center gap-1.5">
             <div className="relative" ref={colPickerRef}>
@@ -523,24 +590,25 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
           {loading && <p className="text-xs text-gray-400 text-center py-10">Loading…</p>}
           {table?.rows && !loading && (
             <table className="w-full text-xs border-collapse">
-              <thead className="bg-gray-100 sticky top-0 z-10">
+              <thead className="bg-gray-100 sticky top-0 z-10 border-b-2 border-gray-300 shadow-sm">
                 <tr>
-                  <th className="w-7 px-1 bg-gray-100" />
+                  <th className="w-7 px-1 bg-gray-100 border-r border-gray-200" />
                   {cols.map(c => {
                     const si = sortMap[c];
                     const hasFilter = !!filterMap[c];
                     return (
-                      <th key={c} className={`relative px-2 py-1.5 text-left font-medium whitespace-nowrap select-none group/th bg-gray-100
-                        ${isAbstractCol(c) ? 'min-w-[260px]' : ''}
-                        ${hasFilter ? 'text-blue-700' : 'text-gray-600'}`}>
+                      <th key={c} className={`relative px-2 py-2 text-left text-[11px] font-semibold whitespace-nowrap select-none group/th bg-gray-100 border-r border-gray-200 last:border-r-0
+                        ${isAbstractCol(c) ? 'min-w-[260px]' : 'min-w-[88px]'}
+                        ${hasFilter ? 'text-blue-800 bg-blue-50/50' : 'text-gray-800'}`}>
                         <div className="flex items-center gap-0.5">
-                          <span className="cursor-pointer hover:text-blue-600 truncate"
+                          <span className="cursor-pointer hover:underline decoration-blue-400 truncate flex-1 min-w-0"
                             onClick={e => cycleSort(c, e.shiftKey)}>
                             {c}
                           </span>
                           <SortIcon dir={si?.dir} index={activeSortCount > 1 ? si?.idx : 0} />
                           <button type="button"
-                            className="ml-auto shrink-0 p-0.5 rounded hover:bg-gray-200/70"
+                            className="ml-0.5 shrink-0 p-1 rounded border border-transparent hover:bg-white hover:border-gray-300"
+                            title="Filter and sort"
                             onClick={e => { e.stopPropagation(); setFilterPopCol(prev => prev === c ? null : c); }}>
                             <FunnelIcon active={hasFilter} />
                           </button>
@@ -555,12 +623,14 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
                             onApply={(op, val) => applyFilter(c, op, val)}
                             onClear={() => clearFilter(c)}
                             onClose={() => setFilterPopCol(null)}
+                            onSortAsc={() => setSortRules([{ id: uid(), column: c, dir: 'asc' }])}
+                            onSortDesc={() => setSortRules([{ id: uid(), column: c, dir: 'desc' }])}
                           />
                         )}
                       </th>
                     );
                   })}
-                  <th className="w-12 px-1 bg-gray-100 text-gray-500 font-medium">Detail</th>
+                  <th className="w-12 px-1 bg-gray-100 text-gray-500 font-medium border-l border-gray-200">Detail</th>
                 </tr>
               </thead>
               <tbody className="bg-white">
@@ -572,7 +642,7 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
 
                   return (
                     <React.Fragment key={`row-${i}-${oid ?? i}`}>
-                      <tr className={`border-t border-gray-100 hover:bg-blue-50/40 align-top ${isOpen ? 'bg-blue-50/20' : ''}`}>
+                      <tr className={`border-b border-gray-100 hover:bg-blue-50/50 align-top ${isOpen ? 'bg-blue-50/25' : ''} ${i % 2 === 1 ? 'bg-gray-50/40' : ''}`}>
                         <td className="px-1 pt-1.5">
                           <button type="button" onClick={() => toggleExpand(i, oid)}
                             className="text-gray-400 hover:text-gray-700 text-[10px] w-4 text-center">

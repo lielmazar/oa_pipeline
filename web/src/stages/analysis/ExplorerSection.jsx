@@ -431,7 +431,8 @@ function SavedChartCard({ pipelineId, item, onDeleted }) {
   );
 }
 
-const CHART_CARD_WRAP = 'flex-1 min-w-[min(100%,340px)] max-w-full';
+/** Grid child: one column on small screens, two on lg+. */
+const CHART_CARD_WRAP = 'min-w-0 w-full max-w-xl mx-auto';
 
 export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadataChartsOnly = false, onDrilldown }) {
   const [charts, setCharts] = useState([]);
@@ -495,14 +496,14 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
         </div>
       )}
 
-      <div className="flex flex-wrap gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 w-full items-stretch">
         {visibleCharts.length === 0 && (
-          <p className="text-sm text-gray-400 w-full text-center py-6 border border-dashed border-gray-200 rounded-xl bg-gray-50/50">
+          <p className="lg:col-span-2 text-sm text-gray-400 w-full text-center py-6 border border-dashed border-gray-200 rounded-xl bg-gray-50/50">
             {llmOnly ? 'No LLM charts — run classification first.' : 'No preset charts.'}
           </p>
         )}
         {metaCharts.length > 0 && (
-          <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          <h3 className="lg:col-span-2 w-full text-xs font-semibold text-gray-500 uppercase tracking-wide">
             Metadata & corpus
           </h3>
         )}
@@ -513,7 +514,7 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
           </div>
         ))}
         {!metadataChartsOnly && llmCharts.length > 0 && (
-          <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
+          <h3 className="lg:col-span-2 w-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
             LLM classification
           </h3>
         )}
@@ -525,10 +526,10 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
         ))}
         {!metadataChartsOnly && dependencyCharts.length > 0 && (
           <>
-            <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
+            <h3 className="lg:col-span-2 w-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-1">
               Cross-dimension dependency
             </h3>
-            <p className="w-full basis-full text-[11px] text-gray-500 -mt-2 mb-0">
+            <p className="lg:col-span-2 w-full text-[11px] text-gray-500 -mt-2 mb-0">
               Most meaningful for orthogonality context (association between dimensions).
             </p>
           </>
@@ -542,10 +543,10 @@ export default function ExplorerSection({ pipelineId, subsetId, llmOnly, metadat
 
         {!metadataChartsOnly && (
           <>
-            <h3 className="w-full basis-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-2 border-t border-gray-100 pt-4">
+            <h3 className="lg:col-span-2 w-full text-xs font-semibold text-gray-500 uppercase tracking-wide mt-2 border-t border-gray-100 pt-4">
               Orthogonality
             </h3>
-            <div className={`${CHART_CARD_WRAP} border border-gray-200 rounded-xl p-3 bg-gray-50/60`}>
+            <div className="lg:col-span-2 min-w-0 w-full border border-gray-200 rounded-xl p-3 bg-gray-50/60">
               <OrthogonalityPresetOverview pipelineId={pipelineId} subsetId={subsetId} />
             </div>
           </>
