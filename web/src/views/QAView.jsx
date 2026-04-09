@@ -81,30 +81,15 @@ function RatingCard({ record, fieldId, fieldType, labels, onRate }) {
         )}
       </div>
 
-      <div className="mb-2">
-        <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-2">Available labels</p>
-        {(labels || []).length === 0 ? (
-          <p className="text-xs text-amber-700">No label options discovered for this field in the current scope.</p>
-        ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {labels.map((raw) => (
-              <span
-                key={String(raw)}
-                className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-gray-800 border border-gray-200">
-                {pillLabel(fieldId, raw)}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
       {fieldType === 'multi' && (
         <p className="text-[11px] text-gray-500 mb-2">Multiple selections are allowed. Choose all that apply, then submit.</p>
       )}
 
       <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-2">Your rating</p>
       <div className="flex flex-wrap gap-2">
-        {(labels || []).length === 0 ? null : fieldType === 'multi' ? (
+        {(labels || []).length === 0 ? (
+          <p className="text-xs text-amber-700">No label options discovered for this field in the current scope.</p>
+        ) : fieldType === 'multi' ? (
           <>
             {labels.map((raw) => {
               const key = String(raw);
@@ -141,22 +126,16 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
   const [pipelines, setPipelines]   = useState([]);
   const [pipelineId, setPipelineId] = useState('');
   const [subsetId, setSubsetId]     = useState('');
+  const [presetSubsets, setPresetSubsets] = useState([]);
   const [field, setField]           = useState('llm_fuel_classification');
   const [qaFields, setQaFields]     = useState([]);
-  const [annotationDims, setAnnotationDims] = useState([]);
   const [records, setRecords]       = useState([]);
   const [fieldLabels, setFieldLabels] = useState([]);
   const [fieldType, setFieldType]   = useState('');
   const [batchSize, setBatchSize]   = useState(0);
   const [ratedInBatch, setRatedInBatch] = useState(0);
   const [irr, setIrr]               = useState(null);
-  const [rated, setRated]           = useState([]);
-  const [disagreements, setDisagreements] = useState([]);
-  const [annotations, setAnnotations] = useState([]);
-  const [tab, setTab]               = useState('rate');
   const [loadingRec, setLoadingRec] = useState(false);
-  const [annForm, setAnnForm]       = useState({ openalex_id: '', dimension: '', human_value: '' });
-  const [annSaving, setAnnSaving]   = useState(false);
 
   useEffect(() => {
     if (lockedPipelineId != null) {
@@ -175,12 +154,20 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
   }, [lockedPipelineId]);
 
   useEffect(() => {
+    if (!pipelineId) {
+      setPresetSubsets([]);
+      return;
+    }
+    apiFetch(`/api/pipeline/${pipelineId}/subsets`)
+      .then(r => r.ok ? r.json() : [])
+      .then(setPresetSubsets)
+      .catch(() => setPresetSubsets([]));
+  }, [pipelineId]);
+
+  useEffect(() => {
     apiFetch('/api/pipeline/qa/fields')
       .then(r => r.ok ? r.json() : {})
-      .then(d => {
-        setQaFields(d.qa_fields || []);
-        setAnnotationDims(d.annotation_dimensions || []);
-      })
+      .then(d => { setQaFields(d.qa_fields || []); })
       .catch(() => {});
   }, []);
 
@@ -216,34 +203,15 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
 
   const loadIrr = useCallback(async () => {
     if (!pipelineId) return;
-    const [irrRes, ratingsRes] = await Promise.all([
-      apiFetch(`/api/pipeline/${pipelineId}/qa/irr`),
-      apiFetch(`/api/pipeline/${pipelineId}/qa/ratings`),
-    ]);
-    if (irrRes.ok)     setIrr(await irrRes.json());
-    if (ratingsRes.ok) setRated(await ratingsRes.json());
-  }, [pipelineId]);
-
-  const loadDisagreements = useCallback(async () => {
-    if (!pipelineId) return;
-    const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/disagreements`);
-    if (res.ok) setDisagreements(await res.json());
-  }, [pipelineId]);
-
-  const loadAnnotations = useCallback(async () => {
-    if (!pipelineId) return;
-    const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/annotations`);
-    if (res.ok) setAnnotations(await res.json());
+    const irrRes = await apiFetch(`/api/pipeline/${pipelineId}/qa/irr`);
+    if (irrRes.ok) setIrr(await irrRes.json());
   }, [pipelineId]);
 
   useEffect(() => {
     if (!pipelineId) return;
-    if (tab === 'rate') loadSample();
-    else if (tab === 'irr') loadIrr();
-    else if (tab === 'log') loadIrr();
-    else if (tab === 'disagree') loadDisagreements();
-    else if (tab === 'annotate') loadAnnotations();
-  }, [pipelineId, field, tab, loadSample, loadIrr, loadDisagreements, loadAnnotations]);
+    loadSample();
+    loadIrr();
+  }, [pipelineId, field, subsetId, loadSample, loadIrr]);
 
   const handleRate = async (oaId, humanVal) => {
     await apiFetch(`/api/pipeline/${pipelineId}/qa/ratings`, {
@@ -261,46 +229,8 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
       if (next.length <= 3) loadSample();
       return next;
     });
+    loadIrr();
   };
-
-  const submitAnnotation = async () => {
-    const { openalex_id, dimension, human_value } = annForm;
-    if (!openalex_id.trim() || !dimension || !human_value.trim()) return;
-    setAnnSaving(true);
-    try {
-      const res = await apiFetch(`/api/pipeline/${pipelineId}/qa/annotations`, {
-        method: 'POST',
-        body: JSON.stringify({
-          openalex_id: openalex_id.trim(),
-          dimension,
-          human_value: human_value.trim(),
-        }),
-      });
-      if (res.ok) {
-        setAnnForm({ openalex_id: '', dimension: annForm.dimension, human_value: '' });
-        loadAnnotations();
-      }
-    } finally { setAnnSaving(false); }
-  };
-
-  const exportDisagreements = () => {
-    const blob = new Blob([JSON.stringify(disagreements, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `qa_disagreements_${pipelineId}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const Tab = ({ id, label }) => (
-    <button type="button" onClick={() => setTab(id)}
-      className={`text-sm px-4 py-2 border-b-2 font-medium transition ${
-        tab === id ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700'
-      }`}>
-      {label}
-    </button>
-  );
 
   const fieldLabel = qaFields.find(f => f.id === field)?.label || field;
   const pipelineLocked = lockedPipelineId != null;
@@ -312,7 +242,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
         {pipelineLocked ? 'IRR' : 'QA / Inter-Rater Reliability'}
       </h1>
 
-      <div className="flex flex-wrap gap-3 mb-4">
+      <div className="flex flex-wrap gap-3 mb-4 items-end">
         {!pipelineLocked && (
         <select
           value={pipelineId}
@@ -324,14 +254,18 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
           ))}
         </select>
         )}
-        <label className="flex items-center gap-2 text-sm text-gray-600">
-          <span>Subset ID (optional)</span>
-          <input
+        <label className="flex flex-col gap-1 text-sm text-gray-600">
+          <span className="text-xs font-medium text-gray-500">Dataset</span>
+          <select
             value={subsetId}
-            onChange={e => setSubsetId(e.target.value.replace(/\D/g, ''))}
-            placeholder="e.g. 8"
-            className="border rounded-lg px-2 py-1.5 w-24 text-sm"
-          />
+            onChange={e => setSubsetId(e.target.value)}
+            disabled={!pipelineId}
+            className="border rounded-lg px-3 py-2 text-sm min-w-[14rem] focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-50">
+            <option value="">All records</option>
+            {presetSubsets.map(s => (
+              <option key={s.id} value={String(s.id)}>{s.name}</option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -358,7 +292,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
 
       {subsetId && (
         <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4">
-          Sampling restricted to subset #{subsetId} (must exist on this pipeline).
+          Sampling limited to the selected preset dataset.
         </p>
       )}
 
@@ -368,238 +302,99 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
           {pipelines.length === 0 && ' (No pipelines in analysis or later stages yet.)'}
         </div>
       ) : (
-        <>
-          <div className="flex flex-wrap border-b border-gray-200 mb-4">
-            <Tab id="rate" label="Rate Records" />
-            <Tab id="irr"  label={`IRR${irr?.fields?.length ? ` (${irr.fields.length})` : ''}`} />
-            <Tab id="disagree" label={`Disagreements${disagreements.length ? ` (${disagreements.length})` : ''}`} />
-            <Tab id="annotate" label="Annotations" />
-            <Tab id="log"  label={`Ratings Log${rated.length ? ` (${rated.length})` : ''}`} />
-          </div>
-
-          {tab === 'rate' && (
-            <div className="space-y-3">
-              <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 space-y-2">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <p className="text-sm text-gray-700">
-                    Your assessment for <strong>{fieldLabel}</strong>. Model output is hidden to reduce bias.
-                  </p>
-                  <button type="button" onClick={loadSample} disabled={loadingRec}
-                    className="text-xs px-3 py-1.5 border rounded-lg hover:bg-white transition shrink-0">
-                    {loadingRec ? 'Loading…' : '↻ New batch'}
-                  </button>
+        <div className="space-y-6">
+          <section className="space-y-4">
+            <div className="flex justify-between items-start gap-3 flex-wrap">
+              <div className="text-sm text-gray-600 space-y-2 max-w-2xl">
+                <p className="font-medium text-gray-800">Reliability (Krippendorff&apos;s α)</p>
+                <p>
+                  α measures agreement on the same papers (same field). Overlap includes human vs. stored model labels or multiple human raters.
+                </p>
+              </div>
+              <button type="button" onClick={loadIrr}
+                className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 transition shrink-0">
+                ↻ Refresh α
+              </button>
+            </div>
+            {irr?.fields?.length === 0 && (
+              <p className="text-sm text-gray-400 text-center py-4">
+                No ratings yet. Submit ratings below.
+              </p>
+            )}
+            {irr?.fields?.map(f => (
+              <div key={f.field} className="bg-white border border-gray-200 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium text-gray-900 text-sm">{f.label}</span>
+                  <QualityBadge quality={f.quality} />
                 </div>
-                {batchSize > 0 && (
-                  <div>
-                    <div className="flex justify-between text-xs text-gray-600 mb-1">
-                      <span>Progress in this sample</span>
-                      <span>{ratedInBatch} / {batchSize} rated</span>
-                    </div>
-                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-blue-500 transition-all"
-                        style={{ width: `${progressPct}%` }}
-                      />
-                    </div>
-                  </div>
+                <div className="flex flex-wrap gap-4 text-xs text-gray-600">
+                  <span>α = <strong className="text-gray-900">{f.alpha ?? '—'}</strong></span>
+                  <span>{f.raters} rater{f.raters !== 1 ? 's' : ''}</span>
+                  <span>{f.units} rated papers</span>
+                  <span title="Papers with ≥2 ratings for this field">{f.overlap_units ?? '—'} overlap papers</span>
+                </div>
+                {f.overlap_units === 0 && f.units > 0 && (
+                  <p className="text-xs text-slate-600 mt-2">
+                    No overlap yet: each paper needs a second rating on this field (e.g. model value stored with your rating, or another human on the same papers).
+                  </p>
                 )}
               </div>
-
-              {loadingRec ? (
-                <p className="text-sm text-gray-400 text-center py-8">Loading records…</p>
-              ) : records.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-8">
-                  No unrated records found for this field and scope.{' '}
-                  <button type="button" onClick={loadSample} className="text-blue-600 hover:underline">Try again</button>
-                </p>
-              ) : (
-                records.map(r => (
-                  <RatingCard
-                    key={r.openalex_id}
-                    record={r}
-                    fieldId={field}
-                    fieldType={fieldType}
-                    labels={fieldLabels}
-                    onRate={handleRate}
-                  />
-                ))
-              )}
-            </div>
-          )}
-
-          {tab === 'irr' && (
-            <div className="space-y-4">
-              <div className="flex justify-between items-start gap-3">
-                <div className="text-sm text-gray-600 space-y-2 max-w-2xl">
-                  <p>
-                    Krippendorff&apos;s α measures <strong>agreement on the same papers</strong> (same field)—not merely how many rows you submitted.
-                  </p>
-                  <p>
-                    <strong>Overlap papers</strong> are those with at least two ratings on that field: e.g. your label plus the stored model label (human vs. LLM), or two human raters on the same article. α is only shown when overlap &gt; 0.
-                  </p>
-                </div>
-                <button type="button" onClick={loadIrr}
-                  className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 transition shrink-0">
-                  ↻ Refresh
-                </button>
-              </div>
-              {irr?.fields?.length === 0 && (
-                <p className="text-sm text-gray-400 text-center py-8">
-                  No ratings yet. Rate some records first.
-                </p>
-              )}
-              {irr?.fields?.map(f => (
-                <div key={f.field} className="bg-white border border-gray-200 rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium text-gray-900 text-sm">{f.label}</span>
-                    <QualityBadge quality={f.quality} />
-                  </div>
-                  <div className="flex flex-wrap gap-4 text-xs text-gray-600">
-                    <span>α = <strong className="text-gray-900">{f.alpha ?? '—'}</strong></span>
-                    <span>{f.raters} rater{f.raters !== 1 ? 's' : ''}</span>
-                    <span>{f.units} rated papers</span>
-                    <span title="Papers with ≥2 raters for this field">{f.overlap_units ?? '—'} overlap papers</span>
-                  </div>
-                  {f.overlap_units === 0 && f.units > 0 && (
-                    <p className="text-xs text-slate-600 mt-2">
-                      No overlap yet: each paper needs a second rating on this field (e.g. ensure model values are stored with your ratings, or add another human rater on the same papers).
-                    </p>
-                  )}
-                </div>
-              ))}
+            ))}
+            {(irr?.fields?.length ?? 0) > 0 && (
               <div className="text-xs text-gray-400 bg-gray-50 rounded-lg p-3">
                 <strong>Interpretation:</strong> α ≥ 0.80 = good · α ≥ 0.67 = tentative · α &lt; 0.67 = needs improvement
               </div>
-            </div>
-          )}
+            )}
+          </section>
 
-          {tab === 'disagree' && (
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <p className="text-sm text-gray-600">Where your rating differs from the stored model output (model values are not shown here).</p>
-                <button type="button" onClick={exportDisagreements} disabled={!disagreements.length}
-                  className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 disabled:opacity-40">
-                  Export JSON
+          <section className="space-y-3 border-t border-gray-200 pt-6">
+            <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-sm text-gray-700">
+                  Your assessment for <strong>{fieldLabel}</strong>. Model output is hidden to reduce bias.
+                </p>
+                <button type="button" onClick={loadSample} disabled={loadingRec}
+                  className="text-xs px-3 py-1.5 border rounded-lg hover:bg-white transition shrink-0">
+                  {loadingRec ? 'Loading…' : '↻ New batch'}
                 </button>
               </div>
-              {disagreements.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-8">No disagreements (or no ratings yet).</p>
-              ) : (
-                <div className="overflow-x-auto border border-gray-200 rounded-xl max-h-96 overflow-y-auto">
-                  <table className="w-full text-xs">
-                    <thead className="bg-gray-50 sticky top-0">
-                      <tr>
-                        {['OpenAlex ID','Field','Your rating','Rater'].map(h => (
-                          <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {disagreements.map(r => (
-                        <tr key={`${r.id}-${r.openalex_id}`} className="border-t border-gray-100">
-                          <td className="px-3 py-1.5 font-mono truncate max-w-40">{r.openalex_id}</td>
-                          <td className="px-3 py-1.5">{r.field}</td>
-                          <td className="px-3 py-1.5 max-w-40 truncate font-medium text-amber-800">{r.human_value}</td>
-                          <td className="px-3 py-1.5">{r.user_id}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {batchSize > 0 && (
+                <div>
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>Progress in this sample</span>
+                    <span>{ratedInBatch} / {batchSize} rated</span>
+                  </div>
+                  <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 transition-all"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
                 </div>
               )}
             </div>
-          )}
 
-          {tab === 'annotate' && (
-            <div className="space-y-4">
-              <p className="text-sm text-gray-600">
-                Free-form dimensions (topic, methodology, quality ordinals). Stored per record and annotator.
+            {loadingRec ? (
+              <p className="text-sm text-gray-400 text-center py-8">Loading records…</p>
+            ) : records.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-8">
+                No unrated records found for this field and scope.{' '}
+                <button type="button" onClick={loadSample} className="text-blue-600 hover:underline">Try again</button>
               </p>
-              <div className="grid sm:grid-cols-2 gap-3 bg-gray-50 border border-gray-200 rounded-xl p-4">
-                <label className="block text-xs">
-                  <span className="text-gray-500">openalex_id</span>
-                  <input value={annForm.openalex_id} onChange={e => setAnnForm(f => ({ ...f, openalex_id: e.target.value }))}
-                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm" placeholder="https://openalex.org/…" />
-                </label>
-                <label className="block text-xs">
-                  <span className="text-gray-500">Dimension</span>
-                  <select value={annForm.dimension} onChange={e => setAnnForm(f => ({ ...f, dimension: e.target.value }))}
-                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm">
-                    <option value="">Select…</option>
-                    {annotationDims.map(d => (
-                      <option key={d.id} value={d.id}>{d.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-xs sm:col-span-2">
-                  <span className="text-gray-500">Value</span>
-                  <input value={annForm.human_value} onChange={e => setAnnForm(f => ({ ...f, human_value: e.target.value }))}
-                    className="mt-1 w-full border rounded-lg px-2 py-1.5 text-sm" placeholder="Your annotation" />
-                </label>
-                <button type="button" onClick={submitAnnotation} disabled={annSaving}
-                  className="sm:col-span-2 text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
-                  {annSaving ? 'Saving…' : 'Save annotation'}
-                </button>
-              </div>
-              <div className="border border-gray-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      {['OpenAlex ID','Dimension','Value','Date'].map(h => (
-                        <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {annotations.length === 0 ? (
-                      <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-400">No annotations yet.</td></tr>
-                    ) : (
-                      annotations.map(a => (
-                        <tr key={a.id} className="border-t border-gray-100">
-                          <td className="px-3 py-1.5 font-mono truncate max-w-40">{a.openalex_id}</td>
-                          <td className="px-3 py-1.5">{a.dimension}</td>
-                          <td className="px-3 py-1.5 truncate max-w-48">{a.human_value}</td>
-                          <td className="px-3 py-1.5 text-gray-400">{a.created_at?.slice(0, 10)}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {tab === 'log' && (
-            <div>
-              {rated.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-8">No ratings submitted yet.</p>
-              ) : (
-                <div className="overflow-x-auto border border-gray-200 rounded-xl">
-                  <table className="w-full text-xs">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        {['OpenAlex ID','Field','Your value','Rater','Date'].map(h => (
-                          <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rated.map(r => (
-                        <tr key={r.id} className="border-t border-gray-100">
-                          <td className="px-3 py-1.5 font-mono truncate max-w-32">{r.openalex_id}</td>
-                          <td className="px-3 py-1.5">{r.field}</td>
-                          <td className="px-3 py-1.5 max-w-32 truncate font-medium text-blue-700">{r.human_value}</td>
-                          <td className="px-3 py-1.5">{r.user_id}</td>
-                          <td className="px-3 py-1.5 text-gray-400">{r.created_at?.slice(0, 10)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-        </>
+            ) : (
+              records.map(r => (
+                <RatingCard
+                  key={r.openalex_id}
+                  record={r}
+                  fieldId={field}
+                  fieldType={fieldType}
+                  labels={fieldLabels}
+                  onRate={handleRate}
+                />
+              ))
+            )}
+          </section>
+        </div>
       )}
     </div>
   );

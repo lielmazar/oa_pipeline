@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../api/client';
 
 export default function SummaryStage({ pipeline }) {
@@ -6,6 +6,17 @@ export default function SummaryStage({ pipeline }) {
   const [events, setEvents] = useState([]);
   const [format, setFormat] = useState('csv');
   const [downloading, setDownloading] = useState(false);
+  const [disagreements, setDisagreements] = useState([]);
+  const [ratingsLog, setRatingsLog] = useState([]);
+
+  const loadQaTables = useCallback(() => {
+    apiFetch(`/api/pipeline/${pipeline.id}/qa/disagreements`)
+      .then(r => r.ok ? r.json() : [])
+      .then(setDisagreements);
+    apiFetch(`/api/pipeline/${pipeline.id}/qa/ratings`)
+      .then(r => r.ok ? r.json() : [])
+      .then(setRatingsLog);
+  }, [pipeline.id]);
 
   useEffect(() => {
     apiFetch(`/api/pipeline/${pipeline.id}/stats`)
@@ -14,7 +25,18 @@ export default function SummaryStage({ pipeline }) {
     apiFetch(`/api/pipeline/${pipeline.id}/events?limit=20`)
       .then(r => r.ok ? r.json() : [])
       .then(setEvents);
-  }, [pipeline.id]);
+    loadQaTables();
+  }, [pipeline.id, loadQaTables]);
+
+  const exportDisagreements = () => {
+    const blob = new Blob([JSON.stringify(disagreements, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `qa_disagreements_${pipeline.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const download = async () => {
     setDownloading(true);
@@ -57,6 +79,82 @@ export default function SummaryStage({ pipeline }) {
           </div>
         </div>
       )}
+
+      {/* QA review — disagreements & ratings (after IRR) */}
+      <div className="bg-white border border-gray-200 rounded-xl p-4">
+        <div className="flex justify-between items-center gap-2 mb-2">
+          <h2 className="font-semibold text-gray-900">QA disagreements</h2>
+          <div className="flex gap-2">
+            <button type="button" onClick={loadQaTables}
+              className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 transition">
+              ↻ Refresh
+            </button>
+            <button type="button" onClick={exportDisagreements} disabled={!disagreements.length}
+              className="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50 disabled:opacity-40">
+              Export JSON
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Human ratings that differ from the stored model output (model values are not shown here).
+        </p>
+        {disagreements.length === 0 ? (
+          <p className="text-sm text-gray-400 py-4">No disagreements (or no ratings yet).</p>
+        ) : (
+          <div className="overflow-x-auto border border-gray-200 rounded-lg max-h-72 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  {['OpenAlex ID', 'Field', 'Your rating', 'Rater'].map(h => (
+                    <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {disagreements.map(r => (
+                  <tr key={`${r.id}-${r.openalex_id}`} className="border-t border-gray-100">
+                    <td className="px-3 py-1.5 font-mono truncate max-w-40">{r.openalex_id}</td>
+                    <td className="px-3 py-1.5">{r.field}</td>
+                    <td className="px-3 py-1.5 max-w-40 truncate font-medium text-amber-800">{r.human_value}</td>
+                    <td className="px-3 py-1.5">{r.user_id}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-4">
+        <h2 className="font-semibold text-gray-900 mb-2">Ratings log</h2>
+        <p className="text-xs text-gray-500 mb-3">All submitted QA ratings for this pipeline.</p>
+        {ratingsLog.length === 0 ? (
+          <p className="text-sm text-gray-400 py-4">No ratings submitted yet.</p>
+        ) : (
+          <div className="overflow-x-auto border border-gray-200 rounded-lg max-h-72 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  {['OpenAlex ID', 'Field', 'Your value', 'Rater', 'Date'].map(h => (
+                    <th key={h} className="px-3 py-2 text-left font-medium text-gray-600">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {ratingsLog.map(r => (
+                  <tr key={r.id} className="border-t border-gray-100">
+                    <td className="px-3 py-1.5 font-mono truncate max-w-32">{r.openalex_id}</td>
+                    <td className="px-3 py-1.5">{r.field}</td>
+                    <td className="px-3 py-1.5 max-w-32 truncate font-medium text-blue-700">{r.human_value}</td>
+                    <td className="px-3 py-1.5">{r.user_id}</td>
+                    <td className="px-3 py-1.5 text-gray-400">{r.created_at?.slice(0, 10)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Export */}
       <div className="bg-white border border-gray-200 rounded-xl p-4">

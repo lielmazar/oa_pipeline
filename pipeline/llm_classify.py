@@ -288,6 +288,8 @@ def phase_prepare(
     state = load_state()
     state["batch_file"]   = str(batch_files[0])
     state["record_count"] = len(rows)
+    state["batch_input_file_count"] = len(batch_files)
+    state["batch_input_filenames"] = [p.name for p in batch_files]
     state["prepared_at"]  = datetime.now().isoformat()
     state.pop("batch_id",        None)
     state.pop("output_file_id",  None)

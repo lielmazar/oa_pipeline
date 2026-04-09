@@ -699,6 +699,23 @@ def _save_batch_state(pipeline_id: int, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2))
 
 
+def _merge_batch_subset_meta(db: sqlite3.Connection, pipeline_id: int, subset_id: int | None) -> None:
+    """Annotate batch state with which preset subset was used (for UI)."""
+    state = _load_batch_state(pipeline_id) or {}
+    if subset_id is not None:
+        sub = get_subset(db, pipeline_id, subset_id)
+        if sub:
+            state["subset_id"] = subset_id
+            state["subset_name"] = sub.get("name") or f"Subset #{subset_id}"
+        else:
+            state["subset_id"] = subset_id
+            state["subset_name"] = None
+    else:
+        state["subset_id"] = None
+        state["subset_name"] = "Entire dataset (unprocessed records)"
+    _save_batch_state(pipeline_id, state)
+
+
 def _resolve_llm_subset_inner_sql(db, pipeline_id: int, subset_id: int | None) -> str | None:
     """Return normalized inner SQL for llm_classify --subset-sql, or None for the full filtered_records table."""
     if subset_id is None:
@@ -761,6 +778,7 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
         raise HTTPException(500, out[:2000])
+    _merge_batch_subset_meta(db, pipeline_id, body.subset_id)
     cmd2 = _llm_classify_cmd(pipeline_id) + ["submit"]
     rc2, out2 = _run_llm_cmd(cmd2, settings.pipeline_scripts_dir)
     if rc2 != 0:

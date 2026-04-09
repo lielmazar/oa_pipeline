@@ -3,6 +3,67 @@ import { apiFetch } from '../api/client';
 import { useInterval } from '../hooks/useInterval';
 
 const TERMINAL = new Set(['completed', 'failed', 'expired', 'cancelled']);
+/** Poll OpenAI batch status while a run is active (seconds). */
+const POLL_ACTIVE_MS = 8000;
+
+function statusHeadline(status) {
+  const s = status || '';
+  const map = {
+    not_started: 'No batch submitted yet',
+    validating: 'OpenAI is validating your batch…',
+    in_progress: 'OpenAI is processing requests…',
+    finalizing: 'Finalizing batch…',
+    completed: 'Batch finished — collect results to write to your database',
+    failed: 'Batch failed — check OpenAI dashboard or server logs',
+    expired: 'Batch expired before completion',
+    cancelled: 'Batch was cancelled',
+  };
+  return map[s] || `Status: ${s.replace(/_/g, ' ') || 'unknown'}`;
+}
+
+function batchProgressParts(counts) {
+  const total = Number(counts?.total) || 0;
+  const completed = Number(counts?.completed) || 0;
+  const failed = Number(counts?.failed) || 0;
+  const processing = Math.max(0, total - completed - failed);
+  const pctDone = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  return { total, completed, failed, processing, pctDone };
+}
+
+function SegmentedBatchBar({ completed, failed, processing, total }) {
+  if (total <= 0) {
+    return (
+      <div className="h-3 rounded-full bg-gray-100 border border-gray-200" title="Request counts not available yet" />
+    );
+  }
+  const c = (completed / total) * 100;
+  const f = (failed / total) * 100;
+  const p = (processing / total) * 100;
+  return (
+    <div
+      className="h-3 w-full rounded-full overflow-hidden flex bg-gray-100 border border-gray-200"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(c)}
+      aria-label={`Batch progress: ${Math.round(c)} percent completed`}
+    >
+      {c > 0 && (
+        <div className="h-full bg-emerald-500 shrink-0 transition-all duration-500 ease-out" style={{ width: `${c}%` }} title={`${completed} completed`} />
+      )}
+      {f > 0 && (
+        <div className="h-full bg-red-400 shrink-0 transition-all duration-500 ease-out" style={{ width: `${f}%` }} title={`${failed} failed`} />
+      )}
+      {p > 0 && (
+        <div
+          className="h-full bg-blue-400/80 shrink-0 animate-pulse transition-all duration-500 ease-out"
+          style={{ width: `${p}%` }}
+          title={`${processing} in queue or running`}
+        />
+      )}
+    </div>
+  );
+}
 
 function StatusBadge({ status }) {
   const colors = {
@@ -11,6 +72,7 @@ function StatusBadge({ status }) {
     expired:    'bg-orange-100 text-orange-700',
     cancelled:  'bg-gray-100 text-gray-600',
     in_progress:'bg-blue-100 text-blue-700',
+    finalizing: 'bg-indigo-100 text-indigo-700',
     validating: 'bg-yellow-100 text-yellow-700',
     not_started:'bg-gray-100 text-gray-500',
   };
@@ -76,7 +138,7 @@ export default function LlmStage({ pipeline }) {
   const batchStatus = status?.status;
   const isActive    = batchStatus && !TERMINAL.has(batchStatus) && batchStatus !== 'not_started';
   const catalogOk   = catalog && model != null;
-  useInterval(fetchStatus, isActive ? 30000 : null);
+  useInterval(fetchStatus, isActive ? POLL_ACTIVE_MS : null);
 
   const runEstimate = async () => {
     if (!catalogOk) return;
@@ -129,6 +191,40 @@ export default function LlmStage({ pipeline }) {
   };
 
   const counts = status?.request_counts;
+  const { total: rqTotal, completed: rqDone, failed: rqFail, processing: rqProc, pctDone } = batchProgressParts(counts);
+
+  const copyBatchId = async () => {
+    if (!status?.batch_id) return;
+    try {
+      await navigator.clipboard.writeText(status.batch_id);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const batchSubsetLabel = (() => {
+    if (!status?.batch_id) return null;
+    const name = status.subset_name != null ? String(status.subset_name).trim() : '';
+    if (name)
+      return `${name}${status.subset_id != null ? ` · preset #${status.subset_id}` : ''}`;
+    if (status.subset_id != null)
+      return `Preset #${status.subset_id} (name unavailable)`;
+    return 'Not recorded (batch started before scope metadata was saved)';
+  })();
+
+  const batchInputFileCount = status?.batch_input_file_count;
+  const batchInputNames = Array.isArray(status?.batch_input_filenames) ? status.batch_input_filenames : [];
+  const batchFileSummary =
+    typeof batchInputFileCount === 'number'
+      ? `${batchInputFileCount} JSONL file${batchInputFileCount !== 1 ? 's' : ''}`
+      : status?.batch_id
+        ? 'Not recorded'
+        : null;
+
+  const selectedSubsetName =
+    subsetId == null
+      ? 'Entire dataset (unprocessed records)'
+      : subsets.find(s => s.id === subsetId)?.name ?? `Preset #${subsetId}`;
 
   return (
     <div className="space-y-4">
@@ -147,29 +243,131 @@ export default function LlmStage({ pipeline }) {
           <code className="bg-gray-100 px-1 rounded">llm_classify.py</code>).
         </p>
 
-        {status?.batch_id && (
-          <div className="bg-gray-50 rounded-lg p-3 text-xs space-y-1 mb-4">
-            <div><span className="text-gray-500">Batch ID: </span><code>{status.batch_id}</code></div>
-            {status.checked_at && (
-              <div><span className="text-gray-500">Last checked: </span>{status.checked_at?.slice(0, 19)}</div>
-            )}
-            {counts && (
-              <div className="flex gap-4 mt-1">
-                <span className="text-green-700">✓ {counts.completed} completed</span>
-                <span className="text-gray-600">/ {counts.total} total</span>
-                {counts.failed > 0 && <span className="text-red-600">✗ {counts.failed} failed</span>}
-              </div>
-            )}
-            {counts?.total > 0 && (
-              <div className="w-full bg-gray-200 rounded-full h-1.5 mt-1">
-                <div
-                  className="bg-green-500 h-1.5 rounded-full"
-                  style={{ width: `${counts.completed / counts.total * 100}%` }}
-                />
-              </div>
-            )}
+        {/* Batch progress — always visible for orientation */}
+        <div className="rounded-xl border border-gray-200 bg-gradient-to-b from-slate-50/80 to-white p-4 mb-4">
+          <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Batch progress</h3>
+              <p className="text-xs text-gray-600 mt-0.5 max-w-xl">{statusHeadline(batchStatus)}</p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {isActive && (
+                <span className="text-[11px] text-blue-700 bg-blue-50 border border-blue-100 rounded-full px-2.5 py-0.5 font-medium">
+                  Auto-refresh · {POLL_ACTIVE_MS / 1000}s
+                </span>
+              )}
+              {(status?.batch_id || isActive) && (
+                <button
+                  type="button"
+                  onClick={() => fetchStatus()}
+                  className="text-xs px-2.5 py-1 border border-gray-200 rounded-lg hover:bg-white bg-white/80 transition"
+                >
+                  ↻ Refresh now
+                </button>
+              )}
+            </div>
           </div>
-        )}
+
+          {!status?.batch_id ? (
+            <div className="text-xs text-gray-500 py-2 space-y-1">
+              <p>Submit a batch below to track OpenAI processing here. Until then, there is nothing in flight.</p>
+              <p className="text-gray-600">
+                <span className="font-medium text-gray-700">Next submit will use: </span>
+                {selectedSubsetName}
+                <span className="text-gray-400"> (subset chosen in the form below)</span>
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="mb-4 grid sm:grid-cols-2 gap-3 rounded-lg bg-white/70 border border-gray-100 px-3 py-2.5 text-xs">
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Subset this batch came from</div>
+                  <div className="text-gray-900 font-medium mt-1">{batchSubsetLabel}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Prepared batch input files</div>
+                  <div
+                    className="text-gray-900 font-medium mt-1"
+                    title={batchInputNames.length ? batchInputNames.join('\n') : undefined}
+                  >
+                    {batchFileSummary}
+                  </div>
+                  {batchInputNames.length > 0 && (
+                    <p className="text-[10px] text-gray-500 font-mono mt-1 break-all leading-snug">
+                      {batchInputNames.join(' · ')}
+                    </p>
+                  )}
+                </div>
+                {typeof status.record_count === 'number' && (
+                  <div className="sm:col-span-2 pt-1 border-t border-gray-100 text-gray-600">
+                    <span className="text-gray-500">Records in prepared batch: </span>
+                    <span className="font-semibold text-gray-900 tabular-nums">{status.record_count.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-end justify-between gap-4 mb-3">
+                <div>
+                  <div className="text-3xl font-bold tabular-nums text-gray-900 leading-none">
+                    {rqTotal > 0 ? `${pctDone}%` : '—'}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {rqTotal > 0
+                      ? `${rqDone.toLocaleString()} of ${rqTotal.toLocaleString()} requests completed`
+                      : 'Waiting for request counts from OpenAI…'}
+                  </div>
+                </div>
+                {batchStatus === 'completed' && status?.output_file_id && (
+                  <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-100 rounded-lg px-2.5 py-1.5 font-medium">
+                    Output file ready — use Collect results
+                  </p>
+                )}
+              </div>
+
+              <SegmentedBatchBar completed={rqDone} failed={rqFail} processing={rqProc} total={rqTotal} />
+
+              <div className="flex flex-wrap gap-3 mt-3 text-xs">
+                <div className="flex items-center gap-1.5 rounded-lg bg-white border border-gray-100 px-2.5 py-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" aria-hidden />
+                  <span className="text-gray-600">Completed</span>
+                  <span className="font-semibold text-gray-900 tabular-nums">{rqDone.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center gap-1.5 rounded-lg bg-white border border-gray-100 px-2.5 py-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" aria-hidden />
+                  <span className="text-gray-600">Queued / running</span>
+                  <span className="font-semibold text-gray-900 tabular-nums">{rqProc.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center gap-1.5 rounded-lg bg-white border border-gray-100 px-2.5 py-1.5">
+                  <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" aria-hidden />
+                  <span className="text-gray-600">Failed</span>
+                  <span className="font-semibold text-gray-900 tabular-nums">{rqFail.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center gap-1.5 rounded-lg bg-white border border-gray-100 px-2.5 py-1.5">
+                  <span className="text-gray-600">Total</span>
+                  <span className="font-semibold text-gray-900 tabular-nums">{rqTotal.toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
+                <span className="font-mono text-gray-700 break-all">
+                  ID: {status.batch_id}
+                  <button
+                    type="button"
+                    onClick={copyBatchId}
+                    className="ml-2 text-blue-600 hover:underline font-sans"
+                  >
+                    Copy
+                  </button>
+                </span>
+                {status.checked_at && (
+                  <span title={status.checked_at}>
+                    Last checked: {new Date(status.checked_at).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
 
         {error && <p className="text-xs text-red-600 bg-red-50 rounded px-3 py-2 mb-3">{error}</p>}
 
@@ -201,6 +399,9 @@ export default function LlmStage({ pipeline }) {
               ))}
             </select>
           )}
+          <p className="text-[11px] text-gray-500 mt-1.5">
+            On submit, this scope is saved with the batch so the progress panel shows which preset the run used.
+          </p>
         </div>
 
         {/* Model selector — options from API (MODEL_PRICING in llm_classify.py) */}
@@ -280,10 +481,6 @@ export default function LlmStage({ pipeline }) {
 
           {isActive && (
             <>
-              <button onClick={fetchStatus}
-                className="text-sm px-3 py-2 border rounded-lg hover:bg-gray-50 transition">
-                ↻ Refresh
-              </button>
               <button onClick={cancel} disabled={cancelling}
                 className="text-sm px-3 py-2 border border-red-200 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50 transition">
                 {cancelling ? '…' : 'Cancel Batch'}
@@ -310,7 +507,7 @@ export default function LlmStage({ pipeline }) {
           {[
             ['1', 'Estimate cost', '→ preview token usage and USD cost before committing'],
             ['2', 'Submit Batch', '→ uploads JSONL to OpenAI and creates batch job (50% cheaper than real-time)'],
-            ['3', 'Wait', '→ batches typically complete within 1–24 hours; status auto-refreshes every 30 s'],
+            ['3', 'Wait', '→ batches often finish within hours; progress above refreshes every few seconds while the batch is active'],
             ['4', 'Collect Results', '→ downloads output file and writes LLM fields into the research database'],
           ].map(([n, title, desc]) => (
             <li key={n} className="flex gap-2">
