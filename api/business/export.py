@@ -16,6 +16,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from api.business.chart_defs import _CHART_DEFINITIONS
+from api.business.dynamic_chart import build_dynamic_sql
+from api.business.export_charts import (
+    render_dynamic_chart_png,
+    render_preset_chart_png,
+    rows_to_csv_text,
+)
+from api.business.qa import compute_irr
+from api.business.subset_sql import normalize_subset_inner
+from api.db.pipelines import get_subset, list_saved_charts, list_subsets
+from api.db.research import count_subset_rows, get_db_stats, get_schema, run_query
 
 
 # ── LLM columns ───────────────────────────────────────────────────────────────
@@ -203,9 +213,168 @@ def _export_cooccurrence_data(
     return written
 
 
+def _export_qa_csvs_and_irr(
+    zf: zipfile.ZipFile,
+    prefix: str,
+    meta_db: sqlite3.Connection,
+    pipeline_id: int,
+) -> None:
+    cur = meta_db.execute(
+        """SELECT qr.*, ur.username AS rater_username
+           FROM qa_ratings qr JOIN users ur ON ur.id = qr.user_id
+           WHERE qr.pipeline_id=? ORDER BY qr.created_at""",
+        (pipeline_id,),
+    )
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    if rows:
+        zf.writestr(f"{prefix}qa/qa_ratings.csv", rows_to_csv_text(cols, rows))
+
+    cur = meta_db.execute(
+        """SELECT qa.*, ua.username AS annotator_username
+           FROM qa_annotations qa JOIN users ua ON ua.id = qa.annotator_id
+           WHERE qa.pipeline_id=? ORDER BY qa.created_at""",
+        (pipeline_id,),
+    )
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    if rows:
+        zf.writestr(f"{prefix}qa/qa_annotations.csv", rows_to_csv_text(cols, rows))
+
+    irr = compute_irr(meta_db, pipeline_id)
+    zf.writestr(f"{prefix}qa/irr_summary.json", json.dumps(irr, indent=2, default=str))
+
+
+def _export_subsets_snapshot(
+    zf: zipfile.ZipFile,
+    prefix: str,
+    meta_db: sqlite3.Connection,
+    pipeline_id: int,
+    db_path: Path | None,
+) -> None:
+    subs = list_subsets(meta_db, pipeline_id)
+    dataset_total = None
+    if db_path and db_path.exists():
+        st = get_db_stats(db_path)
+        if st.get("exists") and "error" not in st:
+            dataset_total = st.get("record_count")
+    enriched = []
+    for s in subs:
+        row_count = None
+        if db_path and db_path.exists():
+            r = count_subset_rows(db_path, s["sql_query"])
+            row_count = r.get("count") if "error" not in r else None
+        enriched.append({**s, "row_count": row_count})
+    zf.writestr(
+        f"{prefix}subsets/subsets.json",
+        json.dumps({"dataset_total": dataset_total, "subsets": enriched}, indent=2, default=str),
+    )
+
+
+def _export_preset_charts_csv_png(
+    zf: zipfile.ZipFile,
+    prefix: str,
+    db_path: Path,
+) -> list[str]:
+    notes: list[str] = []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            _ensure_llm_columns(conn)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
+    try:
+        with sqlite3.connect(db_path) as conn:
+            _ensure_llm_columns(conn)
+            for spec in _CHART_DEFINITIONS.values():
+                sql = spec.format_sql(top_n=20, cutoff_year=2000)
+                try:
+                    cur = conn.execute(sql)
+                    cols = [d[0] for d in cur.description] if cur.description else []
+                    rows = cur.fetchall()
+                except Exception as exc:
+                    notes.append(f"{spec.id}: {exc}")
+                    continue
+                zf.writestr(f"{prefix}charts/data/{spec.id}.csv", rows_to_csv_text(cols, rows))
+                png = render_preset_chart_png(spec, cols, rows)
+                if png:
+                    zf.writestr(f"{prefix}charts/png/{spec.id}.png", _png_add_watermark(png))
+    except Exception as exc:
+        notes.append(f"preset charts: {exc}")
+    return notes
+
+
+def _safe_filename_part(name: str, max_len: int = 48) -> str:
+    s = "".join(c if c.isalnum() or c in "-_" else "_" for c in (name or "chart"))
+    return s[:max_len] or "chart"
+
+
+def _export_saved_charts_bundle(
+    zf: zipfile.ZipFile,
+    prefix: str,
+    db_path: Path,
+    meta_db: sqlite3.Connection,
+    pipeline: dict,
+) -> list[str]:
+    notes: list[str] = []
+    pid = pipeline["id"]
+    uid = pipeline["user_id"]
+    for sc in list_saved_charts(meta_db, pid, uid):
+        cfg = json.loads(sc.get("config_json") or "{}")
+        if cfg.get("kind") != "dynamic":
+            continue
+        safe = _safe_filename_part(sc.get("name", "chart"))
+        folder = f"{prefix}charts/saved/{sc['id']}_{safe}/"
+        zf.writestr(
+            folder + "config.json",
+            json.dumps({"id": sc["id"], "name": sc["name"], "config": cfg}, indent=2, ensure_ascii=False),
+        )
+        subset_inner = None
+        sid = cfg.get("subset_id")
+        if sid is not None:
+            sub = get_subset(meta_db, pid, int(sid))
+            if sub:
+                subset_inner = normalize_subset_inner(sub["sql_query"])
+            else:
+                notes.append(f"saved chart {sc['id']}: subset {sid} not found")
+                continue
+        schema = get_schema(db_path)
+        allowed = {c["name"] for c in schema}
+        try:
+            sql, renderer = build_dynamic_sql(
+                chart_type=cfg["chart_type"],
+                column_x=cfg["column_x"],
+                column_y=cfg.get("column_y"),
+                stack_column=cfg.get("stack_column"),
+                json_x=bool(cfg.get("json_x")),
+                json_y=bool(cfg.get("json_y")),
+                top_n=int(cfg.get("top_n") or 20),
+                allowed_cols=allowed,
+            )
+        except Exception as exc:
+            notes.append(f"saved chart {sc['id']}: {exc}")
+            continue
+        rq = run_query(db_path, sql, max_rows=50_000, subset_inner_sql=subset_inner)
+        if rq.get("error"):
+            notes.append(f"saved chart {sc['id']}: {rq['error']}")
+            continue
+        cols = rq.get("columns") or []
+        data_rows = [tuple(r) for r in (rq.get("rows") or [])]
+        zf.writestr(folder + "data.csv", rows_to_csv_text(cols, data_rows))
+        png = render_dynamic_chart_png(renderer, cols, data_rows, sc.get("name") or "Chart")
+        if png:
+            zf.writestr(folder + "chart.png", _png_add_watermark(png))
+    return notes
+
+
 # ── Main build function ───────────────────────────────────────────────────────
 
-def build_export_zip(pipeline: dict, db_format: str = "csv", chunk_mb: int = 50) -> bytes:
+def build_export_zip(
+    pipeline: dict,
+    db_format: str = "csv",
+    chunk_mb: int | None = 50,
+    meta_db: sqlite3.Connection | None = None,
+) -> bytes:
     """Build the full export ZIP and return its bytes."""
     pipeline_id     = pipeline["id"]
     db_path_str     = pipeline.get("output_db_path")
@@ -273,6 +442,28 @@ def build_export_zip(pipeline: dict, db_format: str = "csv", chunk_mb: int = 50)
         if db_path and db_path.exists():
             _export_cooccurrence_data(zf, prefix, db_path, pipeline_config)
 
+        export_notes: list[str] = []
+
+        # 3a. QA / IRR / subsets / preset & saved chart data + PNGs
+        if meta_db is not None:
+            try:
+                _export_qa_csvs_and_irr(zf, prefix, meta_db, pipeline_id)
+            except Exception as exc:
+                export_notes.append(f"qa export: {exc}")
+            try:
+                _export_subsets_snapshot(zf, prefix, meta_db, pipeline_id, db_path)
+            except Exception as exc:
+                export_notes.append(f"subsets: {exc}")
+        if db_path and db_path.exists():
+            export_notes.extend(_export_preset_charts_csv_png(zf, prefix, db_path))
+            if meta_db is not None:
+                export_notes.extend(_export_saved_charts_bundle(zf, prefix, db_path, meta_db, pipeline))
+        if export_notes:
+            zf.writestr(
+                f"{prefix}export_notes.txt",
+                "Non-fatal export notes (charts or QA may be partial):\n\n" + "\n".join(export_notes),
+            )
+
         # 4. Database export
         if db_path and db_path.exists() and tables:
             try:
@@ -293,14 +484,20 @@ def build_export_zip(pipeline: dict, db_format: str = "csv", chunk_mb: int = 50)
                             zf.writestr(f"{prefix}data/{table}.csv", csv_text)
 
             if db_format == "csv_chunks":
+                use_mb_chunks = chunk_mb is not None and chunk_mb > 0
                 with sqlite3.connect(db_path) as conn:
                     for table in tables:
-                        chunks = _dump_table_csv_chunks(conn, table, chunk_mb)
-                        if len(chunks) == 1:
-                            zf.writestr(f"{prefix}data/{table}.csv", chunks[0])
+                        if use_mb_chunks:
+                            chunks = _dump_table_csv_chunks(conn, table, int(chunk_mb))
+                            if len(chunks) == 1:
+                                zf.writestr(f"{prefix}data/{table}.csv", chunks[0])
+                            else:
+                                for i, chunk in enumerate(chunks):
+                                    zf.writestr(f"{prefix}data/{table}_part{i+1:03d}.csv", chunk)
                         else:
-                            for i, chunk in enumerate(chunks):
-                                zf.writestr(f"{prefix}data/{table}_part{i+1:03d}.csv", chunk)
+                            csv_text = _dump_table_csv(conn, table)
+                            if csv_text:
+                                zf.writestr(f"{prefix}data/{table}.csv", csv_text)
 
         # 5. Logs
         if pipeline_dir and pipeline_dir.exists():
@@ -372,11 +569,15 @@ def build_export_zip(pipeline: dict, db_format: str = "csv", chunk_mb: int = 50)
             f"{round(db_path.stat().st_size / 1024**2, 1)} MB"
             if db_path and db_path.exists() else "n/a"
         )
-        db_format_desc = (
-            "SQLite + CSV" if db_format == "both"
-            else f"CSV chunks ({chunk_mb} MB)" if db_format == "csv_chunks"
-            else db_format.upper()
-        )
+        if db_format == "both":
+            db_format_desc = "SQLite + CSV"
+        elif db_format == "csv_chunks":
+            if chunk_mb is not None and chunk_mb > 0:
+                db_format_desc = f"CSV chunks ({chunk_mb} MB target per part)"
+            else:
+                db_format_desc = "CSV (single file per table)"
+        else:
+            db_format_desc = db_format.upper()
         table_lines_md = "\n".join(
             f"- `{tbl}`: {table_row_counts.get(tbl, 0):,} rows" for tbl in tables
         ) or "*(no tables yet)*"
@@ -394,9 +595,15 @@ def build_export_zip(pipeline: dict, db_format: str = "csv", chunk_mb: int = 50)
             "| `batch_state.json` | LLM batch API state |\n"
             "| `pipeline_metadata.json` | Full pipeline configuration |\n"
             "| `chart_queries.sql` | All SQL queries for charts |\n"
+            "| `charts/data/` | Tabular CSV per preset chart (same data as plots) |\n"
+            "| `charts/png/` | Matplotlib PNG exports for preset charts |\n"
+            "| `charts/saved/` | Saved dynamic charts: `config.json`, `data.csv`, `chart.png` |\n"
             "| `charts/cooccurrence/` | Co-occurrence CSV exports |\n"
+            "| `qa/` | QA ratings, annotations, `irr_summary.json` |\n"
+            "| `subsets/subsets.json` | Subset definitions and live row counts |\n"
             f"| `data/` | Database export ({db_format_desc}) |\n"
-            "| `logs/` | Pipeline log files and skip-stats summary |\n\n"
+            "| `logs/` | Pipeline log files and skip-stats summary |\n"
+            "| `export_notes.txt` | Optional warnings if some chart queries failed |\n\n"
             "### Database tables\n\n"
             + table_lines_md
         )
