@@ -58,6 +58,8 @@ _load_env()
 
 from openai import OpenAI
 
+from llm_pricing import MODEL, MODEL_PRICING
+
 # ── Configuration ──────────────────────────────────────────────────────────
 # Defaults — overridden at runtime by --db and --batch-dir CLI args
 # (main() sets these before calling any phase function)
@@ -77,57 +79,8 @@ def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
     STATE_FILE = BATCH_DIR / "state.json"
 
 PROMPT_ID      = "pmpt_694c136369fc81939aa9e7eb310bd3170ecd05cb5a9fb123"
-PROMPT_VERSION = "25"
-MODEL          = "gpt-5.4-nano"
+PROMPT_VERSION = "24"
 BATCH_SIZE_LIMIT = 50_000   # OpenAI hard limit per batch
-
-# ── Pricing table (per 1M tokens) ─────────────────────────────────────────
-# Source: platform.openai.com/docs/pricing  — Batch API, short-context window
-# cached_input: price when the prompt prefix is served from the KV cache.
-MODEL_PRICING: dict[str, dict] = {
-    # ── gpt-5.4 family  (Batch API · short context) ────────────
-    "gpt-5.4": {
-        "input": 1.25, "cached_input": 0.13, "output": 7.50,
-        "reasoning": None, "reasoning_est_per_paper": 0,
-        "note": "Batch API, short context.",
-    },
-    "gpt-5.4-mini": {
-        "input": 0.375, "cached_input": 0.0375, "output": 2.25,
-        "reasoning": None, "reasoning_est_per_paper": 0,
-        "note": "Batch API, short context.",
-    },
-    "gpt-5.4-nano": {
-        "input": 0.10, "cached_input": 0.01, "output": 0.625,
-        "reasoning": None, "reasoning_est_per_paper": 0,
-        "note": "Batch API, short context.",
-    },
-    "gpt-5.4-pro": {
-        "input": 15.00, "cached_input": None, "output": 90.00,
-        "reasoning": None, "reasoning_est_per_paper": 0,
-        "note": "Batch API, short context. No cached-input pricing.",
-    },
-    # ── previous generation (for comparison) ───────────────────
-    "gpt-4o": {
-        "input": 1.25, "cached_input": None, "output": 5.00,
-        "reasoning": None, "reasoning_est_per_paper": 0,
-        "note": "Batch API pricing.",
-    },
-    "gpt-4o-mini": {
-        "input": 0.075, "cached_input": None, "output": 0.30,
-        "reasoning": None, "reasoning_est_per_paper": 0,
-        "note": "Batch API pricing.",
-    },
-    "o4-mini": {
-        "input": 0.55, "cached_input": None, "output": 2.20,
-        "reasoning": 2.20, "reasoning_est_per_paper": 500,
-        "note": "Batch API pricing incl. reasoning tokens.",
-    },
-    "o3": {
-        "input": 5.00, "cached_input": None, "output": 20.00,
-        "reasoning": 20.00, "reasoning_est_per_paper": 2_000,
-        "note": "Batch API pricing incl. reasoning tokens.",
-    },
-}
 
 # Assumed average output tokens per paper (classification JSON ≈ 300–500 tok)
 AVG_OUTPUT_TOKENS    = 400

@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../../api/client';
 
-export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40 }) {
+export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const slice = rows.slice(0, maxRows);
   const maxVal = Math.max(...slice.map(r => Number(r[yKey]) || 0));
@@ -16,7 +16,14 @@ export function HBarChart({ rows, xKey = 0, yKey = 1, maxRows = 40 }) {
               style={{ width: `${maxVal > 0 ? (Number(r[yKey]) / maxVal * 100) : 0}%` }}
             />
           </div>
-          <span className="w-12 text-gray-500 shrink-0">{Number(r[yKey]).toLocaleString()}</span>
+          <button
+            type="button"
+            onClick={() => onCountClick?.(r)}
+            className="w-12 text-blue-700 underline shrink-0 text-right"
+            title="Open matching records"
+          >
+            {Number(r[yKey]).toLocaleString()}
+          </button>
         </div>
       ))}
     </div>
@@ -49,7 +56,7 @@ export function VBarChart({ rows, xKey = 0, yKey = 1, maxRows = 24 }) {
   );
 }
 
-export function PieTable({ rows, xKey = 0, yKey = 1 }) {
+export function PieTable({ rows, xKey = 0, yKey = 1, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const total = rows.reduce((s, r) => s + (Number(r[yKey]) || 0), 0);
   const COLORS = ['bg-blue-500','bg-green-500','bg-yellow-500','bg-purple-500','bg-red-500',
@@ -61,14 +68,21 @@ export function PieTable({ rows, xKey = 0, yKey = 1 }) {
           <span className={`w-3 h-3 rounded-full shrink-0 ${COLORS[i % COLORS.length]}`} />
           <span className="flex-1 text-gray-700 truncate">{r[xKey]}</span>
           <span className="text-gray-500">{total > 0 ? `${(Number(r[yKey]) / total * 100).toFixed(1)}%` : ''}</span>
-          <span className="text-gray-400 w-14 text-right">{Number(r[yKey]).toLocaleString()}</span>
+          <button
+            type="button"
+            onClick={() => onCountClick?.(r)}
+            className="text-blue-700 underline w-14 text-right"
+            title="Open matching records"
+          >
+            {Number(r[yKey]).toLocaleString()}
+          </button>
         </div>
       ))}
     </div>
   );
 }
 
-export function HeatmapTable({ rows }) {
+export function HeatmapTable({ rows, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
   const xVals = [...new Set(rows.map(r => r[0]))];
   const yVals = [...new Set(rows.map(r => r[1]))];
@@ -96,7 +110,11 @@ export function HeatmapTable({ rows }) {
                   <td key={y} title={`${x} × ${y}: ${v}`}
                     className="p-1 text-center min-w-8"
                     style={{ backgroundColor: `rgba(59, 130, 246, ${alpha * 0.8 + 0.05})` }}>
-                    {v > 0 ? v : ''}
+                    {v > 0 ? (
+                      <button type="button" className="underline text-blue-800" onClick={() => onCountClick?.([x, y, v])}>
+                        {v}
+                      </button>
+                    ) : ''}
                   </td>
                 );
               })}
@@ -146,26 +164,26 @@ export function StackedBarChart({ rows }) {
   );
 }
 
-export function ChartResult({ renderer, rows }) {
+export function ChartResult({ renderer, rows, onCountClick }) {
   if (!rows?.length) return <p className="text-xs text-gray-400 text-center py-4">No data</p>;
-  if (renderer === 'pie') return <PieTable rows={rows} />;
+  if (renderer === 'pie') return <PieTable rows={rows} onCountClick={onCountClick} />;
   if (renderer === 'heatmap' || renderer === 'cooccurrence_3d' || renderer === 'cooccurrence_3d_bar') {
-    return <HeatmapTable rows={rows} />;
+    return <HeatmapTable rows={rows} onCountClick={onCountClick} />;
   }
   if (renderer === 'stacked') return <StackedBarChart rows={rows} />;
   if (renderer === 'bar') return <VBarChart rows={rows} />;
-  return <HBarChart rows={rows} />;
+  return <HBarChart rows={rows} onCountClick={onCountClick} />;
 }
 
-export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutoffYear = 2000 }) {
+export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutoffYear = 2000, onDrilldown }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
-    if (data || loading) return;
     setLoading(true);
+    setError('');
     try {
       const body =
         subsetId != null
@@ -177,25 +195,32 @@ export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutof
         body: JSON.stringify(body),
       });
       const d = await res.json();
-      if (!res.ok) { setError(d.detail || 'Query failed'); return; }
+      if (!res.ok) { setError(d.detail || 'Query failed'); setData(null); return; }
       setData(d);
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  }, [pipelineId, chart.id, chart.sql, data, loading, subsetId, topN, cutoffYear]);
+    } catch (e) {
+      setError(e.message);
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [pipelineId, chart.id, chart.sql, subsetId, topN, cutoffYear]);
 
-  const toggle = () => {
-    if (!open) load();
-    setOpen(o => !o);
-  };
+  useEffect(() => {
+    if (!open) return;
+    load();
+  }, [open, load]);
 
   const rows = data?.rows || [];
   const renderer = chart.renderer;
+  const buildDrilldownSql = (r) => {
+    return 'SELECT * FROM _fr_subset';
+  };
 
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden">
       <button
         type="button"
-        onClick={toggle}
+        onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-gray-50 transition text-left">
         <div>
           <span className="font-medium text-gray-900 text-sm">{chart.title}</span>
@@ -212,7 +237,7 @@ export function ChartCard({ chart, pipelineId, subsetId = null, topN = 20, cutof
           {error && <p className="text-xs text-red-500 py-2">{error}</p>}
           {data && !loading && (
             <>
-              <ChartResult renderer={renderer} rows={rows} />
+              <ChartResult renderer={renderer} rows={rows} onCountClick={(r) => onDrilldown?.(buildDrilldownSql(r))} />
               <p className="text-xs text-gray-400 mt-2 text-right">{rows.length} rows</p>
             </>
           )}

@@ -48,7 +48,7 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "       ELSE CAST(publication_year AS TEXT) END AS year, "
             "  COUNT(*) AS count "
             "FROM filtered_records "
-            "GROUP BY year "
+            "GROUP BY 1 "
             "ORDER BY MIN(COALESCE(publication_year, 0))"
         ),
         renderer="bar", x_key="year", y_key="count",
@@ -82,7 +82,7 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
         title="Open Access Status",
         sql_template=(
             "SELECT COALESCE(open_access_oa_status, 'unknown') AS status, COUNT(*) AS count "
-            "FROM filtered_records GROUP BY status ORDER BY count DESC"
+            "FROM filtered_records GROUP BY 1 ORDER BY count DESC"
         ),
         renderer="pie", x_key="status", y_key="count",
     ),
@@ -91,7 +91,7 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
         title="Work Types",
         sql_template=(
             "SELECT COALESCE(type, 'unknown') AS type, COUNT(*) AS count "
-            "FROM filtered_records GROUP BY type ORDER BY count DESC LIMIT 10"
+            "FROM filtered_records GROUP BY 1 ORDER BY count DESC LIMIT 10"
         ),
         renderer="bar", x_key="type", y_key="count",
     ),
@@ -156,7 +156,7 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "            AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' "
             "       THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS uses_ml, "
             "  COUNT(*) AS count "
-            "FROM filtered_records GROUP BY uses_ml"
+            "FROM filtered_records GROUP BY 1"
         ),
         renderer="pie", x_key="uses_ml", y_key="count",
         llm_only=True,
@@ -271,7 +271,7 @@ _CHART_DEFINITIONS: dict[str, ChartDefinition] = {
             "FROM filtered_records "
             "WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') "
             "  AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' "
-            "GROUP BY source ORDER BY count DESC"
+            "GROUP BY 1 ORDER BY count DESC"
         ),
         renderer="pie", x_key="source", y_key="count",
         llm_only=True,

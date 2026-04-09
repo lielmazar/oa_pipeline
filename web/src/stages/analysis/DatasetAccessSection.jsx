@@ -21,6 +21,12 @@ export default function DatasetAccessSection({
   const subsets = summary?.subsets ?? [];
   const total = summary?.dataset_total;
 
+  useEffect(() => {
+    if (selectedSubsetId != null || subsets.length === 0) return;
+    const allSubset = subsets.find(s => String(s.name || '').trim().toLowerCase() === 'all');
+    onSelectSubset(allSubset ? allSubset.id : subsets[0].id);
+  }, [selectedSubsetId, subsets, onSelectSubset]);
+
   const delSubset = async (e, id) => {
     e.stopPropagation();
     if (!window.confirm('Delete this subset?')) return;
@@ -29,14 +35,39 @@ export default function DatasetAccessSection({
     load();
   };
 
+  const exportDb = async () => {
+    const res = await fetch(`/api/pipeline/${pipelineId}/export?db_format=sqlite`, { credentials: 'same-origin' });
+    if (!res.ok) {
+      const t = await res.text();
+      alert(t || 'Export failed');
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pipeline_${pipelineId}_export.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <section className="bg-white border border-gray-200 rounded-xl p-4 space-y-4">
       <h2 className="text-sm font-bold text-gray-900">Dataset access</h2>
 
       {total != null && (
-        <p className="text-xs text-gray-600">
-          Full dataset: <span className="font-semibold text-gray-900">{total.toLocaleString()}</span> records in this pipeline DB.
-        </p>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <p className="text-xs text-gray-600">
+            Full dataset: <span className="font-semibold text-gray-900">{total.toLocaleString()}</span> records in this pipeline DB.
+          </p>
+          <button
+            type="button"
+            onClick={exportDb}
+            className="text-xs px-3 py-1.5 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 font-medium"
+          >
+            Export DB
+          </button>
+        </div>
       )}
 
       {subsets.length === 0 ? (

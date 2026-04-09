@@ -1,6 +1,8 @@
 """Pipelines router — all pipeline management under /api/pipeline/"""
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import os
 import sqlite3
@@ -51,6 +53,63 @@ from api.db.pipelines import (
 from api.deps import CurrentUser, Db
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipelines"])
+
+
+# ── LLM model catalog (from pipeline/llm_classify.py) ───────────────────────
+
+@functools.lru_cache(maxsize=1)
+def _llm_pricing_module():
+    """Load pipeline/llm_pricing.py (no OpenAI dependency) — same source as llm_classify.py."""
+    path = settings.pipeline_scripts_dir / "llm_pricing.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("oa_pipeline_llm_pricing", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _serialize_llm_pricing_table(pricing: dict) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for name, row in pricing.items():
+        out[name] = {
+            "input": row.get("input"),
+            "cached_input": row.get("cached_input"),
+            "output": row.get("output"),
+            "reasoning": row.get("reasoning"),
+            "reasoning_est_per_paper": row.get("reasoning_est_per_paper", 0),
+            "note": row.get("note") or "",
+        }
+    return out
+
+
+@router.get("/llm/model-catalog")
+def llm_model_catalog():
+    """Expose MODEL_PRICING and default MODEL from pipeline/llm_pricing.py for the LLM stage UI."""
+    mod = _llm_pricing_module()
+    if mod is None:
+        raise HTTPException(500, "llm_pricing.py not found")
+    pricing = getattr(mod, "MODEL_PRICING", None)
+    if not isinstance(pricing, dict) or not pricing:
+        raise HTTPException(500, "MODEL_PRICING missing in llm_pricing.py")
+    default_model = getattr(mod, "MODEL", next(iter(pricing.keys())))
+    return {
+        "default_model": default_model,
+        "models": _serialize_llm_pricing_table(pricing),
+        "model_ids": list(pricing.keys()),
+    }
+
+
+def _require_known_llm_model(model: str) -> None:
+    mod = _llm_pricing_module()
+    if mod is None:
+        raise HTTPException(500, "llm_pricing.py not found")
+    pricing = getattr(mod, "MODEL_PRICING", None)
+    if not isinstance(pricing, dict) or model not in pricing:
+        ids = ", ".join(pricing.keys()) if isinstance(pricing, dict) else ""
+        raise HTTPException(400, f"Unknown model {model!r}. Choose one of: {ids}")
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -637,7 +696,7 @@ def _save_batch_state(pipeline_id: int, state: dict) -> None:
 
 
 class LlmEstimateBody(BaseModel):
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-5.4-nano"
     subset_sql: str | None = None
 
 
@@ -646,6 +705,7 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
+    _require_known_llm_model(body.model)
     cmd = _llm_classify_cmd(pipeline_id) + ["estimate", "--model", body.model]
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
@@ -654,7 +714,7 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
 
 
 class LlmSubmitBody(BaseModel):
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-5.4-nano"
     limit: int | None = None
 
 
@@ -667,11 +727,12 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
         raise HTTPException(403, "not owner")
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
-    cmd = _llm_classify_cmd(pipeline_id) + ["run", "--model", body.model]
+    _require_known_llm_model(body.model)
+    # Prepare JSONL with the same model the user selected (batch body embeds model id).
+    cmd = _llm_classify_cmd(pipeline_id) + ["prepare", "--model", body.model]
     if body.limit:
         cmd += ["--limit", str(body.limit)]
     # Only prepare + submit, don't poll (that's the frontend's job via /llm/status)
-    cmd = _llm_classify_cmd(pipeline_id) + ["prepare"]
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
         raise HTTPException(500, out[:2000])

@@ -175,7 +175,7 @@ function ColumnFilterPopover({ pipelineId, subsetId, col, colType, filter, onApp
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
-export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose, onSubsetSaved }) {
+export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose, onSubsetSaved, initialCustomSql = '' }) {
   const [schema, setSchema] = useState([]);
   const [filters, setFilters] = useState([]);
   const [sortRules, setSortRules] = useState([{ id: uid(), column: 'publication_year', dir: 'desc' }]);
@@ -235,6 +235,12 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
   }, [pipelineId, llmOnly]);
 
   useEffect(() => { setUseCustomSql(false); setCustomSql(''); setSqlError(''); }, [subset?.id]);
+  useEffect(() => {
+    if (!initialCustomSql || !subset?.id) return;
+    setUseCustomSql(true);
+    setCustomSql(initialCustomSql);
+    setSqlOpen(true);
+  }, [initialCustomSql, subset?.id]);
 
   useEffect(() => {
     const h = e => { if (colPickerRef.current && !colPickerRef.current.contains(e.target)) setColPickerOpen(false); };
@@ -293,6 +299,12 @@ export default function ResearchDbViewer({ pipelineId, subset, llmOnly, onClose,
     if (!subset?.id || useCustomSql) return;
     loadTable(1);
   }, [subset?.id, filters, sortRules, pageSize, visibleCols, useCustomSql, loadTable]);
+  useEffect(() => {
+    if (!subset?.id || !useCustomSql) return;
+    const t = customSqlRef.current.trim();
+    if (!t) return;
+    loadTable(1);
+  }, [subset?.id, useCustomSql, loadTable]);
 
   /* ── Expand row: fetch ALL fields ────────────────────────────────────────── */
   const toggleExpand = async (i, oid) => {

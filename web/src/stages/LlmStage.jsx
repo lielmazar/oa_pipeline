@@ -21,16 +21,37 @@ function StatusBadge({ status }) {
   );
 }
 
-export default function LlmStage({ pipeline, onChange }) {
+/** Short label for the model dropdown; full table comes from the API (same source as llm_classify.py MODEL_PRICING). */
+function modelSelectLabel(id, row) {
+  if (!row) return id;
+  let s = `${id} — $${row.input}/$${row.output} per 1M in/out`;
+  if (row.cached_input != null) s += ` · cached in $${row.cached_input}/1M`;
+  if (row.reasoning != null) s += ` · reasoning $${row.reasoning}/1M`;
+  return s;
+}
+
+export default function LlmStage({ pipeline }) {
   const [status, setStatus]       = useState(null);
-  const [estimate, setEstimate]   = useState(null);
   const [estimating, setEstimating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError]         = useState('');
-  const [model, setModel]         = useState('gpt-4o-mini');
+  const [catalog, setCatalog]     = useState(null);
+  const [model, setModel]         = useState(null);
   const [output, setOutput]       = useState('');
+
+  useEffect(() => {
+    apiFetch('/api/pipeline/llm/model-catalog')
+      .then(r => (r.ok ? r.json() : null))
+      .then((c) => {
+        if (c?.model_ids?.length && c.default_model) {
+          setCatalog(c);
+          setModel(c.default_model);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -43,11 +64,12 @@ export default function LlmStage({ pipeline, onChange }) {
 
   const batchStatus = status?.status;
   const isActive    = batchStatus && !TERMINAL.has(batchStatus) && batchStatus !== 'not_started';
-  // Poll every 2 min if non-terminal (backend lazily refreshes after 5 min, but we check more often)
+  const catalogOk   = catalog && model != null;
   useInterval(fetchStatus, isActive ? 30000 : null);
 
   const runEstimate = async () => {
-    setEstimating(true); setError(''); setEstimate(null); setOutput('');
+    if (!catalogOk) return;
+    setEstimating(true); setError(''); setOutput('');
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/estimate`, {
         method: 'POST',
@@ -55,12 +77,12 @@ export default function LlmStage({ pipeline, onChange }) {
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Estimate failed'); return; }
-      setEstimate(d);
       setOutput(d.output || '');
     } finally { setEstimating(false); }
   };
 
   const submit = async () => {
+    if (!catalogOk) return;
     if (!confirm('Submit LLM batch? This will incur API costs.')) return;
     setSubmitting(true); setError(''); setOutput('');
     try {
@@ -108,7 +130,9 @@ export default function LlmStage({ pipeline, onChange }) {
         <p className="text-xs text-gray-500 mb-4">
           Classify records via OpenAI Batch API. Requires{' '}
           <code className="bg-gray-100 px-1 rounded">OPENAI_API_KEY</code> on the server.
-          Results are written back to the research database.
+          Results are written back to the research database.           Model list and rates come from{' '}
+          <code className="bg-gray-100 px-1 rounded">pipeline/llm_pricing.py</code> (Batch API; same source as{' '}
+          <code className="bg-gray-100 px-1 rounded">llm_classify.py</code>).
         </p>
 
         {status?.batch_id && (
@@ -137,27 +161,69 @@ export default function LlmStage({ pipeline, onChange }) {
 
         {error && <p className="text-xs text-red-600 bg-red-50 rounded px-3 py-2 mb-3">{error}</p>}
 
-        {/* Model selector */}
-        <div className="flex items-center gap-3 mb-4">
-          <label className="text-xs text-gray-600 font-medium shrink-0">Model</label>
-          <select value={model} onChange={e => setModel(e.target.value)}
-            className="border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400">
-            <option value="gpt-4o-mini">gpt-4o-mini (fast, cheap)</option>
-            <option value="gpt-4o">gpt-4o (best quality)</option>
-            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-            <option value="gpt-4.1">gpt-4.1</option>
-          </select>
+        {/* Model selector — options from API (MODEL_PRICING in llm_classify.py) */}
+        <div className="flex flex-col gap-2 mb-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="text-xs text-gray-600 font-medium shrink-0">Model</label>
+            <select
+              value={model ?? ''}
+              onChange={e => setModel(e.target.value)}
+              disabled={!catalogOk}
+              className="border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 min-w-[min(100%,28rem)] max-w-full disabled:opacity-50"
+            >
+              {!catalogOk && <option value="">Loading models…</option>}
+              {catalog?.model_ids?.map((id) => (
+                <option key={id} value={id}>
+                  {modelSelectLabel(id, catalog.models?.[id])}
+                </option>
+              ))}
+            </select>
+          </div>
+          {catalog?.models && (
+            <details className="text-xs text-gray-600 border border-gray-100 rounded-lg px-3 py-2 bg-gray-50/80">
+              <summary className="cursor-pointer font-medium text-gray-700">Full pricing table (per 1M tokens)</summary>
+              <div className="overflow-x-auto mt-2">
+                <table className="w-full text-[11px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left text-gray-500">
+                      <th className="py-1 pr-2 font-medium">Model</th>
+                      <th className="py-1 pr-2 font-medium">Input</th>
+                      <th className="py-1 pr-2 font-medium">Cached in</th>
+                      <th className="py-1 pr-2 font-medium">Output</th>
+                      <th className="py-1 pr-2 font-medium">Reasoning</th>
+                      <th className="py-1 font-medium">Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {catalog.model_ids.map((id) => {
+                      const r = catalog.models[id];
+                      return (
+                        <tr key={id} className="border-t border-gray-100">
+                          <td className="py-1 pr-2 font-mono text-gray-800">{id}</td>
+                          <td className="py-1 pr-2">${r?.input?.toFixed?.(4) ?? r?.input}</td>
+                          <td className="py-1 pr-2">{r?.cached_input != null ? `$${r.cached_input}` : '—'}</td>
+                          <td className="py-1 pr-2">${r?.output?.toFixed?.(4) ?? r?.output}</td>
+                          <td className="py-1 pr-2">{r?.reasoning != null ? `$${r.reasoning}` : '—'}</td>
+                          <td className="py-1 text-gray-500 max-w-xs">{r?.note || ''}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
         </div>
 
         {/* Action buttons */}
         <div className="flex flex-wrap gap-2">
-          <button onClick={runEstimate} disabled={estimating}
+          <button onClick={runEstimate} disabled={estimating || !catalogOk}
             className="text-sm px-4 py-2 border rounded-lg hover:bg-gray-50 disabled:opacity-50 transition">
             {estimating ? 'Estimating…' : '$ Estimate Cost'}
           </button>
 
           {(!batchStatus || batchStatus === 'not_started' || TERMINAL.has(batchStatus)) && (
-            <button onClick={submit} disabled={submitting}
+            <button onClick={submit} disabled={submitting || !catalogOk}
               className="text-sm px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition font-medium">
               {submitting ? 'Submitting…' : 'Submit Batch'}
             </button>
