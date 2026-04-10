@@ -1,10 +1,7 @@
 .claude/
 .troubleshoot/
-troubleshoot/
-troableshoot/
 node_modules/
 .env
-.env.example
 *.db
 *.sqlite
 *.sqlite3
