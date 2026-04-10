@@ -6,3 +6,7 @@ node_modules/
 *.sqlite
 *.sqlite3
 *.pyc
+
+# Vite production build (hashed entry bundles under api/static)
+api/static/assets/index-*.css
+api/static/assets/index-*.js
