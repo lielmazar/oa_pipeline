@@ -40,5 +40,9 @@ def get_chart_configs(
             "llm_only": tab == "llm",
             "params": c.get("params", []),
         }
+        if "drill_column" in c:
+            entry["drill_column"] = c["drill_column"]
+        if "drill_columns" in c:
+            entry["drill_columns"] = c["drill_columns"]
         result.append(entry)
     return result

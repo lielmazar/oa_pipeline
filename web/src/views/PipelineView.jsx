@@ -6,10 +6,12 @@ import LlmStage from '../stages/LlmStage';
 import QaStage from '../stages/QaStage';
 import ExportTab from '../stages/ExportTab';
 import PresetCharts from '../stages/analysis/PresetCharts.jsx';
+import RecordsViewer from '../stages/RecordsViewer.jsx';
 
 const TABS = [
   { id: 'search', label: 'Search' },
   { id: 'llm', label: 'LLM' },
+  { id: 'data', label: 'Data' },
   { id: 'qa', label: 'QA' },
   { id: 'export', label: 'Export' },
 ];
@@ -18,6 +20,12 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
   const [pipeline, setPipeline] = useState(initialPipeline);
   const [activeTab, setActiveTab] = useState('search');
   const [subsets, setSubsets] = useState([]);
+  const [dataFilters, setDataFilters] = useState(null);
+
+  const handleDrillDown = useCallback((filters) => {
+    setDataFilters(filters);
+    setActiveTab('data');
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -53,7 +61,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
       </div>
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 mb-4 bg-white border border-slate-200 rounded-lg overflow-hidden max-w-md">
+      <div className="flex items-center gap-0 mb-4 bg-white border border-slate-200 rounded-lg overflow-hidden max-w-lg">
         {TABS.map(t => (
           <button
             key={t.id}
@@ -74,15 +82,19 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         <div className="space-y-4">
           <KeywordStage pipeline={pipeline} onChange={setPipeline} />
           <SearchStage pipeline={pipeline} onChange={setPipeline} onRunMetaChange={onFilterRunChange} />
-          <PresetCharts pipelineId={pipeline.id} tab="search" subsets={subsets} />
+          <PresetCharts pipelineId={pipeline.id} tab="search" subsets={subsets} onDrillDown={handleDrillDown} />
         </div>
       )}
 
       {activeTab === 'llm' && (
         <div className="space-y-4">
           <LlmStage pipeline={pipeline} onChange={setPipeline} />
-          <PresetCharts pipelineId={pipeline.id} tab="llm" subsets={subsets} />
+          <PresetCharts pipelineId={pipeline.id} tab="llm" subsets={subsets} onDrillDown={handleDrillDown} />
         </div>
+      )}
+
+      {activeTab === 'data' && (
+        <RecordsViewer pipelineId={pipeline.id} subsets={subsets} initialFilters={dataFilters} />
       )}
 
       {activeTab === 'qa' && <QaStage pipeline={pipeline} />}

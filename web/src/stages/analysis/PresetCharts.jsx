@@ -6,7 +6,7 @@ import {
   HeatmapGrid,
 } from './chartPrimitives.jsx';
 
-export default function PresetCharts({ pipelineId, tab, subsets = [] }) {
+export default function PresetCharts({ pipelineId, tab, subsets = [], onDrillDown }) {
   const [charts, setCharts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedChartId, setSelectedChartId] = useState(null);
@@ -73,13 +73,14 @@ export default function PresetCharts({ pipelineId, tab, subsets = [] }) {
           chart={selectedChart}
           pipelineId={pipelineId}
           subsets={subsets}
+          onDrillDown={onDrillDown}
         />
       )}
     </section>
   );
 }
 
-function UnifiedChartView({ chart, pipelineId, subsets }) {
+function UnifiedChartView({ chart, pipelineId, subsets, onDrillDown: parentDrillDown }) {
   const [subsetData, setSubsetData] = useState({});
   const [heatmapSubsetId, setHeatmapSubsetId] = useState(null);
   const mountedRef = useRef(true);
@@ -124,6 +125,31 @@ function UnifiedChartView({ chart, pipelineId, subsets }) {
   const isPie = chart.renderer === 'pie';
   const isHeatmap = ['heatmap', 'cooccurrence_3d', 'cooccurrence_3d_bar', 'stacked'].includes(chart.renderer);
 
+  const drillColumn = chart.drill_column;
+  const drillColumns = chart.drill_columns;
+  const canDrill = typeof parentDrillDown === 'function' && (drillColumn || drillColumns);
+
+  const handleDrillDown = canDrill ? (clickedLabel) => {
+    if (drillColumn) {
+      const label = String(clickedLabel);
+      const lteMatch = label.match(/^Unknown\/[≤<=]+(\d+)$/);
+      if (lteMatch && drillColumn === 'publication_year') {
+        parentDrillDown({ [drillColumn + '__lte']: lteMatch[1] });
+      } else {
+        parentDrillDown({ [drillColumn]: label });
+      }
+    }
+  } : undefined;
+
+  const handleHeatmapDrill = canDrill && drillColumns ? (xLabel, yLabel) => {
+    const filters = {};
+    if (drillColumns[0]) filters[drillColumns[0]] = String(xLabel);
+    if (drillColumns[1]) filters[drillColumns[1]] = String(yLabel);
+    parentDrillDown(filters);
+  } : (canDrill && drillColumn ? (xLabel) => {
+    parentDrillDown({ [drillColumn]: String(xLabel) });
+  } : undefined);
+
   const errors = Object.entries(subsetData).filter(([, d]) => d.error);
 
   return (
@@ -138,8 +164,13 @@ function UnifiedChartView({ chart, pipelineId, subsets }) {
           )}
         </h4>
         {!anyLoading && subsetResults.length > 0 && (
-          <span className="text-[10px] text-slate-400 shrink-0 tabular-nums">
-            {subsetResults.reduce((s, r) => s + (r.rows?.length || 0), 0)} rows
+          <span className="flex items-center gap-2">
+            {canDrill && (
+              <span className="text-[9px] text-teal-500 font-medium">Click to view records</span>
+            )}
+            <span className="text-[10px] text-slate-400 shrink-0 tabular-nums">
+              {subsetResults.reduce((s, r) => s + (r.rows?.length || 0), 0)} rows
+            </span>
           </span>
         )}
       </div>
@@ -157,13 +188,14 @@ function UnifiedChartView({ chart, pipelineId, subsets }) {
 
       {!anyLoading && subsetResults.length > 0 && (
         <>
-          {isBar && <GroupedBarChart subsetResults={subsetResults} />}
-          {isPie && <MultiPieChart subsetResults={subsetResults} />}
+          {isBar && <GroupedBarChart subsetResults={subsetResults} onDrillDown={handleDrillDown} />}
+          {isPie && <MultiPieChart subsetResults={subsetResults} onDrillDown={handleDrillDown} />}
           {isHeatmap && (
             <HeatmapGrid
               subsetResults={subsetResults}
               activeSubsetId={heatmapSubsetId ?? subsetResults[0]?.subset.id}
               onSubsetChange={setHeatmapSubsetId}
+              onDrillDown={handleHeatmapDrill}
             />
           )}
         </>

@@ -91,13 +91,14 @@ function mergeBarData(subsetResults) {
   return labelOrder.map(l => map[l]);
 }
 
-export function GroupedBarChart({ subsetResults }) {
+export function GroupedBarChart({ subsetResults, onDrillDown }) {
   const data = mergeBarData(subsetResults);
   if (!data.length) return <NoData />;
 
   const subsetNames = subsetResults.map(s => s.subset.name);
   const barGroupW = subsetNames.length * 14 + 8;
   const minWidth = Math.max(400, data.length * barGroupW + 80);
+  const clickable = typeof onDrillDown === 'function';
 
   return (
     <div className="overflow-x-auto -mx-1 px-1">
@@ -127,6 +128,8 @@ export function GroupedBarChart({ subsetResults }) {
                 fill={SUBSET_PALETTE[i % SUBSET_PALETTE.length]}
                 radius={[2, 2, 0, 0]}
                 maxBarSize={24}
+                className={clickable ? 'cursor-pointer' : ''}
+                onClick={clickable ? (entry) => onDrillDown(entry.label) : undefined}
               />
             ))}
           </BarChart>
@@ -136,7 +139,7 @@ export function GroupedBarChart({ subsetResults }) {
   );
 }
 
-export function MultiPieChart({ subsetResults }) {
+export function MultiPieChart({ subsetResults, onDrillDown }) {
   const allLabels = [];
   const labelSet = new Set();
   subsetResults.forEach(({ rows }) => {
@@ -188,8 +191,13 @@ export function MultiPieChart({ subsetResults }) {
                       stroke="#fff"
                       strokeWidth={1.5}
                       paddingAngle={1}
+                      className={typeof onDrillDown === 'function' ? 'cursor-pointer' : ''}
                     >
-                      {pieData.map(d => <Cell key={d.name} fill={colorMap[d.name]} />)}
+                      {pieData.map(d => (
+                        <Cell key={d.name} fill={colorMap[d.name]}
+                          onClick={typeof onDrillDown === 'function' ? () => onDrillDown(d.name) : undefined}
+                          className={typeof onDrillDown === 'function' ? 'cursor-pointer' : ''} />
+                      ))}
                     </Pie>
                     <Tooltip
                       formatter={(v, name) => [v.toLocaleString(), name]}
@@ -206,7 +214,7 @@ export function MultiPieChart({ subsetResults }) {
   );
 }
 
-export function HeatmapGrid({ subsetResults, activeSubsetId, onSubsetChange }) {
+export function HeatmapGrid({ subsetResults, activeSubsetId, onSubsetChange, onDrillDown }) {
   const active = subsetResults.find(s => s.subset.id === activeSubsetId) || subsetResults[0];
   if (!active) return <NoData />;
   const { rows } = active;
@@ -263,11 +271,12 @@ export function HeatmapGrid({ subsetResults, activeSubsetId, onSubsetChange }) {
                     <td
                       key={y}
                       title={`${x} × ${y}: ${v}`}
-                      className="px-1 py-0.5 text-center tabular-nums min-w-[2rem]"
+                      className={`px-1 py-0.5 text-center tabular-nums min-w-[2rem]${typeof onDrillDown === 'function' && v > 0 ? ' cursor-pointer hover:ring-2 hover:ring-teal-400 hover:ring-inset' : ''}`}
                       style={{
                         backgroundColor: `rgba(13, 148, 136, ${alpha * 0.7 + 0.03})`,
                         color: alpha > 0.55 ? '#fff' : '#475569',
                       }}
+                      onClick={typeof onDrillDown === 'function' && v > 0 ? () => onDrillDown(x, y) : undefined}
                     >
                       {v > 0 ? v.toLocaleString() : ''}
                     </td>

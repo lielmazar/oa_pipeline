@@ -30,8 +30,7 @@ export default function ExportTab({ pipeline }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const ext = fmt === 'sqlite' ? '.sqlite' : '.zip';
-      a.download = `${pipeline.name || 'pipeline'}${ext}`;
+      a.download = `${pipeline.name || 'pipeline'}_${fmt}.zip`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -39,36 +38,6 @@ export default function ExportTab({ pipeline }) {
     } finally {
       setDownloading(null);
     }
-  };
-
-  const downloadSchema = async () => {
-    try {
-      const res = await apiFetch(`/api/pipeline/${pipeline.id}/export/schema`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'research_schema.json';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {}
-  };
-
-  const downloadIrr = async () => {
-    try {
-      const res = await apiFetch(`/api/pipeline/${pipeline.id}/export/irr`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `irr_data_${pipeline.name || 'pipeline'}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {}
   };
 
   return (
@@ -92,33 +61,32 @@ export default function ExportTab({ pipeline }) {
       <section className="bg-white border border-gray-200 rounded-xl p-5">
         <h2 className="text-sm font-bold text-gray-900 mb-1">Download</h2>
         <p className="text-xs text-gray-500 mb-4">
-          CSVs are auto-chunked under 30 MB for Claude Desktop project upload. The ZIP includes
-          research_schema.json and schema.csv for context.
+          Both exports include: research_schema.json, schema.csv, QA ratings, IRR statistics, and starred records.
         </p>
-        <div className="flex flex-wrap gap-3">
-          <DownloadButton
-            label="Download CSVs for Claude"
-            sub="Chunked CSV ZIP + schema"
-            loading={downloading === 'csv'}
-            onClick={() => download('csv')}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <ExportCard
+            title="Full Export"
+            items={[
+              'SQLite database (research.sqlite)',
+              'Single records.csv (all records)',
+              'research_schema.json + schema.csv',
+              'QA ratings + IRR statistics',
+              'Starred records CSV',
+            ]}
+            loading={downloading === 'full'}
+            onClick={() => download('full')}
           />
-          <DownloadButton
-            label="Download SQLite"
-            sub="Raw research database"
-            loading={downloading === 'sqlite'}
-            onClick={() => download('sqlite')}
-          />
-          <DownloadButton
-            label="Download Schema"
-            sub="research_schema.json"
-            loading={false}
-            onClick={downloadSchema}
-          />
-          <DownloadButton
-            label="Download IRR Data"
-            sub="QA ratings + IRR statistics"
-            loading={false}
-            onClick={downloadIrr}
+          <ExportCard
+            title="For Claude"
+            items={[
+              'Records as 25 MB chunked CSVs',
+              'research_schema.json + schema.csv',
+              'QA ratings + IRR statistics',
+              'Starred records CSV',
+            ]}
+            note="Chunked for Claude Desktop project upload (no SQLite)"
+            loading={downloading === 'claude'}
+            onClick={() => download('claude')}
           />
         </div>
       </section>
@@ -160,16 +128,26 @@ function Stat({ label, value }) {
   );
 }
 
-function DownloadButton({ label, sub, loading, onClick }) {
+function ExportCard({ title, items, note, loading, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={loading}
-      className="text-left border border-gray-300 rounded-lg px-4 py-3 hover:bg-gray-50 disabled:opacity-50 transition"
+      className="text-left border border-gray-200 rounded-xl p-4 hover:border-teal-400 hover:shadow-sm disabled:opacity-50 transition w-full"
     >
-      <span className="text-sm font-medium text-gray-900 block">{loading ? 'Preparing...' : label}</span>
-      <span className="text-xs text-gray-500">{sub}</span>
+      <span className="text-sm font-bold text-gray-900 block mb-2">
+        {loading ? 'Preparing…' : title}
+      </span>
+      <ul className="space-y-0.5 mb-2">
+        {items.map((item, i) => (
+          <li key={i} className="text-[11px] text-gray-600 flex items-start gap-1.5">
+            <span className="text-teal-500 mt-0.5 shrink-0">✓</span>
+            {item}
+          </li>
+        ))}
+      </ul>
+      {note && <p className="text-[10px] text-gray-400 italic">{note}</p>}
     </button>
   );
 }

@@ -65,6 +65,23 @@ def get_schema(db_path: Path) -> list:
 
 # -- Paginated records -------------------------------------------------------
 
+_JSON_ARRAY_COLS = frozenset({
+    "authors_countries", "authors_institutions",
+    "matched_fuel_terms", "matched_impact_terms",
+    "matched_fuel_stems", "matched_impact_stems",
+    "matched_fuel_subgroups", "matched_impact_subgroups",
+    "llm_ml_role", "llm_ml_algorithm", "llm_research_objective",
+})
+
+_COL_TYPE_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _col_types(conn) -> dict[str, str]:
+    """Return {col_name: declared_type} for filtered_records."""
+    rows = conn.execute("PRAGMA table_info(filtered_records)").fetchall()
+    return {r[1]: (r[2] or "TEXT").upper() for r in rows}
+
+
 def get_records(
     db_path: Path,
     page: int = 1,
@@ -72,6 +89,8 @@ def get_records(
     sort: str = "publication_year",
     direction: str = "desc",
     search: str = "",
+    subset_sql: str | None = None,
+    filters: dict[str, str] | None = None,
 ) -> dict:
     if not db_path.exists():
         return {"error": "Database not found"}
@@ -82,27 +101,80 @@ def get_records(
     try:
         with _connect_ro(db_path) as conn:
             existing = _available_cols(conn)
+            types = _col_types(conn)
 
             if sort not in existing:
                 sort = "publication_year"
 
-            where = ""
+            table_expr = "filtered_records"
+            if subset_sql:
+                inner = subset_sql.strip().rstrip(";")
+                table_expr = f"({inner}) AS filtered_records"
+
+            clauses: list[str] = []
             params: list = []
+
             if search and search.strip():
                 s = f"%{search.strip()}%"
                 cols_to_search = [c for c in (
                     "title", "abstract_text", "matched_fuel_terms", "matched_impact_terms"
                 ) if c in existing]
                 if cols_to_search:
-                    where = "WHERE " + " OR ".join(f"{c} LIKE ?" for c in cols_to_search)
-                    params = [s] * len(cols_to_search)
+                    clauses.append("(" + " OR ".join(f"{c} LIKE ?" for c in cols_to_search) + ")")
+                    params.extend([s] * len(cols_to_search))
+
+            if filters:
+                for raw_key, val in filters.items():
+                    op = "eq"
+                    col = raw_key
+                    if raw_key.endswith("__lte"):
+                        col = raw_key[:-5]
+                        op = "lte"
+                    elif raw_key.endswith("__gte"):
+                        col = raw_key[:-5]
+                        op = "gte"
+                    if col not in existing:
+                        continue
+
+                    if op == "lte":
+                        clauses.append(f"({col} <= ? OR {col} IS NULL)")
+                        params.append(val)
+                    elif op == "gte":
+                        clauses.append(f"{col} >= ?")
+                        params.append(val)
+                    elif "||" in str(val):
+                        parts = str(val).split("||")
+                        if col in _JSON_ARRAY_COLS:
+                            sub = " OR ".join(
+                                f"EXISTS (SELECT 1 FROM json_each({col}) WHERE value = ?)"
+                                for _ in parts
+                            )
+                            clauses.append(f"({sub})")
+                            params.extend(parts)
+                        else:
+                            ph = ",".join("?" for _ in parts)
+                            clauses.append(f"{col} IN ({ph})")
+                            params.extend(parts)
+                    elif col in _JSON_ARRAY_COLS:
+                        clauses.append(
+                            f"EXISTS (SELECT 1 FROM json_each({col}) WHERE value = ?)"
+                        )
+                        params.append(val)
+                    elif types.get(col, "TEXT") in ("INTEGER", "REAL"):
+                        clauses.append(f"{col} = ?")
+                        params.append(val)
+                    else:
+                        clauses.append(f"{col} LIKE ?")
+                        params.append(f"%{val}%")
+
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
             total = conn.execute(
-                f"SELECT COUNT(*) FROM filtered_records {where}", params
+                f"SELECT COUNT(*) FROM {table_expr} {where}", params
             ).fetchone()[0]
 
             cur = conn.execute(
-                f"SELECT * FROM filtered_records {where} "
+                f"SELECT * FROM {table_expr} {where} "
                 f"ORDER BY {sort} {direction} LIMIT ? OFFSET ?",
                 params + [per_page, offset],
             )
@@ -116,6 +188,45 @@ def get_records(
             "columns": columns,
             "rows": rows,
         }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# -- Distinct column values (for filter dropdowns) --------------------------
+
+def get_distinct_values(
+    db_path: Path,
+    column: str,
+    limit: int = 200,
+    subset_sql: str | None = None,
+) -> dict:
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    try:
+        with _connect_ro(db_path) as conn:
+            existing = _available_cols(conn)
+            if column not in existing:
+                return {"error": f"Unknown column: {column}"}
+
+            table_expr = "filtered_records"
+            if subset_sql:
+                inner = subset_sql.strip().rstrip(";")
+                table_expr = f"({inner}) AS filtered_records"
+
+            if column in _JSON_ARRAY_COLS:
+                sql = (
+                    f"SELECT DISTINCT value AS v FROM {table_expr}, "
+                    f"json_each({column}) WHERE value IS NOT NULL AND TRIM(value) != '' "
+                    f"ORDER BY value LIMIT ?"
+                )
+            else:
+                sql = (
+                    f"SELECT DISTINCT {column} AS v FROM {table_expr} "
+                    f"WHERE {column} IS NOT NULL ORDER BY {column} LIMIT ?"
+                )
+
+            rows = conn.execute(sql, [limit]).fetchall()
+            return {"values": [r[0] for r in rows]}
     except Exception as exc:
         return {"error": str(exc)}
 

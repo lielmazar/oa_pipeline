@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from api.business.chart_defs import get_chart_configs
 from api.config import settings
 from api.db.pipelines import get_pipeline, get_subset
-from api.db.research import get_db_stats, get_records, get_schema, run_query
+from api.db.research import get_db_stats, get_distinct_values, get_records, get_schema, run_query
 from api.deps import CurrentUser, Db
 
 router = APIRouter(prefix="/api/pipeline", tags=["data"])
@@ -53,11 +53,35 @@ def db_records(
     sort: str = "publication_year",
     dir: str = "desc",
     page_size: int | None = None,
+    subset_id: int | None = None,
+    filters: str = "",
 ):
+    import json as _json
+
     db_path = _resolve_db(db, pipeline_id, user["id"])
     per_page = page_size if page_size else settings.db_page_size
-    result = get_records(db_path, page=max(1, page), per_page=per_page,
-                         sort=sort, direction=dir, search=q)
+
+    subset_sql = None
+    if subset_id is not None:
+        sub = get_subset(db, pipeline_id, subset_id)
+        if not sub:
+            raise HTTPException(404, "subset not found")
+        subset_sql = sub["sql_query"]
+
+    parsed_filters = None
+    if filters and filters.strip():
+        try:
+            parsed_filters = _json.loads(filters)
+            if not isinstance(parsed_filters, dict):
+                parsed_filters = None
+        except _json.JSONDecodeError:
+            raise HTTPException(400, "filters must be a JSON object")
+
+    result = get_records(
+        db_path, page=max(1, page), per_page=per_page,
+        sort=sort, direction=dir, search=q,
+        subset_sql=subset_sql, filters=parsed_filters,
+    )
     if "error" in result:
         raise HTTPException(500, result["error"])
     return result
@@ -103,3 +127,84 @@ def db_query(pipeline_id: int, body: QueryBody, user: CurrentUser, db: Db):
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
+
+
+@router.get("/{pipeline_id}/records/distinct")
+def distinct_values(
+    pipeline_id: int,
+    user: CurrentUser,
+    db: Db,
+    column: str = Query(..., description="Column name"),
+    subset_id: int | None = None,
+):
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    subset_sql = None
+    if subset_id is not None:
+        sub = get_subset(db, pipeline_id, subset_id)
+        if not sub:
+            raise HTTPException(404, "subset not found")
+        subset_sql = sub["sql_query"]
+    result = get_distinct_values(db_path, column, subset_sql=subset_sql)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+# -- Starred records ---------------------------------------------------------
+
+@router.get("/{pipeline_id}/starred")
+def list_starred(pipeline_id: int, user: CurrentUser, db: Db):
+    rows = db.execute(
+        "SELECT openalex_id FROM starred_records WHERE pipeline_id = ? AND user_id = ?",
+        [pipeline_id, user["id"]],
+    ).fetchall()
+    return {"ids": [r[0] for r in rows]}
+
+
+class StarBody(BaseModel):
+    openalex_id: str
+
+
+@router.post("/{pipeline_id}/starred")
+def add_star(pipeline_id: int, body: StarBody, user: CurrentUser, db: Db):
+    db.execute(
+        "INSERT OR IGNORE INTO starred_records (pipeline_id, openalex_id, user_id) VALUES (?, ?, ?)",
+        [pipeline_id, body.openalex_id, user["id"]],
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{pipeline_id}/starred/{openalex_id}")
+def remove_star(pipeline_id: int, openalex_id: str, user: CurrentUser, db: Db):
+    db.execute(
+        "DELETE FROM starred_records WHERE pipeline_id = ? AND openalex_id = ? AND user_id = ?",
+        [pipeline_id, openalex_id, user["id"]],
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/{pipeline_id}/starred/export")
+def export_starred(pipeline_id: int, user: CurrentUser, db: Db):
+    """Return all starred records with their full data from the research DB."""
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    star_rows = db.execute(
+        "SELECT openalex_id FROM starred_records WHERE pipeline_id = ? AND user_id = ?",
+        [pipeline_id, user["id"]],
+    ).fetchall()
+    ids = [r[0] for r in star_rows]
+    if not ids:
+        return {"columns": [], "rows": [], "total": 0}
+    from api.db.research import run_query as _rq
+    placeholders = ",".join(["?"] * len(ids))
+    sql = f"SELECT * FROM filtered_records WHERE openalex_id IN ({placeholders})"
+    import sqlite3
+    conn = sqlite3.connect(str(db_path), uri=False, check_same_thread=False)
+    try:
+        cur = conn.execute(sql, ids)
+        columns = [d[0] for d in cur.description] if cur.description else []
+        rows = [list(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    return {"columns": columns, "rows": rows, "total": len(rows)}

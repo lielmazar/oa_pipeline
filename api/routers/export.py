@@ -1,4 +1,4 @@
-"""Export router — download SQLite or chunked CSVs for Claude Desktop."""
+"""Export router — Full ZIP or chunked-CSV ZIP for Claude Desktop."""
 from __future__ import annotations
 
 import os
@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from api.business.export import build_csv_export_zip
+from api.business.export import build_csv_export_zip, build_full_export_zip
 from api.db.pipelines import get_pipeline
 from api.deps import CurrentUser, Db
 
@@ -22,7 +22,7 @@ def export_data(
     user: CurrentUser,
     db: Db,
     background_tasks: BackgroundTasks,
-    fmt: str = Query("csv", description="Export format: csv or sqlite"),
+    fmt: str = Query("claude", description="Export format: full or claude"),
 ):
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
@@ -37,30 +37,31 @@ def export_data(
         for c in (p.get("name") or f"pipeline_{pipeline_id}")
     )
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-    if fmt == "sqlite":
-        return FileResponse(
-            str(db_path),
-            media_type="application/x-sqlite3",
-            filename=f"{safe_name}_{ts}.sqlite",
-            headers={"Cache-Control": "no-store"},
-        )
+    user_id = user["id"]
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="oa_export_")
     os.close(tmp_fd)
     try:
-        zip_bytes = build_csv_export_zip(db_path, meta_db=db, pipeline_id=pipeline_id)
+        if fmt == "full":
+            zip_bytes = build_full_export_zip(
+                db_path, meta_db=db, pipeline_id=pipeline_id, user_id=user_id,
+            )
+        else:
+            zip_bytes = build_csv_export_zip(
+                db_path, meta_db=db, pipeline_id=pipeline_id, user_id=user_id,
+            )
         with open(tmp_path, "wb") as f:
             f.write(zip_bytes)
     except Exception as exc:
         os.unlink(tmp_path)
         raise HTTPException(500, str(exc))
 
+    label = "full" if fmt == "full" else "claude"
     background_tasks.add_task(os.unlink, tmp_path)
     return FileResponse(
         tmp_path,
         media_type="application/zip",
-        filename=f"{safe_name}_{ts}.zip",
+        filename=f"{safe_name}_{label}_{ts}.zip",
         headers={"Cache-Control": "no-store"},
     )
 

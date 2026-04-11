@@ -176,6 +176,7 @@
         "x_key": "year",
         "y_key": "count",
         "params": ["cutoff_year"],
+        "drill_column": "publication_year",
         "sql_template": "SELECT CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} THEN 'Unknown/≤{cutoff_year}' ELSE CAST(publication_year AS TEXT) END AS year, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY MIN(CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} THEN 0 ELSE publication_year END)"
       },
       {
@@ -185,6 +186,7 @@
         "x_key": "country",
         "y_key": "count",
         "params": ["top_n"],
+        "drill_column": "authors_countries",
         "sql_template": "SELECT value AS country, COUNT(*) AS count FROM filtered_records, json_each(authors_countries) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
       },
       {
@@ -194,6 +196,7 @@
         "x_key": "journal",
         "y_key": "count",
         "params": ["top_n"],
+        "drill_column": "primary_location_source_display_name",
         "sql_template": "SELECT primary_location_source_display_name AS journal, COUNT(*) AS count FROM filtered_records WHERE primary_location_source_display_name IS NOT NULL GROUP BY journal ORDER BY count DESC LIMIT {top_n}"
       },
       {
@@ -202,6 +205,7 @@
         "renderer": "pie",
         "x_key": "status",
         "y_key": "count",
+        "drill_column": "open_access_oa_status",
         "sql_template": "SELECT COALESCE(open_access_oa_status, 'unknown') AS status, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY count DESC"
       },
       {
@@ -210,6 +214,7 @@
         "renderer": "bar",
         "x_key": "type",
         "y_key": "count",
+        "drill_column": "type",
         "sql_template": "SELECT COALESCE(type, 'unknown') AS type, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY count DESC LIMIT 10"
       },
       {
@@ -219,6 +224,7 @@
         "x_key": "institution",
         "y_key": "count",
         "params": ["top_n"],
+        "drill_column": "authors_institutions",
         "sql_template": "SELECT value AS institution, COUNT(*) AS count FROM filtered_records, json_each(authors_institutions) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
       },
       {
@@ -227,6 +233,7 @@
         "renderer": "bar",
         "x_key": "subgroup",
         "y_key": "count",
+        "drill_column": "matched_fuel_subgroups",
         "sql_template": "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, COUNT(*) AS count FROM filtered_records, json_each(matched_fuel_subgroups) WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY subgroup ORDER BY count DESC"
       },
       {
@@ -235,6 +242,7 @@
         "renderer": "bar",
         "x_key": "subgroup",
         "y_key": "count",
+        "drill_column": "matched_impact_subgroups",
         "sql_template": "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, COUNT(*) AS count FROM filtered_records, json_each(matched_impact_subgroups) WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY subgroup ORDER BY count DESC"
       },
       {
@@ -243,6 +251,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_fuel_subgroups", "matched_impact_subgroups"],
         "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
       }
     ],
@@ -254,6 +263,7 @@
         "x_key": "role",
         "y_key": "count",
         "params": ["top_n"],
+        "drill_column": "llm_ml_role",
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS role, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_role) GROUP BY role ORDER BY count DESC LIMIT {top_n}"
       },
       {
@@ -263,6 +273,7 @@
         "x_key": "algorithm",
         "y_key": "count",
         "params": ["top_n"],
+        "drill_column": "llm_ml_algorithm",
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS algorithm, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_algorithm) GROUP BY algorithm ORDER BY count DESC LIMIT {top_n}"
       },
       {
@@ -279,6 +290,7 @@
         "renderer": "pie",
         "x_key": "source",
         "y_key": "count",
+        "drill_column": "llm_ml_data_source",
         "sql_template": "SELECT CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS source, COUNT(*) AS count FROM filtered_records WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') GROUP BY 1 ORDER BY count DESC"
       },
       {
@@ -287,6 +299,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["llm_ml_role", "llm_ml_algorithm"],
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a GROUP BY x_label, y_label"
       },
       {
@@ -295,6 +308,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_fuel_subgroups", "llm_ml_role"],
         "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_role) r WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -303,6 +317,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_fuel_subgroups", "llm_ml_algorithm"],
         "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_algorithm) a WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -311,6 +326,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_impact_subgroups", "llm_ml_role"],
         "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_role) r WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -319,6 +335,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_impact_subgroups", "llm_ml_algorithm"],
         "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_algorithm) a WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -327,6 +344,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_fuel_subgroups", "matched_impact_subgroups"],
         "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' GROUP BY x_label, y_label"
       },
       {
@@ -336,6 +354,7 @@
         "x_key": "objective",
         "y_key": "count",
         "params": ["top_n"],
+        "drill_column": "llm_research_objective",
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS objective, COUNT(*) AS count FROM filtered_records, json_each(llm_research_objective) WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY objective ORDER BY count DESC LIMIT {top_n}"
       },
       {
@@ -344,6 +363,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["llm_research_objective", "llm_ml_role"],
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o, json_each(llm_ml_role) r WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -352,6 +372,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["llm_research_objective", "llm_ml_algorithm"],
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o, json_each(llm_ml_algorithm) a WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -360,6 +381,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["llm_research_objective", "llm_ml_data_source"],
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -368,6 +390,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_fuel_subgroups", "llm_research_objective"],
         "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_research_objective) o WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
       },
       {
@@ -376,6 +399,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
+        "drill_columns": ["matched_impact_subgroups", "llm_research_objective"],
         "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_research_objective) o WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
       }
     ]
