@@ -134,6 +134,21 @@ def resolve_subset_inner(
     return _normalize_subset_inner(sub[0])
 
 
+def resolve_subset_by_preset_key(
+    meta_db: sqlite3.Connection,
+    pipeline_id: int,
+    preset_key: str,
+) -> str | None:
+    """Resolve a subset SQL by its preset_key (e.g. 'oa_llm')."""
+    sub = meta_db.execute(
+        "SELECT sql_query FROM pipeline_subsets WHERE pipeline_id=? AND preset_key=?",
+        (pipeline_id, preset_key),
+    ).fetchone()
+    if not sub:
+        return None
+    return _normalize_subset_inner(sub[0])
+
+
 # ── Smart sample ──────────────────────────────────────────────────────────────
 
 def get_qa_sample(
@@ -144,6 +159,7 @@ def get_qa_sample(
     field: str = "llm_fuel_classification",
     size: int = 20,
     subset_id: int | None = None,
+    subset_inner: str | None = None,
 ) -> list[dict]:
     """Return smart-sampled records prioritised by low confidence / unrated."""
     size = min(size, 100)
@@ -158,9 +174,10 @@ def get_qa_sample(
         ).fetchall()
     }
 
-    subset_inner = resolve_subset_inner(meta_db, pipeline_id, subset_id)
-    if subset_id is not None and subset_inner is None:
-        return []
+    if subset_inner is None and subset_id is not None:
+        subset_inner = resolve_subset_inner(meta_db, pipeline_id, subset_id)
+        if subset_inner is None:
+            return []
 
     with sqlite3.connect(str(pipeline_db_path)) as conn:
         conn.row_factory = sqlite3.Row

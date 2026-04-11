@@ -17,7 +17,7 @@ from api.business.qa import (
     list_distinct_field_labels,
     list_ratings,
     read_llm_field_value,
-    resolve_subset_inner,
+    resolve_subset_by_preset_key,
     upsert_annotation,
     upsert_rating,
 )
@@ -49,6 +49,9 @@ def qa_fields(user: CurrentUser):
 
 # ── Sample records ────────────────────────────────────────────────────────────
 
+_QA_PRESET_KEY = "oa_llm"
+
+
 @router.get("/{pipeline_id}/qa/records")
 def qa_records(
     pipeline_id: int,
@@ -56,15 +59,22 @@ def qa_records(
     db: Db,
     field: str = "llm_fuel_classification",
     size: int = 20,
-    subset_id: int | None = None,
 ):
     db_path = _resolve_pipeline_db(db, pipeline_id, user["id"])
+
+    subset_inner = resolve_subset_by_preset_key(db, pipeline_id, _QA_PRESET_KEY)
+
     records = get_qa_sample(
         db, db_path, pipeline_id, user["id"],
-        field=field, size=size, subset_id=subset_id,
+        field=field, size=size, subset_inner=subset_inner,
     )
-    subset_inner = resolve_subset_inner(db, pipeline_id, subset_id)
     labels = list_distinct_field_labels(db_path, field, subset_inner)
+
+    _EXTRA_LABELS = ["other (rater labels)", "none", "skip"]
+    for extra in _EXTRA_LABELS:
+        if extra not in labels:
+            labels.append(extra)
+
     fmeta = FIELD_BY_ID.get(field, {})
     bs = min(max(1, size), 100)
     return {

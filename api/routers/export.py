@@ -49,7 +49,7 @@ def export_data(
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="oa_export_")
     os.close(tmp_fd)
     try:
-        zip_bytes = build_csv_export_zip(db_path)
+        zip_bytes = build_csv_export_zip(db_path, meta_db=db, pipeline_id=pipeline_id)
         with open(tmp_path, "wb") as f:
             f.write(zip_bytes)
     except Exception as exc:
@@ -63,6 +63,24 @@ def export_data(
         filename=f"{safe_name}_{ts}.zip",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/{pipeline_id}/export/irr")
+def export_irr(
+    pipeline_id: int,
+    user: CurrentUser,
+    db: Db,
+):
+    """Download IRR statistics and QA ratings as JSON."""
+    from api.business.qa import compute_irr, list_ratings
+
+    p = get_pipeline(db, pipeline_id, user["id"])
+    if not p:
+        raise HTTPException(404, "pipeline not found")
+    return {
+        "irr": compute_irr(db, pipeline_id),
+        "ratings": list_ratings(db, pipeline_id),
+    }
 
 
 @router.get("/{pipeline_id}/export/schema")

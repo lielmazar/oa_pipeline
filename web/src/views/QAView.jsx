@@ -1,9 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../api/client';
 
-const QA_SUBSET_KEY = (pid) => `qa_irr_subset_${pid}`;
-const loadQaIrrSubsetId  = (pid) => localStorage.getItem(QA_SUBSET_KEY(pid)) || '';
-const saveQaIrrSubsetId  = (pid, sid) => localStorage.setItem(QA_SUBSET_KEY(pid), sid ?? '');
 
 function QualityBadge({ quality }) {
   const colors = {
@@ -132,8 +129,6 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
 export default function QAView({ initialContext, onContextConsumed, lockedPipelineId }) {
   const [pipelines, setPipelines]   = useState([]);
   const [pipelineId, setPipelineId] = useState('');
-  const [subsetId, setSubsetId]     = useState('');
-  const [presetSubsets, setPresetSubsets] = useState([]);
   const [field, setField]           = useState('llm_fuel_classification');
   const [qaFields, setQaFields]     = useState([]);
   const [records, setRecords]       = useState([]);
@@ -161,17 +156,6 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
   }, [lockedPipelineId]);
 
   useEffect(() => {
-    if (!pipelineId) {
-      setPresetSubsets([]);
-      return;
-    }
-    apiFetch(`/api/pipeline/${pipelineId}/subsets`)
-      .then(r => r.ok ? r.json() : [])
-      .then(setPresetSubsets)
-      .catch(() => setPresetSubsets([]));
-  }, [pipelineId]);
-
-  useEffect(() => {
     apiFetch('/api/pipeline/qa/fields')
       .then(r => r.ok ? r.json() : {})
       .then(d => { setQaFields(d.qa_fields || []); })
@@ -185,28 +169,14 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
   useEffect(() => {
     if (!initialContext?.pipelineId) return;
     setPipelineId(String(initialContext.pipelineId));
-    if (initialContext.subsetId != null) setSubsetId(String(initialContext.subsetId));
     onContextConsumed?.();
   }, [initialContext, onContextConsumed]);
-
-  useEffect(() => {
-    if (!pipelineId || !presetSubsets.length) return;
-    const saved = loadQaIrrSubsetId(pipelineId);
-    if (!saved || !presetSubsets.some((s) => String(s.id) === saved)) return;
-    setSubsetId((prev) => (prev === '' ? saved : prev));
-  }, [pipelineId, presetSubsets]);
-
-  useEffect(() => {
-    if (!pipelineId) return;
-    saveQaIrrSubsetId(pipelineId, subsetId);
-  }, [pipelineId, subsetId]);
 
   const loadSample = useCallback(async () => {
     if (!pipelineId) return;
     setLoadingRec(true);
     try {
-      let url = `/api/pipeline/${pipelineId}/qa/records?field=${encodeURIComponent(field)}&size=10`;
-      if (subsetId) url += `&subset_id=${encodeURIComponent(subsetId)}`;
+      const url = `/api/pipeline/${pipelineId}/qa/records?field=${encodeURIComponent(field)}&size=10`;
       const res = await apiFetch(url);
       if (res.ok) {
         const d = await res.json();
@@ -218,7 +188,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
         setRatedInBatch(0);
       }
     } finally { setLoadingRec(false); }
-  }, [pipelineId, field, subsetId]);
+  }, [pipelineId, field]);
 
   const loadIrr = useCallback(async () => {
     if (!pipelineId) return;
@@ -230,7 +200,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
     if (!pipelineId) return;
     loadSample();
     loadIrr();
-  }, [pipelineId, field, subsetId, loadSample, loadIrr]);
+  }, [pipelineId, field, loadSample, loadIrr]);
 
   const handleRate = async (oaId, humanVal) => {
     await apiFetch(`/api/pipeline/${pipelineId}/qa/ratings`, {
@@ -261,8 +231,8 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
         {pipelineLocked ? 'IRR' : 'QA / Inter-Rater Reliability'}
       </h1>
 
+      {!pipelineLocked && (
       <div className="flex flex-wrap gap-3 mb-4 items-end">
-        {!pipelineLocked && (
         <select
           value={pipelineId}
           onChange={e => setPipelineId(e.target.value)}
@@ -272,21 +242,12 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
-        )}
-        <label className="flex flex-col gap-1 text-sm text-gray-600">
-          <span className="text-xs font-medium text-gray-500">Dataset</span>
-          <select
-            value={subsetId}
-            onChange={e => setSubsetId(e.target.value)}
-            disabled={!pipelineId}
-            className="border rounded-lg px-3 py-2 text-sm min-w-[14rem] focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-50">
-            <option value="">All records</option>
-            {presetSubsets.map(s => (
-              <option key={s.id} value={String(s.id)}>{s.name}</option>
-            ))}
-          </select>
-        </label>
       </div>
+      )}
+
+      <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4">
+        IRR sample space: Open Access + LLM classified records.
+      </p>
 
       {qaFields.length > 0 && (
         <div className="mb-4">
@@ -307,12 +268,6 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
             ))}
           </div>
         </div>
-      )}
-
-      {subsetId && (
-        <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4">
-          Sampling limited to the selected preset dataset.
-        </p>
       )}
 
       {!pipelineId ? (

@@ -56,6 +56,21 @@ export default function ExportTab({ pipeline }) {
     } catch {}
   };
 
+  const downloadIrr = async () => {
+    try {
+      const res = await apiFetch(`/api/pipeline/${pipeline.id}/export/irr`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `irr_data_${pipeline.name || 'pipeline'}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {}
+  };
+
   return (
     <div className="space-y-6">
       {/* Stats */}
@@ -98,6 +113,12 @@ export default function ExportTab({ pipeline }) {
             sub="research_schema.json"
             loading={false}
             onClick={downloadSchema}
+          />
+          <DownloadButton
+            label="Download IRR Data"
+            sub="QA ratings + IRR statistics"
+            loading={false}
+            onClick={downloadIrr}
           />
         </div>
       </section>
