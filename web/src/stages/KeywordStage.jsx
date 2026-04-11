@@ -47,10 +47,10 @@ function SubgroupEditor({ sg, groupIdx, sgIdx, onChange, readOnly }) {
             onChange={e => setNewTerm(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addTerm())}
             placeholder="Add term…"
-            className="flex-1 border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+            className="flex-1 border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-400"
           />
           <button onClick={addTerm}
-            className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+            className="text-xs px-2 py-1 bg-teal-600 text-white rounded hover:bg-teal-700 transition">
             Add
           </button>
         </div>
@@ -165,7 +165,7 @@ export default function KeywordStage({ pipeline, onChange }) {
             </button>
             {!editMode ? (
               <button onClick={() => setEditMode(true)}
-                className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                className="text-xs px-3 py-1.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition">
                 Edit
               </button>
             ) : (
@@ -227,14 +227,14 @@ export default function KeywordStage({ pipeline, onChange }) {
               value={jsonText}
               onChange={e => setJsonText(e.target.value)}
               rows={20}
-              className="w-full border rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-400 resize-none"
+              className="w-full border rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-teal-400 resize-none"
             />
             {error && <p className="text-xs text-red-600">{error}</p>}
             <div className="flex gap-2">
               <button onClick={() => setShowJson(false)}
                 className="flex-1 border text-sm py-2 rounded-lg hover:bg-gray-50 transition">Cancel</button>
               <button onClick={applyJsonText}
-                className="flex-1 bg-blue-600 text-white text-sm py-2 rounded-lg hover:bg-blue-700 transition font-medium">
+                className="flex-1 bg-teal-600 text-white text-sm py-2 rounded-lg hover:bg-teal-700 transition font-medium">
                 Apply
               </button>
             </div>

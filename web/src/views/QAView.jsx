@@ -59,7 +59,7 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
 
   const pillCls = (active) =>
     `text-xs px-3 py-1.5 rounded-full border transition font-medium ${
-      active ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200 hover:border-blue-300'
+      active ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-700 border-gray-200 hover:border-teal-300'
     }`;
 
   return (
@@ -105,7 +105,7 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
               );
             })}
             <button type="button" onClick={submitMulti} disabled={saving || !selected.size}
-              className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 ml-auto">
+              className="text-sm px-4 py-1.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 ml-auto">
               {saving ? '…' : 'Submit'}
             </button>
           </>
@@ -116,7 +116,7 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
               type="button"
               onClick={() => submit(String(raw))}
               disabled={saving}
-              className="text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-blue-50 hover:border-blue-300 font-medium">
+              className="text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:bg-blue-50 hover:border-teal-300 font-medium">
               {pillLabel(fieldId, raw)}
             </button>
           ))
@@ -236,7 +236,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
         <select
           value={pipelineId}
           onChange={e => setPipelineId(e.target.value)}
-          className="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400">
+          className="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-teal-400">
           <option value="">Select pipeline…</option>
           {pipelines.map(p => (
             <option key={p.id} value={p.id}>{p.name}</option>
@@ -260,7 +260,7 @@ export default function QAView({ initialContext, onContextConsumed, lockedPipeli
                 onClick={() => setField(f.id)}
                 className={`text-xs px-3 py-1.5 rounded-full border font-medium transition ${
                   field === f.id
-                    ? 'bg-blue-600 text-white border-blue-600'
+                    ? 'bg-teal-600 text-white border-teal-600'
                     : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
                 }`}>
                 {f.label}

@@ -552,7 +552,7 @@ export default function LlmStage({ pipeline }) {
                 const v = e.target.value;
                 setSubsetId(v === '' ? null : Number(v));
               }}
-              className="w-full max-w-xl border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+              className="w-full max-w-xl border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-teal-400"
             >
               <option value="">
                 Entire dataset — all unprocessed records in filtered_records
@@ -585,7 +585,7 @@ export default function LlmStage({ pipeline }) {
                 ? `Blank = server cap (${Number(catalog.default_batch_limit).toLocaleString()})`
                 : 'Blank = all pending rows in scope'
             }
-            className="w-full max-w-xs border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
+            className="w-full max-w-xs border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-teal-400"
           />
           <p className="text-[11px] text-gray-500 mt-1.5">
             Applies to Estimate and Submit. Rows already written by a previous successful Collect are not sent again.
@@ -600,7 +600,7 @@ export default function LlmStage({ pipeline }) {
               value={model ?? ''}
               onChange={e => setModel(e.target.value)}
               disabled={!catalogOk}
-              className="border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 min-w-[min(100%,28rem)] max-w-full disabled:opacity-50"
+              className="border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-teal-400 min-w-[min(100%,28rem)] max-w-full disabled:opacity-50"
             >
               {!catalogOk && <option value="">Loading models…</option>}
               {catalog?.model_ids?.map((id) => (

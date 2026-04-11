@@ -79,11 +79,11 @@ export default function HomeView({ onOpenPipeline }) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <div className="max-w-4xl mx-auto px-6 sm:px-10 py-6">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-bold text-gray-900">Pipelines</h1>
         <button onClick={() => { setShowCreate(true); setError(''); }}
-          className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700 transition font-medium">
+          className="bg-teal-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-teal-700 transition font-medium">
           + New Pipeline
         </button>
       </div>
@@ -102,7 +102,7 @@ export default function HomeView({ onOpenPipeline }) {
             return (
               <div key={p.id}
                 className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4
-                           hover:border-blue-300 hover:shadow-sm transition cursor-pointer group"
+                           hover:border-teal-300 hover:shadow-sm transition cursor-pointer group"
                 onClick={() => onOpenPipeline(p)}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
@@ -153,12 +153,12 @@ export default function HomeView({ onOpenPipeline }) {
               <span className="text-xs text-gray-500 uppercase tracking-wide font-medium">Name *</span>
               <input autoFocus value={createName} onChange={e => setCreateName(e.target.value)}
                 placeholder="e.g. Sustainable Fuels 2025"
-                className="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                className="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" />
             </label>
             <label className="block">
               <span className="text-xs text-gray-500 uppercase tracking-wide font-medium">Description</span>
               <input value={createDesc} onChange={e => setCreateDesc(e.target.value)}
-                className="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                className="mt-1 w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400" />
             </label>
             <p className="text-xs text-gray-400">
               Keywords will be pre-filled from the system default. You can edit them in the next step.
@@ -167,7 +167,7 @@ export default function HomeView({ onOpenPipeline }) {
               <button type="button" onClick={() => setShowCreate(false)}
                 className="flex-1 border text-sm py-2 rounded-lg hover:bg-gray-50 transition">Cancel</button>
               <button type="submit" disabled={creating || !createName.trim()}
-                className="flex-1 bg-blue-600 text-white text-sm py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium">
+                className="flex-1 bg-teal-600 text-white text-sm py-2 rounded-lg hover:bg-teal-700 disabled:opacity-50 transition font-medium">
                 {creating ? 'Creating…' : 'Create'}
               </button>
             </div>

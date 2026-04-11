@@ -18,11 +18,11 @@ export default function NavBar({ me, filterRunMeta, onShowHome, onRunPillClick, 
     : '';
 
   return (
-    <nav className="h-12 bg-blue-700 text-white flex items-center px-4 gap-2 sticky top-0 z-30 shadow">
+    <nav className="h-12 bg-teal-800 text-white flex items-center px-6 gap-2 sticky top-0 z-30 shadow-sm">
       <button
         type="button"
         onClick={onShowHome}
-        className="font-bold text-sm mr-3 tracking-tight hover:text-blue-100 transition text-left">
+        className="font-bold text-sm mr-3 tracking-tight hover:text-teal-100 transition text-left">
         OA Pipelines
       </button>
       <div className="ml-auto flex items-center gap-3">
@@ -30,15 +30,15 @@ export default function NavBar({ me, filterRunMeta, onShowHome, onRunPillClick, 
           <button
             type="button"
             onClick={onRunPillClick}
-            className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full animate-pulse whitespace-nowrap hover:bg-green-600 transition"
+            className="text-xs bg-emerald-500 text-white px-2 py-0.5 rounded-full animate-pulse whitespace-nowrap hover:bg-emerald-600 transition"
             title="Open running pipeline search stage"
           >
             #{pipelineId ?? '?'} Filtering {percent}% • ETA {etaText}{mbpsText}
           </button>
         )}
-        <span className="text-xs text-blue-200">{me?.username}</span>
+        <span className="text-xs text-teal-200">{me?.username}</span>
         <button onClick={onLogout}
-          className="text-xs px-2 py-1 rounded border border-blue-500 hover:bg-blue-600 transition">
+          className="text-xs px-2 py-1 rounded border border-teal-600 hover:bg-teal-700 transition">
           Log out
         </button>
       </div>

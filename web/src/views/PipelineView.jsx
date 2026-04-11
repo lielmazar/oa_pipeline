@@ -5,7 +5,6 @@ import SearchStage from '../stages/SearchStage';
 import LlmStage from '../stages/LlmStage';
 import QaStage from '../stages/QaStage';
 import ExportTab from '../stages/ExportTab';
-import SubsetSelector from '../stages/analysis/SubsetSelector.jsx';
 import PresetCharts from '../stages/analysis/PresetCharts.jsx';
 
 const TABS = [
@@ -18,7 +17,7 @@ const TABS = [
 export default function PipelineView({ initialPipeline, onBack, onFilterRunChange }) {
   const [pipeline, setPipeline] = useState(initialPipeline);
   const [activeTab, setActiveTab] = useState('search');
-  const [subsetId, setSubsetId] = useState(null);
+  const [subsets, setSubsets] = useState([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -29,34 +28,41 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const switchTab = (tabId) => {
-    setActiveTab(tabId);
-  };
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(`/api/pipeline/${pipeline.id}/subsets/summary`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!cancelled && data?.subsets) setSubsets(data.subsets);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [pipeline.id]);
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-4">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
       {/* Header */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
         <button onClick={onBack}
-          className="text-sm text-gray-500 hover:text-gray-900 transition flex items-center gap-1">
+          className="text-sm text-slate-500 hover:text-slate-900 transition flex items-center gap-1">
           ← Pipelines
         </button>
-        <span className="text-gray-300">/</span>
-        <span className="text-xs text-gray-500 border border-gray-200 px-1.5 py-0.5 rounded">#{pipeline.id}</span>
-        <h1 className="font-bold text-gray-900 text-lg truncate flex-1 min-w-0">{pipeline.name}</h1>
+        <span className="text-slate-300">/</span>
+        <span className="text-xs text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded">#{pipeline.id}</span>
+        <h1 className="font-bold text-slate-900 text-base truncate flex-1 min-w-0">{pipeline.name}</h1>
       </div>
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 mb-6 bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="flex items-center gap-0 mb-4 bg-white border border-slate-200 rounded-lg overflow-hidden max-w-md">
         {TABS.map(t => (
           <button
             key={t.id}
             type="button"
-            onClick={() => switchTab(t.id)}
-            className={`flex-1 text-center text-sm py-3 border-r border-gray-200 last:border-r-0 transition cursor-pointer font-medium
+            onClick={() => setActiveTab(t.id)}
+            className={`flex-1 text-center text-xs py-2 border-r border-slate-200 last:border-r-0 transition cursor-pointer font-medium
               ${activeTab === t.id
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+                ? 'bg-teal-600 text-white'
+                : 'bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}
           >
             {t.label}
           </button>
@@ -65,29 +71,22 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
 
       {/* Tab content */}
       {activeTab === 'search' && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           <KeywordStage pipeline={pipeline} onChange={setPipeline} />
           <SearchStage pipeline={pipeline} onChange={setPipeline} onRunMetaChange={onFilterRunChange} />
-          <SubsetSelector pipelineId={pipeline.id} selectedSubsetId={subsetId} onSelectSubset={setSubsetId} />
-          <PresetCharts pipelineId={pipeline.id} tab="search" subsetId={subsetId} />
+          <PresetCharts pipelineId={pipeline.id} tab="search" subsets={subsets} />
         </div>
       )}
 
       {activeTab === 'llm' && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           <LlmStage pipeline={pipeline} onChange={setPipeline} />
-          <SubsetSelector pipelineId={pipeline.id} selectedSubsetId={subsetId} onSelectSubset={setSubsetId} />
-          <PresetCharts pipelineId={pipeline.id} tab="llm" subsetId={subsetId} />
+          <PresetCharts pipelineId={pipeline.id} tab="llm" subsets={subsets} />
         </div>
       )}
 
-      {activeTab === 'qa' && (
-        <QaStage pipeline={pipeline} />
-      )}
-
-      {activeTab === 'export' && (
-        <ExportTab pipeline={pipeline} />
-      )}
+      {activeTab === 'qa' && <QaStage pipeline={pipeline} />}
+      {activeTab === 'export' && <ExportTab pipeline={pipeline} />}
     </div>
   );
 }

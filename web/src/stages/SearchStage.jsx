@@ -6,7 +6,7 @@ function ProgressBar({ percent }) {
   return (
     <div className="w-full bg-gray-100 rounded-full h-2">
       <div
-        className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+        className="bg-teal-500 h-2 rounded-full transition-all duration-500"
         style={{ width: `${Math.min(100, percent || 0)}%` }}
       />
     </div>
@@ -143,7 +143,7 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
           </div>
           {!isRunning ? (
             <button onClick={start} disabled={starting}
-              className="bg-blue-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium">
+              className="bg-teal-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-teal-700 disabled:opacity-50 transition font-medium">
               {starting ? 'Starting…' : run ? 'Re-run' : 'Start Filter Run'}
             </button>
           ) : (

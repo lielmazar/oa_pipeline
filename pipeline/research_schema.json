@@ -181,7 +181,7 @@
       {
         "id": "top_countries",
         "title": "Top Contributing Countries",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "country",
         "y_key": "count",
         "params": ["top_n"],
@@ -190,7 +190,7 @@
       {
         "id": "top_journals",
         "title": "Top Journals / Sources",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "journal",
         "y_key": "count",
         "params": ["top_n"],
@@ -215,40 +215,64 @@
       {
         "id": "top_institutions",
         "title": "Top Institutions",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "institution",
         "y_key": "count",
         "params": ["top_n"],
         "sql_template": "SELECT value AS institution, COUNT(*) AS count FROM filtered_records, json_each(authors_institutions) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "fuel_subgroups",
+        "title": "Fuel Subgroups",
+        "renderer": "bar",
+        "x_key": "subgroup",
+        "y_key": "count",
+        "sql_template": "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, COUNT(*) AS count FROM filtered_records, json_each(matched_fuel_subgroups) WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY subgroup ORDER BY count DESC"
+      },
+      {
+        "id": "impact_subgroups",
+        "title": "Impact Subgroups",
+        "renderer": "bar",
+        "x_key": "subgroup",
+        "y_key": "count",
+        "sql_template": "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, COUNT(*) AS count FROM filtered_records, json_each(matched_impact_subgroups) WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY subgroup ORDER BY count DESC"
+      },
+      {
+        "id": "fuel_x_impact_subgroups",
+        "title": "Fuel Subgroup × Impact Subgroup",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
       }
     ],
     "llm": [
       {
         "id": "llm_scope",
         "title": "Fuel Classification (LLM)",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "fuel_type",
         "y_key": "count",
         "params": ["top_n"],
-        "sql_template": "SELECT value AS fuel_type, COUNT(*) AS count FROM filtered_records, json_each(llm_fuel_classification) WHERE value IS NOT NULL AND value != '' GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS fuel_type, COUNT(*) AS count FROM filtered_records, json_each(llm_fuel_classification) GROUP BY fuel_type ORDER BY count DESC LIMIT {top_n}"
       },
       {
         "id": "llm_ml_role",
         "title": "ML/AI Functional Role (LLM)",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "role",
         "y_key": "count",
         "params": ["top_n"],
-        "sql_template": "SELECT value AS role, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_role) WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS role, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_role) GROUP BY role ORDER BY count DESC LIMIT {top_n}"
       },
       {
         "id": "llm_ml_algorithm",
         "title": "ML/AI Algorithm Family (LLM)",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "algorithm",
         "y_key": "count",
         "params": ["top_n"],
-        "sql_template": "SELECT value AS algorithm, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_algorithm) WHERE value IS NOT NULL AND value != '' AND LOWER(value) NOT IN ('none', 'other_ml') GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS algorithm, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_algorithm) GROUP BY algorithm ORDER BY count DESC LIMIT {top_n}"
       },
       {
         "id": "llm_ml_usage",
@@ -261,11 +285,11 @@
       {
         "id": "llm_value_chain",
         "title": "Value-Chain Position (LLM)",
-        "renderer": "hbar",
+        "renderer": "bar",
         "x_key": "stage",
         "y_key": "count",
         "params": ["top_n"],
-        "sql_template": "SELECT value AS stage, COUNT(*) AS count FROM filtered_records, json_each(llm_scope) WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS stage, COUNT(*) AS count FROM filtered_records, json_each(llm_scope) GROUP BY stage ORDER BY count DESC LIMIT {top_n}"
       },
       {
         "id": "llm_ml_datasource",
@@ -273,7 +297,7 @@
         "renderer": "pie",
         "x_key": "source",
         "y_key": "count",
-        "sql_template": "SELECT CASE WHEN llm_ml_data_source IS NULL OR llm_ml_data_source IN ('', 'none', 'null') THEN 'none' ELSE llm_ml_data_source END AS source, COUNT(*) AS count FROM filtered_records WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' GROUP BY 1 ORDER BY count DESC"
+        "sql_template": "SELECT CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS source, COUNT(*) AS count FROM filtered_records WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') GROUP BY 1 ORDER BY count DESC"
       },
       {
         "id": "fuelclass_x_mlrole",
@@ -281,7 +305,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
-        "sql_template": "SELECT f.value AS x_label, r.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_role) r WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL AND LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL GROUP BY f.value, r.value"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_role) r GROUP BY x_label, y_label"
       },
       {
         "id": "mlrole_x_algorithm",
@@ -289,7 +313,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
-        "sql_template": "SELECT r.value AS x_label, a.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a WHERE LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL AND LOWER(a.value) NOT IN ('none', 'other_ml', '') AND a.value IS NOT NULL GROUP BY r.value, a.value"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a GROUP BY x_label, y_label"
       },
       {
         "id": "fuelclass_x_algorithm",
@@ -297,7 +321,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
-        "sql_template": "SELECT f.value AS x_label, a.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_algorithm) a WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL AND LOWER(a.value) NOT IN ('none', 'other_ml', '') AND a.value IS NOT NULL GROUP BY f.value, a.value"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_algorithm) a GROUP BY x_label, y_label"
       },
       {
         "id": "fuelclass_x_datasource",
@@ -305,7 +329,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
-        "sql_template": "SELECT f.value AS x_label, CASE WHEN llm_ml_data_source IS NULL OR llm_ml_data_source IN ('', 'none', 'null') THEN 'none' ELSE llm_ml_data_source END AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL AND llm_ml_data_source IS NOT NULL AND LOWER(llm_ml_data_source) NOT IN ('none', '', 'null') GROUP BY f.value, y_label"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS x_label, CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f GROUP BY x_label, y_label"
       },
       {
         "id": "scope_x_mlrole",
@@ -313,7 +337,7 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
-        "sql_template": "SELECT s.value AS x_label, r.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_scope) s, json_each(llm_ml_role) r WHERE LOWER(s.value) NOT IN ('none', '') AND s.value IS NOT NULL AND LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL GROUP BY s.value, r.value"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_scope) s, json_each(llm_ml_role) r GROUP BY x_label, y_label"
       },
       {
         "id": "scope_x_fuelclass",
@@ -321,23 +345,79 @@
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
-        "sql_template": "SELECT s.value AS x_label, f.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_scope) s, json_each(llm_fuel_classification) f WHERE LOWER(s.value) NOT IN ('none', '') AND s.value IS NOT NULL AND LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL GROUP BY s.value, f.value"
+        "sql_template": "SELECT COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_scope) s, json_each(llm_fuel_classification) f GROUP BY x_label, y_label"
       },
       {
-        "id": "fuel_impact_model_cooccurrence",
-        "title": "Fuel × Impact × Model Type Co-occurrence",
-        "renderer": "cooccurrence_3d",
-        "x_key": "fuel_subgroup",
-        "y_key": "impact_subgroup",
-        "sql_template": "SELECT DISTINCT openalex_id, REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup, json_extract(m.value, '$.type') AS model_type, json_extract(m.value, '$.name') AS model_name FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg, json_each(llm_models) m WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_models IS NOT NULL AND llm_models != '[]' AND llm_models != 'null' AND json_valid(llm_models) AND json_extract(m.value, '$.type') IS NOT NULL"
+        "id": "fuelsubgroup_x_fuelclass",
+        "title": "Fuel Subgroup × Fuel Classification (LLM)",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(fc.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_fuel_classification) fc WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
-        "id": "fuel_subgroup_ml_cooccurrence",
-        "title": "Fuel Subgroup × Impact Subgroup (ML/AI Papers Only)",
-        "renderer": "cooccurrence_3d_bar",
-        "x_key": "fuel_subgroup",
-        "y_key": "openalex_id",
-        "sql_template": "SELECT DISTINCT openalex_id, REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%'"
+        "id": "fuelsubgroup_x_mlrole",
+        "title": "Fuel Subgroup × ML Role",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_role) r WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "fuelsubgroup_x_algorithm",
+        "title": "Fuel Subgroup × Algorithm Family",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_algorithm) a WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "fuelsubgroup_x_scope",
+        "title": "Fuel Subgroup × Value-Chain Scope",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_scope) s WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "impactsubgroup_x_fuelclass",
+        "title": "Impact Subgroup × Fuel Classification (LLM)",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(fc.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_fuel_classification) fc WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "impactsubgroup_x_mlrole",
+        "title": "Impact Subgroup × ML Role",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_role) r WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "impactsubgroup_x_algorithm",
+        "title": "Impact Subgroup × Algorithm Family",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_algorithm) a WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "impactsubgroup_x_scope",
+        "title": "Impact Subgroup × Value-Chain Scope",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_scope) s WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
+      },
+      {
+        "id": "fuel_x_impact_subgroups_ml",
+        "title": "Fuel × Impact Subgroup (ML/AI Papers Only)",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' GROUP BY x_label, y_label"
       }
     ]
   },
