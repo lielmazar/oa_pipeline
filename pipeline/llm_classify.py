@@ -82,7 +82,7 @@ def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
     STATE_FILE = BATCH_DIR / "state.json"
 
 PROMPT_ID      = "pmpt_694c136369fc81939aa9e7eb310bd3170ecd05cb5a9fb123"
-PROMPT_VERSION = "26"
+PROMPT_VERSION = "27"
 BATCH_SIZE_LIMIT = 50_000   # OpenAI hard limit per batch
 
 # Assumed average output tokens per paper (classification JSON ≈ 300–500 tok)
@@ -104,18 +104,18 @@ def ensure_result_columns(conn: sqlite3.Connection) -> None:
     Column mapping — prompt v8 JSON output:
       llm_is_hydrocarbon       ← fuel_relevant          (boolean → 1/0)
       llm_research_objective   ← research_objective      (string → JSON array)  — v8
-      llm_value_chain_stage    ← value_chain_stage       (string → JSON array)  — v8
       llm_ml_role              ← ml_role                 (string → JSON array)  — v8 (was array pre-v8)
-      llm_ml_algorithm         ← ml_algorithm            (JSON array)
+      llm_ml_algorithm         ← ml_algorithm            (JSON array of model names)
       llm_ml_data_source       ← ml_data_source          (string)
       llm_confidence           ← confidence
       llm_justification        ← justification
-      llm_models               ← models                  (JSON array of model objects)
       llm_result_raw           ← full raw text (fallback if JSON parse fails)
 
     Backward-compat columns (kept for old data, written as empty for v8+):
       llm_fuel_classification  ← fuel_classification     (removed in v8)
-      llm_scope                ← scope                   (replaced by value_chain_stage in v8)
+      llm_scope                ← scope                   (removed in v8)
+      llm_models               ← models                  (removed in v8)
+      llm_value_chain_stage    ← value_chain_stage       (was in early v8 draft, removed)
       llm_ml_paradigm          ← v2 compat
       llm_ml_method            ← v2 compat
     """
@@ -469,8 +469,7 @@ _UPDATE_SQL = """
         llm_tokens_input        = ?,
         llm_tokens_output       = ?,
         llm_tokens_reasoning    = ?,
-        llm_research_objective  = ?,
-        llm_value_chain_stage   = ?
+        llm_research_objective  = ?
     WHERE openalex_id = ?
 """
 
@@ -486,34 +485,36 @@ def _ensure_json_array(val) -> list:
 
 def _parse_result_row(parsed: dict) -> tuple:
     """
-    Extract DB column values from a v8 LLM JSON response.
+    Extract DB column values from an LLM JSON response.
 
-    Handles both v8 (scalar ml_role, research_objective, value_chain_stage)
-    and pre-v8 (array ml_role, fuel_classification, scope) responses so
-    existing batch results can be re-imported without issues.
+    v8 output: fuel_relevant, research_objective, ml_role (scalar),
+               ml_algorithm (free-text array), ml_data_source,
+               confidence, justification.
+    Pre-v8 fields (fuel_classification, scope, models) are preserved
+    when present for backward compat; written as empty otherwise.
     """
     hydro_raw = parsed.get("fuel_relevant")
     is_hydro  = 1 if hydro_raw is True else 0 if hydro_raw is False else None
 
+    # Backward-compat: pre-v8 produced these; v8 does not
     fuel_cls     = json.dumps(_ensure_json_array(parsed.get("fuel_classification")), ensure_ascii=False)
-    ml_role      = json.dumps(_ensure_json_array(parsed.get("ml_role")),             ensure_ascii=False)
-    ml_algo      = json.dumps(_ensure_json_array(parsed.get("ml_algorithm")),        ensure_ascii=False)
     scope        = json.dumps(_ensure_json_array(parsed.get("scope")),               ensure_ascii=False)
-    ml_data_src  = str(parsed.get("ml_data_source", "") or "")
-    # v2 compat
     ml_para      = json.dumps([], ensure_ascii=False)
     ml_method    = json.dumps([], ensure_ascii=False)
     models_str   = json.dumps(parsed.get("models", []),                              ensure_ascii=False)
+
+    # Current v8 fields
+    ml_role      = json.dumps(_ensure_json_array(parsed.get("ml_role")),             ensure_ascii=False)
+    ml_algo      = json.dumps(_ensure_json_array(parsed.get("ml_algorithm")),        ensure_ascii=False)
+    ml_data_src  = str(parsed.get("ml_data_source", "") or "")
     confidence   = str(parsed.get("confidence",    "") or "")
     justif       = str(parsed.get("justification", "") or "")
-    # v8 new dimensions (stored as JSON arrays for consistent json_each() in charts)
     res_obj      = json.dumps(_ensure_json_array(parsed.get("research_objective")),  ensure_ascii=False)
-    vc_stage     = json.dumps(_ensure_json_array(parsed.get("value_chain_stage")),   ensure_ascii=False)
 
     return (is_hydro, fuel_cls, ml_para, ml_method,
             ml_role, ml_algo, scope, ml_data_src,
             confidence, justif, models_str,
-            res_obj, vc_stage)
+            res_obj)
 
 
 def _process_jsonl_lines(
@@ -565,14 +566,14 @@ def _process_jsonl_lines(
             (is_hydro, fuel_cls, ml_para, ml_method,
              ml_role, ml_algo, scope, ml_data_src,
              confidence, justif, models_str,
-             res_obj, vc_stage) = _parse_result_row(parsed)
+             res_obj) = _parse_result_row(parsed)
         else:
             json_fail   = json_fail + 1
             is_hydro    = None
             fuel_cls    = ml_para = ml_method = None
             ml_role     = ml_algo = scope = ml_data_src = None
             confidence  = justif = models_str = None
-            res_obj     = vc_stage = None
+            res_obj     = None
 
         usage            = body.get("usage", {})
         tokens_input     = usage.get("input_tokens", 0)
@@ -587,7 +588,7 @@ def _process_jsonl_lines(
                 confidence, justif, models_str, raw_text,
                 batch_id, now_iso,
                 tokens_input, tokens_output, tokens_reasoning,
-                res_obj, vc_stage,
+                res_obj,
                 custom_id,
             ),
         )

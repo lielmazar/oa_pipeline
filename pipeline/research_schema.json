@@ -248,15 +248,6 @@
     ],
     "llm": [
       {
-        "id": "llm_scope",
-        "title": "Fuel Classification (LLM)",
-        "renderer": "bar",
-        "x_key": "fuel_type",
-        "y_key": "count",
-        "params": ["top_n"],
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS fuel_type, COUNT(*) AS count FROM filtered_records, json_each(llm_fuel_classification) GROUP BY fuel_type ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
         "id": "llm_ml_role",
         "title": "ML/AI Functional Role (LLM)",
         "renderer": "bar",
@@ -267,7 +258,7 @@
       },
       {
         "id": "llm_ml_algorithm",
-        "title": "ML/AI Algorithm Family (LLM)",
+        "title": "ML/AI Algorithm (LLM)",
         "renderer": "bar",
         "x_key": "algorithm",
         "y_key": "count",
@@ -283,15 +274,6 @@
         "sql_template": "SELECT CASE WHEN llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS uses_ml, COUNT(*) AS count FROM filtered_records GROUP BY 1"
       },
       {
-        "id": "llm_value_chain",
-        "title": "Value-Chain Stage (LLM)",
-        "renderer": "bar",
-        "x_key": "stage",
-        "y_key": "count",
-        "params": ["top_n"],
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS stage, COUNT(*) AS count FROM filtered_records, json_each(COALESCE(NULLIF(llm_value_chain_stage, '[]'), llm_scope, '[]')) GROUP BY stage ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
         "id": "llm_ml_datasource",
         "title": "ML Data Source Distribution (LLM)",
         "renderer": "pie",
@@ -300,60 +282,12 @@
         "sql_template": "SELECT CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS source, COUNT(*) AS count FROM filtered_records WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') GROUP BY 1 ORDER BY count DESC"
       },
       {
-        "id": "fuelclass_x_mlrole",
-        "title": "Fuel Classification × ML Role",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_role) r GROUP BY x_label, y_label"
-      },
-      {
         "id": "mlrole_x_algorithm",
-        "title": "ML Role × Algorithm Family",
+        "title": "ML Role × Algorithm",
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelclass_x_algorithm",
-        "title": "Fuel Classification × Algorithm Family",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_algorithm) a GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelclass_x_datasource",
-        "title": "Fuel Classification × ML Data Source",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS x_label, CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f GROUP BY x_label, y_label"
-      },
-      {
-        "id": "scope_x_mlrole",
-        "title": "Value-Chain Stage × ML Role",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(COALESCE(NULLIF(llm_value_chain_stage, '[]'), llm_scope, '[]')) s, json_each(llm_ml_role) r GROUP BY x_label, y_label"
-      },
-      {
-        "id": "scope_x_fuelclass",
-        "title": "Value-Chain Stage × Fuel Classification",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(f.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(COALESCE(NULLIF(llm_value_chain_stage, '[]'), llm_scope, '[]')) s, json_each(llm_fuel_classification) f GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelsubgroup_x_fuelclass",
-        "title": "Fuel Subgroup × Fuel Classification (LLM)",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(fc.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_fuel_classification) fc WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
         "id": "fuelsubgroup_x_mlrole",
@@ -365,27 +299,11 @@
       },
       {
         "id": "fuelsubgroup_x_algorithm",
-        "title": "Fuel Subgroup × Algorithm Family",
+        "title": "Fuel Subgroup × Algorithm",
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
         "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_algorithm) a WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelsubgroup_x_scope",
-        "title": "Fuel Subgroup × Value-Chain Stage",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(COALESCE(NULLIF(llm_value_chain_stage, '[]'), llm_scope, '[]')) s WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "impactsubgroup_x_fuelclass",
-        "title": "Impact Subgroup × Fuel Classification (LLM)",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(fc.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_fuel_classification) fc WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
         "id": "impactsubgroup_x_mlrole",
@@ -397,19 +315,11 @@
       },
       {
         "id": "impactsubgroup_x_algorithm",
-        "title": "Impact Subgroup × Algorithm Family",
+        "title": "Impact Subgroup × Algorithm",
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
         "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_algorithm) a WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "impactsubgroup_x_scope",
-        "title": "Impact Subgroup × Value-Chain Stage",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(COALESCE(NULLIF(llm_value_chain_stage, '[]'), llm_scope, '[]')) s WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
       },
       {
         "id": "fuel_x_impact_subgroups_ml",
@@ -438,19 +348,11 @@
       },
       {
         "id": "resobj_x_algorithm",
-        "title": "Research Objective × Algorithm Family",
+        "title": "Research Objective × Algorithm",
         "renderer": "heatmap",
         "x_key": "x_label",
         "y_key": "y_label",
         "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o, json_each(llm_ml_algorithm) a WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "resobj_x_vcstage",
-        "title": "Research Objective × Value-Chain Stage",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(s.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o, json_each(COALESCE(NULLIF(llm_value_chain_stage, '[]'), llm_scope, '[]')) s WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
       },
       {
         "id": "resobj_x_datasource",
@@ -517,18 +419,12 @@
     "primary_location_source_issn_l": {"type": "TEXT", "source": "openalex",  "description": "Linking ISSN of the primary source journal"},
     "is_retracted":           {"type": "INTEGER", "source": "openalex",       "description": "Whether the work has been retracted (1=yes, 0=no)"},
     "llm_is_hydrocarbon":     {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the work is relevant to hydrocarbon fuels (1=yes, 0=no)"},
-    "llm_fuel_classification": {"type": "TEXT",   "source": "openai_batch",   "description": "JSON array of LLM-assigned fuel type labels (pre-v8 prompt; v8 drops this field)"},
-    "llm_ml_paradigm":        {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array — v2 backward compat: ML paradigm labels"},
-    "llm_ml_method":          {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array — v2 backward compat: ML method labels"},
-    "llm_ml_role":            {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML/AI functional roles (v8: single-element, e.g. [\"property_prediction\"])"},
-    "llm_ml_algorithm":       {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML algorithm families identified by LLM"},
+    "llm_ml_role":            {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML/AI functional roles (e.g. [\"prediction\"], [\"optimization\"])"},
+    "llm_ml_algorithm":       {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML model names extracted from abstract (e.g. [\"ANN\", \"Genetic Algorithm\"])"},
     "llm_ml_data_source":     {"type": "TEXT",    "source": "openai_batch",   "description": "Single string: primary data source type used by ML models in the work"},
-    "llm_scope":              {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of value-chain positions (pre-v8 prompt; superseded by llm_value_chain_stage)"},
-    "llm_research_objective": {"type": "TEXT",   "source": "openai_batch",   "description": "JSON array (single-element) — primary research goal from v8 prompt (e.g. [\"emissions_and_performance\"])"},
-    "llm_value_chain_stage":  {"type": "TEXT",   "source": "openai_batch",   "description": "JSON array (single-element) — fuel lifecycle stage from v8 prompt (e.g. [\"combustion\"])"},
+    "llm_research_objective": {"type": "TEXT",   "source": "openai_batch",   "description": "JSON array (single-element) — primary research goal (e.g. [\"engine_emissions\"], [\"fuel_production\"])"},
     "llm_confidence":         {"type": "TEXT",    "source": "openai_batch",   "description": "LLM self-reported confidence level for the classification"},
     "llm_justification":      {"type": "TEXT",    "source": "openai_batch",   "description": "LLM explanation for its classification decisions"},
-    "llm_models":             {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of model objects with type and name fields identified in the work"},
     "llm_result_raw":         {"type": "TEXT",    "source": "openai_batch",   "description": "Raw LLM output text (fallback when JSON parsing fails)"},
     "llm_batch_id":           {"type": "TEXT",    "source": "openai_batch",   "description": "OpenAI batch job ID that produced this classification"},
     "llm_processed_at":       {"type": "TEXT",    "source": "openai_batch",   "description": "ISO timestamp when LLM classification was saved"},
