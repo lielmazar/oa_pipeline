@@ -11,6 +11,7 @@ from api.business.qa import (
     FIELD_BY_ID,
     QA_FIELDS,
     compute_irr,
+    fix_malformed_llm_values,
     get_qa_sample,
     list_annotations,
     list_disagreements,
@@ -133,6 +134,14 @@ def get_irr(pipeline_id: int, user: CurrentUser, db: Db):
     if not get_pipeline(db, pipeline_id, user["id"]):
         raise HTTPException(404, "not found")
     return compute_irr(db, pipeline_id)
+
+
+@router.post("/{pipeline_id}/qa/fix-llm-values")
+def fix_llm_values(pipeline_id: int, user: CurrentUser, db: Db):
+    if not get_pipeline(db, pipeline_id, user["id"]):
+        raise HTTPException(404, "not found")
+    updated = fix_malformed_llm_values(db, pipeline_id)
+    return {"updated": updated, "pipeline_id": pipeline_id}
 
 
 # ── Annotations ───────────────────────────────────────────────────────────────

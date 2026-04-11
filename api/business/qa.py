@@ -37,8 +37,32 @@ QA_FIELDS = [
 FIELD_BY_ID = {f["id"]: f for f in QA_FIELDS}
 
 
+def _normalize_llm_value(field: str, raw: str) -> str:
+    """Normalize a raw DB value so it matches human-label format.
+
+    ``json_scalar`` fields (e.g. ``llm_research_objective``) are stored in the
+    research DB as single-element JSON arrays like ``'["fuel_production"]'``.
+    The QA UI presents — and the human selects — plain scalars, so we unwrap
+    before storing in ``qa_ratings`` / comparing for disagreements & IRR.
+    """
+    meta = FIELD_BY_ID.get(field)
+    if not meta:
+        return raw
+    ftype = meta.get("type")
+    if ftype == "json_scalar":
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list) and len(parsed) == 1:
+                return str(parsed[0])
+            if isinstance(parsed, list) and len(parsed) == 0:
+                return "none"
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return raw
+
+
 def read_llm_field_value(pipeline_db_path: Path, openalex_id: str, field: str) -> str | None:
-    """Read raw column value from the research DB (for storing alongside human rating)."""
+    """Read column value from the research DB, normalized for QA comparison."""
     if not _VALID_FIELD.match(field):
         return None
     try:
@@ -55,7 +79,8 @@ def read_llm_field_value(pipeline_db_path: Path, openalex_id: str, field: str) -
     v = row[field]
     if v is None:
         return None
-    return v if isinstance(v, str) else str(v)
+    raw = v if isinstance(v, str) else str(v)
+    return _normalize_llm_value(field, raw)
 
 
 def list_distinct_field_labels(
@@ -263,7 +288,10 @@ def list_disagreements(meta_db: sqlite3.Connection, pipeline_id: int) -> list[di
     out: list[dict] = []
     for r in list_ratings(meta_db, pipeline_id):
         h = (r.get("human_value") or "").strip()
-        l = (r.get("llm_value") or "").strip()
+        l = _normalize_llm_value(
+            r.get("field", ""),
+            (r.get("llm_value") or "").strip(),
+        )
         if h != l:
             out.append(r)
     return out
@@ -277,6 +305,42 @@ def list_ratings(meta_db: sqlite3.Connection, pipeline_id: int) -> list[dict]:
             (pipeline_id,),
         ).fetchall()
     ]
+
+
+def fix_malformed_llm_values(meta_db: sqlite3.Connection, pipeline_id: int) -> int:
+    """Retroactively normalize llm_value in existing qa_ratings rows.
+
+    Fixes json_scalar fields where llm_value was stored as a JSON array
+    (e.g. ``'["fuel_production"]'``) instead of a plain scalar.
+    Returns the number of rows updated.
+    """
+    json_scalar_fields = [
+        fid for fid, fmeta in FIELD_BY_ID.items()
+        if fmeta.get("type") == "json_scalar"
+    ]
+    if not json_scalar_fields:
+        return 0
+
+    ph = ",".join("?" for _ in json_scalar_fields)
+    rows = meta_db.execute(
+        f"SELECT id, field, llm_value FROM qa_ratings "
+        f"WHERE pipeline_id=? AND field IN ({ph}) AND llm_value IS NOT NULL",
+        [pipeline_id] + json_scalar_fields,
+    ).fetchall()
+
+    updated = 0
+    for row in rows:
+        rid, field, raw = row[0], row[1], row[2]
+        normalized = _normalize_llm_value(field, raw)
+        if normalized != raw:
+            meta_db.execute(
+                "UPDATE qa_ratings SET llm_value=? WHERE id=?",
+                (normalized, rid),
+            )
+            updated += 1
+    if updated:
+        meta_db.commit()
+    return updated
 
 
 def upsert_rating(
@@ -321,7 +385,8 @@ def _qa_rows_to_krippendorff_units(rows: list) -> list[dict]:
         c = cells[field][oa_id]
         c["humans"].append((uid, human_val))
         if llm_val is not None and str(llm_val).strip():
-            c["llm"] = llm_val if isinstance(llm_val, str) else str(llm_val)
+            raw = llm_val if isinstance(llm_val, str) else str(llm_val)
+            c["llm"] = _normalize_llm_value(field, raw)
 
     units: list[dict] = []
     for field, by_oa in cells.items():
