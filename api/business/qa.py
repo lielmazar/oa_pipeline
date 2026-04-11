@@ -13,7 +13,12 @@ from api.business.qa_stats import (
     interpret_alpha,
     multilabel_code_metrics,
 )
-from api.business.subset_sql import compose_subset_query, normalize_subset_inner, validate_subset_inner
+def _normalize_subset_inner(sql: str) -> str:
+    return sql.strip().rstrip(";")
+
+def _compose_subset_query(inner_sql: str, outer_sql: str) -> str:
+    clean = _normalize_subset_inner(inner_sql)
+    return f"WITH _fr_subset AS (\n{clean}\n)\n{outer_sql}"
 
 _VALID_FIELD = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -71,7 +76,7 @@ def list_distinct_field_labels(
 
     def wrap(inner_sql: str) -> str:
         if subset_inner:
-            return compose_subset_query(subset_inner, inner_sql)
+            return _compose_subset_query(subset_inner, inner_sql)
         return inner_sql.replace("_fr_subset", "filtered_records")
 
     try:
@@ -126,11 +131,7 @@ def resolve_subset_inner(
     ).fetchone()
     if not sub:
         return None
-    inner = normalize_subset_inner(sub[0])
-    err = validate_subset_inner(inner)
-    if err:
-        return None
-    return inner
+    return _normalize_subset_inner(sub[0])
 
 
 # ── Smart sample ──────────────────────────────────────────────────────────────

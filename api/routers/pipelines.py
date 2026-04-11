@@ -8,11 +8,13 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from api.business.pipeline_status import build_stage_status
@@ -22,29 +24,21 @@ from api.business.runner import (
     poll_filter_run,
     start_filter_run_for,
 )
-from api.business.subset_sql import normalize_subset_inner, validate_subset_inner
 from api.config import settings
-from api.db.research import count_subset_rows, get_db_stats, iter_subset_openalex_csv
+from api.db.meta import get_db
+from api.db.research import count_subset_rows, get_db_stats
 from api.db.pipelines import (
     STAGES,
     STAGE_LABELS,
-    advance_pipeline_stage,
     create_pipeline,
-    create_saved_chart,
-    create_subset,
     delete_pipeline,
-    delete_saved_chart,
-    delete_subset,
-    fork_pipeline,
-    get_next_stage,
     get_pipeline,
+    get_next_stage,
     get_prev_stage,
     get_subset,
     get_active_run as db_get_active_run,
-    go_back_pipeline_stage,
     list_all_pipelines,
     list_events,
-    list_saved_charts,
     list_subsets,
     record_event,
     set_pipeline_stage,
@@ -56,11 +50,10 @@ from api.deps import CurrentUser, Db
 router = APIRouter(prefix="/api/pipeline", tags=["pipelines"])
 
 
-# ── LLM model catalog (from pipeline/llm_classify.py) ───────────────────────
+# -- LLM model catalog (from pipeline/llm_classify.py) -----------------------
 
 @functools.lru_cache(maxsize=1)
 def _llm_pricing_module():
-    """Load pipeline/llm_pricing.py (no OpenAI dependency) — same source as llm_classify.py."""
     path = settings.pipeline_scripts_dir / "llm_pricing.py"
     if not path.is_file():
         return None
@@ -88,7 +81,6 @@ def _serialize_llm_pricing_table(pricing: dict) -> dict[str, dict]:
 
 @router.get("/llm/model-catalog")
 def llm_model_catalog():
-    """Expose MODEL_PRICING and default MODEL from pipeline/llm_pricing.py for the LLM stage UI."""
     mod = _llm_pricing_module()
     if mod is None:
         raise HTTPException(500, "llm_pricing.py not found")
@@ -114,7 +106,7 @@ def _require_known_llm_model(model: str) -> None:
         raise HTTPException(400, f"Unknown model {model!r}. Choose one of: {ids}")
 
 
-# ── Path helpers ──────────────────────────────────────────────────────────────
+# -- Path helpers -------------------------------------------------------------
 
 def _pipeline_paths(pipeline_id: int) -> dict:
     base = settings.pipelines_base_dir / str(pipeline_id)
@@ -176,11 +168,15 @@ def _tail(path: Path, n: int) -> list[str]:
 
 
 def _load_default_keywords() -> dict:
-    p = settings.pipeline_scripts_dir / "default_keywords.json"
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"groups": []}
+    p = settings.pipeline_scripts_dir / "research_schema.json"
+    if p.exists():
+        schema = json.loads(p.read_text(encoding="utf-8"))
+        return schema.get("keywords", {"groups": []})
+    legacy = settings.pipeline_scripts_dir / "default_keywords.json"
+    return json.loads(legacy.read_text(encoding="utf-8")) if legacy.exists() else {"groups": []}
 
 
-# ── CRUD ──────────────────────────────────────────────────────────────────────
+# -- CRUD ---------------------------------------------------------------------
 
 @router.get("")
 def list_pipelines(user: CurrentUser, db: Db):
@@ -257,25 +253,7 @@ def delete_pipeline_route(pipeline_id: int, user: CurrentUser, db: Db):
     return {"ok": True}
 
 
-# ── Stage navigation ──────────────────────────────────────────────────────────
-
-@router.post("/{pipeline_id}/advance")
-def advance_stage(pipeline_id: int, user: CurrentUser, db: Db):
-    new_stage = advance_pipeline_stage(db, pipeline_id, user["id"])
-    if new_stage is None:
-        raise HTTPException(403, "cannot advance: not owner, or already at last stage")
-    record_event(db, pipeline_id, "stage_advanced", new_stage)
-    return _pipeline_response(get_pipeline(db, pipeline_id, user["id"]))
-
-
-@router.post("/{pipeline_id}/go-back")
-def go_back_stage(pipeline_id: int, user: CurrentUser, db: Db):
-    prev_stage = go_back_pipeline_stage(db, pipeline_id, user["id"])
-    if prev_stage is None:
-        raise HTTPException(403, "cannot go back: not owner, or already at first stage")
-    record_event(db, pipeline_id, "stage_back", prev_stage)
-    return _pipeline_response(get_pipeline(db, pipeline_id, user["id"]))
-
+# -- Tab navigation (lightweight — just remembers last-viewed tab) -----------
 
 class SetStageBody(BaseModel):
     stage: str
@@ -285,27 +263,10 @@ class SetStageBody(BaseModel):
 def set_stage(pipeline_id: int, body: SetStageBody, user: CurrentUser, db: Db):
     if set_pipeline_stage(db, pipeline_id, user["id"], body.stage.strip()) is None:
         raise HTTPException(400, "invalid stage or not owner")
-    record_event(db, pipeline_id, "stage_set", body.stage.strip())
     return _pipeline_response(get_pipeline(db, pipeline_id, user["id"]))
 
 
-class ForkBody(BaseModel):
-    name: str
-
-
-@router.post("/{pipeline_id}/fork", status_code=201)
-def fork_pipeline_route(pipeline_id: int, body: ForkBody, user: CurrentUser, db: Db):
-    if not body.name.strip():
-        raise HTTPException(400, "name is required")
-    try:
-        new_id = fork_pipeline(db, pipeline_id, user["id"], body.name.strip(), settings.pipelines_base_dir)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    record_event(db, new_id, "fork_created", f"forked_from={pipeline_id}")
-    return _pipeline_response(get_pipeline(db, new_id, user["id"]))
-
-
-# ── Status ────────────────────────────────────────────────────────────────────
+# -- Status -------------------------------------------------------------------
 
 @router.get("/{pipeline_id}/status")
 def pipeline_status(pipeline_id: int, user: CurrentUser, db: Db):
@@ -317,7 +278,6 @@ def pipeline_status(pipeline_id: int, user: CurrentUser, db: Db):
 
 @router.get("/run/active")
 def active_run_status(user: CurrentUser, db: Db):
-    """Return system-wide active filter run state for global navbar indicators."""
     active = db_get_active_run(db)
     if not active:
         return {"status": "idle", "run": None, "state": {}, "log_tail": [], "pipeline_id": None}
@@ -341,7 +301,7 @@ def file_count(pipeline_id: int, user: CurrentUser, db: Db):
     return {"total_files": total}
 
 
-# ── Events ────────────────────────────────────────────────────────────────────
+# -- Events -------------------------------------------------------------------
 
 @router.get("/{pipeline_id}/events")
 def pipeline_events(pipeline_id: int, user: CurrentUser, db: Db, limit: int = 200):
@@ -350,7 +310,7 @@ def pipeline_events(pipeline_id: int, user: CurrentUser, db: Db, limit: int = 20
     return list_events(db, pipeline_id, limit=limit)
 
 
-# ── Filter run (polling) ──────────────────────────────────────────────────────
+# -- Filter run ---------------------------------------------------------------
 
 @router.post("/{pipeline_id}/run", status_code=201)
 def start_run(pipeline_id: int, user: CurrentUser, db: Db):
@@ -383,7 +343,7 @@ def stop_run(pipeline_id: int, user: CurrentUser, db: Db):
     return kill_filter_run(db, pipeline_id)
 
 
-# ── Keywords ──────────────────────────────────────────────────────────────────
+# -- Keywords -----------------------------------------------------------------
 
 @router.get("/{pipeline_id}/keywords/json")
 def download_pipeline_keywords(pipeline_id: int, user: CurrentUser, db: Db):
@@ -428,75 +388,7 @@ async def upload_pipeline_keywords(pipeline_id: int, request: Request, user: Cur
     return {"ok": True, "groups": len(groups), "config": p.get("config")}
 
 
-# ── Backfill subgroups ────────────────────────────────────────────────────────
-
-@router.post("/{pipeline_id}/backfill-subgroups")
-def backfill_subgroups(pipeline_id: int, user: CurrentUser, db: Db):
-    p = get_pipeline(db, pipeline_id, user["id"])
-    if not p:
-        raise HTTPException(404, "not found")
-    paths = _pipeline_paths(pipeline_id)
-    db_path = Path(paths["output_db_path"])
-    kw_path = Path(paths["keywords_path"])
-    if not db_path.exists():
-        raise HTTPException(404, "database not found")
-    if not kw_path.exists():
-        raise HTTPException(404, "keywords.json not found")
-    try:
-        groups = json.loads(kw_path.read_text(encoding="utf-8")).get("groups", [])
-    except Exception as exc:
-        raise HTTPException(500, f"cannot read keywords.json: {exc}")
-
-    def _build_map(g: dict) -> dict:
-        return {t: sg["name"] for sg in g.get("subgroups", []) for t in sg.get("terms", [])}
-
-    fuel_map   = _build_map(groups[0]) if len(groups) > 0 else {}
-    impact_map = _build_map(groups[1]) if len(groups) > 1 else {}
-    if not fuel_map and not impact_map:
-        return {"updated": 0, "message": "no subgroups defined in keywords.json"}
-
-    def _compute(terms: list, sg_map: dict) -> list:
-        seen: list = []
-        for t in terms:
-            sg = sg_map.get(t)
-            if sg and sg not in seen:
-                seen.append(sg)
-        return seen
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
-            "SELECT openalex_id, matched_fuel_terms, matched_impact_terms FROM filtered_records "
-            "WHERE matched_fuel_subgroups IS NULL OR matched_fuel_subgroups = '' "
-            "OR matched_fuel_subgroups = '[]'"
-        ).fetchall()
-        updates = []
-        for oid, ft_json, it_json in rows:
-            ft = json.loads(ft_json or "[]") if ft_json else []
-            it = json.loads(it_json or "[]") if it_json else []
-            updates.append((
-                json.dumps(_compute(ft, fuel_map), ensure_ascii=False),
-                json.dumps(_compute(it, impact_map), ensure_ascii=False),
-                oid,
-            ))
-        if updates:
-            conn.executemany(
-                "UPDATE filtered_records SET matched_fuel_subgroups=?, matched_impact_subgroups=? WHERE openalex_id=?",
-                updates,
-            )
-            conn.commit()
-        conn.close()
-        return {"updated": len(updates)}
-    except Exception as exc:
-        raise HTTPException(500, str(exc))
-
-
-# ── Subsets ───────────────────────────────────────────────────────────────────
-
-class SubsetBody(BaseModel):
-    name: str
-    sql_query: str
-
+# -- Subsets (preset-only, read + summary) ------------------------------------
 
 @router.get("/{pipeline_id}/subsets")
 def get_subsets(pipeline_id: int, user: CurrentUser, db: Db):
@@ -505,71 +397,8 @@ def get_subsets(pipeline_id: int, user: CurrentUser, db: Db):
     return list_subsets(db, pipeline_id)
 
 
-@router.post("/{pipeline_id}/subsets", status_code=201)
-def add_subset(pipeline_id: int, body: SubsetBody, user: CurrentUser, db: Db):
-    raise HTTPException(
-        403,
-        "Creating custom subsets is disabled. This pipeline uses fixed preset subsets only.",
-    )
-
-
-@router.delete("/{pipeline_id}/subsets/{subset_id}")
-def remove_subset(pipeline_id: int, subset_id: int, user: CurrentUser, db: Db):
-    if not get_pipeline(db, pipeline_id, user["id"]):
-        raise HTTPException(404, "not found")
-    sub = get_subset(db, pipeline_id, subset_id)
-    if not sub:
-        raise HTTPException(404, "subset not found")
-    if sub.get("preset_key"):
-        raise HTTPException(403, "preset subsets cannot be deleted")
-    if not delete_subset(db, pipeline_id, subset_id):
-        raise HTTPException(404, "subset not found")
-    return {"ok": True}
-
-
-@router.get("/{pipeline_id}/subsets/{subset_id}/export-ids")
-def export_subset_openalex_ids(
-    pipeline_id: int,
-    subset_id: int,
-    user: CurrentUser,
-    db: Db,
-    limit: int = 100_000,
-):
-    """Download CSV of openalex_id values in a subset (capped)."""
-    p = get_pipeline(db, pipeline_id, user["id"])
-    if not p:
-        raise HTTPException(404, "not found")
-    db_path_str = p.get("output_db_path")
-    if not db_path_str:
-        raise HTTPException(404, "pipeline has no database yet")
-    db_path = Path(db_path_str)
-    if not db_path.exists():
-        raise HTTPException(404, "database file not found")
-    sub = get_subset(db, pipeline_id, subset_id)
-    if not sub:
-        raise HTTPException(404, "subset not found")
-    try:
-        it = iter_subset_openalex_csv(db_path, sub["sql_query"], limit)
-        first = next(it)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    def gen():
-        yield first
-        yield from it
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="subset_{subset_id}_openalex_ids.csv"',
-        },
-    )
-
-
 @router.get("/{pipeline_id}/subsets/summary")
 def subsets_summary(pipeline_id: int, user: CurrentUser, db: Db):
-    """Subsets with live row counts and total dataset size from the research DB."""
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
@@ -578,8 +407,7 @@ def subsets_summary(pipeline_id: int, user: CurrentUser, db: Db):
         ensure_preset_subsets(db, pipeline_id, rp)
     except Exception:
         pass
-    db_path_str = p.get("output_db_path")
-    path = Path(db_path_str) if db_path_str else None
+    path = rp
     dataset_total = None
     if path and path.exists():
         st = get_db_stats(path)
@@ -596,52 +424,7 @@ def subsets_summary(pipeline_id: int, user: CurrentUser, db: Db):
     return {"dataset_total": dataset_total, "subsets": enriched}
 
 
-# ── Saved charts (dynamic chart configs) ───────────────────────────────────────
-
-class SavedChartBody(BaseModel):
-    name: str
-    config: dict
-
-
-@router.get("/{pipeline_id}/saved-charts")
-def list_saved_charts_route(pipeline_id: int, user: CurrentUser, db: Db):
-    if not get_pipeline(db, pipeline_id, user["id"]):
-        raise HTTPException(404, "not found")
-    rows = list_saved_charts(db, pipeline_id, user["id"])
-    out = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["config"] = json.loads(d.get("config_json") or "{}")
-        except json.JSONDecodeError:
-            d["config"] = {}
-        del d["config_json"]
-        out.append(d)
-    return out
-
-
-@router.post("/{pipeline_id}/saved-charts", status_code=201)
-def create_saved_chart_route(pipeline_id: int, body: SavedChartBody, user: CurrentUser, db: Db):
-    if not get_pipeline(db, pipeline_id, user["id"]):
-        raise HTTPException(404, "not found")
-    name = (body.name or "").strip()
-    if not name:
-        raise HTTPException(400, "name is required")
-    row = create_saved_chart(db, pipeline_id, user["id"], name, json.dumps(body.config, ensure_ascii=False))
-    row["config"] = json.loads(row.pop("config_json") or "{}")
-    return row
-
-
-@router.delete("/{pipeline_id}/saved-charts/{chart_id}")
-def delete_saved_chart_route(pipeline_id: int, chart_id: int, user: CurrentUser, db: Db):
-    if not get_pipeline(db, pipeline_id, user["id"]):
-        raise HTTPException(404, "not found")
-    if not delete_saved_chart(db, pipeline_id, chart_id, user["id"]):
-        raise HTTPException(404, "saved chart not found")
-    return {"ok": True}
-
-
-# ── Logs ──────────────────────────────────────────────────────────────────────
+# -- Logs ---------------------------------------------------------------------
 
 @router.get("/{pipeline_id}/logs")
 def pipeline_logs(pipeline_id: int, user: CurrentUser, db: Db, lines: int = 200):
@@ -657,7 +440,7 @@ def pipeline_logs(pipeline_id: int, user: CurrentUser, db: Db, lines: int = 200)
     return {"lines": _tail(log_path, lines)}
 
 
-# ── LLM classification ────────────────────────────────────────────────────────
+# -- LLM classification -------------------------------------------------------
 
 def _llm_classify_cmd(pipeline_id: int) -> list[str]:
     p_base = settings.pipelines_base_dir / str(pipeline_id)
@@ -667,19 +450,25 @@ def _llm_classify_cmd(pipeline_id: int) -> list[str]:
     return [sys.executable, str(script), "--db", str(db_path), "--batch-dir", str(batch_dir)]
 
 
-def _run_llm_cmd(args: list[str], pipeline_dir: Path) -> tuple[int, str]:
-    """Run a command, return (returncode, combined stdout+stderr)."""
+def _run_llm_cmd(
+    args: list[str],
+    pipeline_dir: Path,
+    *,
+    timeout_sec: int | None = 120,
+) -> tuple[int, str]:
     try:
         result = subprocess.run(
             args,
             capture_output=True,
             text=True,
             cwd=str(pipeline_dir),
-            timeout=120,
+            timeout=timeout_sec,
         )
         return result.returncode, (result.stdout or "") + (result.stderr or "")
     except subprocess.TimeoutExpired:
-        return -1, "Command timed out after 120 seconds"
+        if timeout_sec is None:
+            return -1, "Command timed out (unexpected: no timeout was set)"
+        return -1, f"Command timed out after {timeout_sec} seconds"
     except Exception as exc:
         return -1, str(exc)
 
@@ -700,68 +489,61 @@ def _save_batch_state(pipeline_id: int, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2))
 
 
-def _merge_batch_subset_meta(db: sqlite3.Connection, pipeline_id: int, subset_id: int | None) -> None:
-    """Annotate batch state with which preset subset was used (for UI)."""
-    state = _load_batch_state(pipeline_id) or {}
-    if subset_id is not None:
-        sub = get_subset(db, pipeline_id, subset_id)
-        if sub:
-            state["subset_id"] = subset_id
-            state["subset_name"] = sub.get("name") or f"Subset #{subset_id}"
-        else:
-            state["subset_id"] = subset_id
-            state["subset_name"] = None
-    else:
-        state["subset_id"] = None
-        state["subset_name"] = "Entire dataset (unprocessed records)"
-    _save_batch_state(pipeline_id, state)
+def _collect_progress_path(pipeline_id: int) -> Path:
+    return settings.pipelines_base_dir / str(pipeline_id) / "batch_runs" / "collect_progress.json"
 
 
-def _resolve_llm_subset_inner_sql(db, pipeline_id: int, subset_id: int | None) -> str | None:
-    """Return normalized inner SQL for llm_classify --subset-sql, or None for the full filtered_records table."""
+def _finalize_collect_subprocess(pipeline_id: int, rc: int, out: str) -> None:
+    path = _collect_progress_path(pipeline_id)
+    cur: dict = {}
+    if path.exists():
+        try:
+            cur = json.loads(path.read_text())
+        except Exception:
+            cur = {}
+    cur["returncode"] = rc
+    cur["stdout"] = (out or "")[-120_000:]
+    cur["finished_at"] = datetime.now(timezone.utc).isoformat()
+    if rc != 0:
+        cur["status"] = "error"
+        cur["phase"] = "failed"
+        if not cur.get("message"):
+            cur["message"] = (out or "")[:2000]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cur, indent=2), encoding="utf-8")
+    if rc == 0:
+        try:
+            with get_db() as db:
+                record_event(db, pipeline_id, "llm_collected")
+        except Exception:
+            pass
+
+
+def _resolve_llm_subset_sql(db, pipeline_id: int, subset_id: int | None) -> str | None:
+    """Return inner SQL for llm_classify --subset-sql, or None for the full table."""
     if subset_id is None:
         return None
     sub = get_subset(db, pipeline_id, subset_id)
     if not sub:
         raise HTTPException(404, "subset not found")
-    inner = normalize_subset_inner(sub["sql_query"])
-    err = validate_subset_inner(inner)
-    if err:
-        raise HTTPException(400, f"Subset cannot be used for LLM batch: {err}")
-    return inner
+    return sub["sql_query"].strip().rstrip(";")
 
 
 def _effective_llm_batch_limit(requested: int | None) -> int | None:
-    """Explicit client limit wins; otherwise optional server default (caps batch size when set)."""
     if requested is not None:
         return requested
     return settings.llm_batch_default_limit
 
 
 def _llm_scope_stats(db_path: Path, inner_sql: str | None) -> dict:
-    """
-    Row counts for the same scope llm_classify uses: total rows, LLM finished, still pending (NULL llm_is_hydrocarbon).
-    """
     if not db_path.is_file():
-        return {
-            "db_exists": False,
-            "total": 0,
-            "llm_done": 0,
-            "llm_pending": 0,
-            "has_llm_column": False,
-        }
+        return {"db_exists": False, "total": 0, "llm_done": 0, "llm_pending": 0, "has_llm_column": False}
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         try:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
         except sqlite3.OperationalError:
-            return {
-                "db_exists": True,
-                "total": 0,
-                "llm_done": 0,
-                "llm_pending": 0,
-                "has_llm_column": False,
-            }
+            return {"db_exists": True, "total": 0, "llm_done": 0, "llm_pending": 0, "has_llm_column": False}
         has_llm = "llm_is_hydrocarbon" in cols
         if inner_sql:
             clean_subset = inner_sql.strip().rstrip(";")
@@ -771,20 +553,11 @@ def _llm_scope_stats(db_path: Path, inner_sql: str | None) -> dict:
             cte = ""
             frm = "filtered_records"
         total = conn.execute(f"{cte}SELECT COUNT(*) FROM {frm}").fetchone()[0]
-        if has_llm:
-            done = conn.execute(
-                f"{cte}SELECT COUNT(*) FROM {frm} WHERE llm_is_hydrocarbon IS NOT NULL"
-            ).fetchone()[0]
-        else:
-            done = 0
+        done = conn.execute(
+            f"{cte}SELECT COUNT(*) FROM {frm} WHERE llm_is_hydrocarbon IS NOT NULL"
+        ).fetchone()[0] if has_llm else 0
         pending = max(0, total - done)
-        return {
-            "db_exists": True,
-            "total": int(total),
-            "llm_done": int(done),
-            "llm_pending": int(pending),
-            "has_llm_column": has_llm,
-        }
+        return {"db_exists": True, "total": int(total), "llm_done": int(done), "llm_pending": int(pending), "has_llm_column": has_llm}
     finally:
         conn.close()
 
@@ -801,7 +574,7 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
     if not p:
         raise HTTPException(404, "not found")
     _require_known_llm_model(body.model)
-    inner = _resolve_llm_subset_inner_sql(db, pipeline_id, body.subset_id)
+    inner = _resolve_llm_subset_sql(db, pipeline_id, body.subset_id)
     cmd = _llm_classify_cmd(pipeline_id) + ["estimate", "--model", body.model]
     if inner:
         cmd += ["--subset-sql", inner]
@@ -821,20 +594,14 @@ class LlmSubmitBody(BaseModel):
 
 
 @router.get("/{pipeline_id}/llm/stats")
-def llm_stats(
-    pipeline_id: int,
-    user: CurrentUser,
-    db: Db,
-    subset_id: int | None = Query(default=None),
-):
-    """Counts for the chosen subset scope (same as estimate/batch): total, LLM done, still to process."""
+def llm_stats(pipeline_id: int, user: CurrentUser, db: Db, subset_id: int | None = Query(default=None)):
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
     db_path = Path(p["output_db_path"]) if p.get("output_db_path") else None
     if not db_path:
         raise HTTPException(400, "pipeline has no research database path")
-    inner = _resolve_llm_subset_inner_sql(db, pipeline_id, subset_id)
+    inner = _resolve_llm_subset_sql(db, pipeline_id, subset_id)
     stats = _llm_scope_stats(db_path, inner)
     eff = _effective_llm_batch_limit(None)
     return {**stats, "effective_default_limit": eff}
@@ -850,38 +617,37 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
     _require_known_llm_model(body.model)
-    inner = _resolve_llm_subset_inner_sql(db, pipeline_id, body.subset_id)
-    # Prepare JSONL with the same model the user selected (batch body embeds model id).
+    inner = _resolve_llm_subset_sql(db, pipeline_id, body.subset_id)
     cmd = _llm_classify_cmd(pipeline_id) + ["prepare", "--model", body.model]
     if inner:
         cmd += ["--subset-sql", inner]
     eff_limit = _effective_llm_batch_limit(body.limit)
     if eff_limit:
         cmd += ["--limit", str(eff_limit)]
-    # Only prepare + submit, don't poll (that's the frontend's job via /llm/status)
     rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
     if rc != 0:
         raise HTTPException(500, out[:2000])
-    _merge_batch_subset_meta(db, pipeline_id, body.subset_id)
-    st0 = _load_batch_state(pipeline_id) or {}
-    st0["effective_batch_limit"] = eff_limit
-    _save_batch_state(pipeline_id, st0)
+    state = _load_batch_state(pipeline_id) or {}
+    if body.subset_id is not None:
+        sub = get_subset(db, pipeline_id, body.subset_id)
+        state["subset_id"] = body.subset_id
+        state["subset_name"] = sub.get("name") if sub else None
+    else:
+        state["subset_id"] = None
+        state["subset_name"] = "Entire dataset (unprocessed records)"
+    state["effective_batch_limit"] = eff_limit
+    _save_batch_state(pipeline_id, state)
     cmd2 = _llm_classify_cmd(pipeline_id) + ["submit"]
     rc2, out2 = _run_llm_cmd(cmd2, settings.pipeline_scripts_dir)
     if rc2 != 0:
         raise HTTPException(500, out2[:2000])
     record_event(db, pipeline_id, "llm_submitted")
     state = _load_batch_state(pipeline_id) or {}
-    return {
-        "ok": True,
-        "batch_id": state.get("batch_id"),
-        "output": out2,
-        "effective_batch_limit": eff_limit,
-    }
+    return {"ok": True, "batch_id": state.get("batch_id"), "output": out2, "effective_batch_limit": eff_limit}
 
 
 _TERMINAL_STATUSES = {"completed", "failed", "expired", "cancelled"}
-_STATUS_STALE_SECS = 300  # 5 minutes
+_STATUS_STALE_SECS = 300
 
 
 @router.get("/{pipeline_id}/llm/status")
@@ -892,15 +658,10 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
     state = _load_batch_state(pipeline_id)
     if not state:
         return {"status": "not_started", "batch_id": None}
-
     batch_id = state.get("batch_id")
     current_status = state.get("status", "")
-
-    # Terminal — return cached
     if current_status in _TERMINAL_STATUSES:
         return state
-
-    # Non-terminal — check staleness
     last_checked = state.get("checked_at")
     stale = True
     if last_checked:
@@ -909,11 +670,8 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
             stale = age > _STATUS_STALE_SECS
         except Exception:
             stale = True
-
     if not stale:
         return state
-
-    # Refresh from OpenAI
     if not batch_id:
         return state
     if not os.environ.get("OPENAI_API_KEY"):
@@ -941,6 +699,20 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
         raise HTTPException(500, str(exc))
 
 
+@router.get("/{pipeline_id}/llm/collect_status")
+def llm_collect_status(pipeline_id: int, user: CurrentUser, db: Db):
+    p = get_pipeline(db, pipeline_id, user["id"])
+    if not p:
+        raise HTTPException(404, "not found")
+    path = _collect_progress_path(pipeline_id)
+    if not path.exists():
+        return {"status": "idle"}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {"status": "error", "message": "Could not read collect progress file"}
+
+
 @router.post("/{pipeline_id}/llm/collect")
 def llm_collect(pipeline_id: int, user: CurrentUser, db: Db):
     p = get_pipeline(db, pipeline_id, user["id"])
@@ -950,12 +722,31 @@ def llm_collect(pipeline_id: int, user: CurrentUser, db: Db):
         raise HTTPException(403, "not owner")
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
-    cmd = _llm_classify_cmd(pipeline_id) + ["save"]
-    rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
-    if rc != 0:
-        raise HTTPException(500, out[:2000])
-    record_event(db, pipeline_id, "llm_collected")
-    return {"ok": True, "output": out}
+    progress_path = _collect_progress_path(pipeline_id)
+    if progress_path.exists():
+        try:
+            prior = json.loads(progress_path.read_text())
+            if prior.get("status") == "running":
+                raise HTTPException(409, "Collect is already running.")
+        except json.JSONDecodeError:
+            pass
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    progress_path.write_text(json.dumps({
+        "status": "running", "phase": "queued",
+        "message": "Starting collect job...",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }, indent=2), encoding="utf-8")
+
+    def _worker() -> None:
+        cmd = _llm_classify_cmd(pipeline_id) + ["save"]
+        rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir, timeout_sec=None)
+        try:
+            _finalize_collect_subprocess(pipeline_id, rc, out)
+        except Exception:
+            pass
+
+    threading.Thread(target=_worker, name=f"llm-collect-{pipeline_id}", daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 @router.post("/{pipeline_id}/llm/cancel")

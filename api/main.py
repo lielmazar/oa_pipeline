@@ -45,7 +45,6 @@ from api.routers.auth      import router as auth_router
 from api.routers.system    import router as system_router
 from api.routers.pipelines import router as pipelines_router
 from api.routers.data      import router as data_router
-from api.routers.charts    import router as charts_router
 from api.routers.export    import router as export_router
 from api.routers.qa        import router as qa_router
 
@@ -53,7 +52,6 @@ app.include_router(auth_router)
 app.include_router(system_router)
 app.include_router(pipelines_router)
 app.include_router(data_router)
-app.include_router(charts_router)
 app.include_router(export_router)
 app.include_router(qa_router)
 

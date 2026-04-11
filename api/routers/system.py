@@ -28,6 +28,10 @@ def _kw_path() -> Path:
 
 
 def _load_default_keywords() -> dict:
+    schema_path = settings.pipeline_scripts_dir / "research_schema.json"
+    if schema_path.exists():
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        return schema.get("keywords", {"groups": []})
     p = _kw_path()
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"groups": []}
 

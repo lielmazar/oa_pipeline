@@ -107,21 +107,10 @@ export default function App() {
   const openRunningPipeline = useCallback(async () => {
     const pipelineId = filterRunMeta?.pipelineId;
     if (!pipelineId) return;
-
     try {
-      let pipeline = null;
-      const currentRes = await apiFetch(`/api/pipeline/${pipelineId}`);
-      if (!currentRes.ok) return;
-      pipeline = await currentRes.json();
-
-      if (pipeline.current_stage !== 'openalex_search') {
-        const setStageRes = await apiFetch(`/api/pipeline/${pipelineId}/set-stage`, {
-          method: 'POST',
-          body: JSON.stringify({ stage: 'openalex_search' }),
-        });
-        if (setStageRes.ok) pipeline = await setStageRes.json();
-      }
-
+      const res = await apiFetch(`/api/pipeline/${pipelineId}`);
+      if (!res.ok) return;
+      const pipeline = await res.json();
       setActivePipeline(pipeline);
       setView('pipeline');
     } catch {}

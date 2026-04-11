@@ -1,0 +1,400 @@
+{
+  "research": {
+    "title": "Sustainable Fuels Literature Review",
+    "description": "Systematic review of the OpenAlex academic corpus focusing on sustainable fuels, their environmental impact, combustion properties, and the application of machine learning in fuel research. The pipeline filters works by keyword co-occurrence (fuel + impact terms), classifies them via OpenAI Batch API, and supports inter-rater QA."
+  },
+
+  "keywords": {
+    "groups": [
+      {
+        "name": "Fuel Terms",
+        "subgroups": [
+          {
+            "name": "Diesel & HVO",
+            "terms": [
+              "diesel", "petrodiesel", "biodiesel", "biodiesel blend", "diesel blend",
+              "renewable diesel", "Fischer-Tropsch diesel", "FT diesel", "HVO",
+              "hydrotreated vegetable oil", "FAME", "fatty acid methyl ester", "HEFA",
+              "Hydroprocessed Esters and Fatty Acids", "hydroprocessed esters", "gas oil",
+              "palm oil methyl ester", "rapeseed methyl ester", "soybean methyl ester",
+              "tallow", "animal fat", "waste cooking oil", "used cooking oil", "UCO",
+              "jatropha", "EN 590", "EN 14214", "ASTM D975"
+            ]
+          },
+          {
+            "name": "Gasoline",
+            "terms": [
+              "gasoline", "ethanol blend", "naphtha", "EN 228", "E10", "E85",
+              "ethanol fuel", "methanol fuel", "flex fuel", "RON", "MON", "anti-knock"
+            ]
+          },
+          {
+            "name": "Jet Fuels & SAF",
+            "terms": [
+              "sustainable aviation fuel", "jet fuel", "jet a1", "jet a-1",
+              "bio-jet fuel", "bio-aviation fuel", "renewable jet fuel", "kerosene",
+              "jp-8", "jp 8", "ASTM D7566", "ASTM D1655", "def stan 91-091",
+              "ATJ", "HEFA-SPK", "FT-SPK", "SIP fuel", "neat SAF"
+            ]
+          },
+          {
+            "name": "Marine Fuels",
+            "terms": [
+              "marine fuel", "marine diesel", "bunker fuel", "HFO", "heavy fuel oil",
+              "VLSFO", "very low sulphur fuel oil", "MDO", "marine gas oil",
+              "IMO 2020", "MARPOL Annex VI"
+            ]
+          },
+          {
+            "name": "Feedstocks and Processes",
+            "terms": [
+              "biofuel", "advanced biofuel", "cellulosic biofuel", "algae fuel",
+              "microalgae fuel", "pyrolysis oil", "bio-oil", "bio-crude",
+              "hydrothermal liquefaction", "HTL fuel", "biomass-to-liquid", "BtL",
+              "power-to-liquid", "paraffinic fuel", "Fischer-Tropsch fuel", "FT fuel",
+              "hydroprocessed fuel", "co-processed fuel", "co-processing",
+              "gas-to-liquid", "GTL", "vegetable oil", "e-fuel"
+            ]
+          },
+          {
+            "name": "Other Fuels (general)",
+            "is_others": true,
+            "terms": [
+              "sustainable fuel", "synthetic fuel", "green fuel", "drop-in fuel",
+              "renewable fuel", "alternative fuel", "second generation fuel",
+              "second-generation fuel", "fuel blend"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Impact Terms",
+        "subgroups": [
+          {
+            "name": "GHG & Carbon",
+            "terms": [
+              "GHG", "CO2", "greenhouse gas", "carbon intensity", "carbon footprint"
+            ]
+          },
+          {
+            "name": "Regulated Pollutants",
+            "terms": [
+              "NOx", "SOx", "carbon monoxide", "CO emissions", "soot",
+              "particulate matter", "PM2.5", "PM10", "black carbon",
+              "smoke opacity", "smoke number", "unburned hydrocarbons", "HC emissions"
+            ]
+          },
+          {
+            "name": "Exhaust & Tailpipe",
+            "terms": [
+              "exhaust emissions", "tailpipe emissions", "emissions"
+            ]
+          },
+          {
+            "name": "Fuel Properties",
+            "terms": [
+              "cetane number", "cetane index", "octane number", "flash point",
+              "cloud point", "pour point", "cold filter plugging point", "CFPP",
+              "viscosity", "kinematic viscosity", "density", "calorific value",
+              "heating value", "lower heating value", "higher heating value",
+              "volatility", "distillation curve", "boiling point", "lubricity",
+              "oxidation stability", "cold flow", "freezing point", "thermal stability",
+              "storage stability", "energy density", "Chemometrics"
+            ]
+          },
+          {
+            "name": "Engine Performance",
+            "terms": [
+              "thermal efficiency", "brake thermal efficiency", "BTE",
+              "specific fuel consumption", "BSFC", "combustion efficiency",
+              "engine performance", "brake power", "torque", "power output",
+              "injection pressure", "spray characteristics"
+            ]
+          },
+          {
+            "name": "Combustion Phenomena",
+            "terms": [
+              "ignition delay", "heat release rate", "cylinder pressure",
+              "combustion characteristics", "combustion duration",
+              "flame temperature", "auto-ignition"
+            ]
+          },
+          {
+            "name": "Life Cycle",
+            "terms": [
+              "lifecycle", "life cycle", "well-to-wheel", "well-to-wake",
+              "well-to-tank", "tank-to-wheel", "LCA", "life cycle assessment"
+            ]
+          },
+          {
+            "name": "Default",
+            "is_others": true,
+            "terms": []
+          }
+        ]
+      }
+    ]
+  },
+
+  "subsets": [
+    {
+      "key": "all",
+      "name": "All filtered records",
+      "sql": "SELECT * FROM filtered_records"
+    },
+    {
+      "key": "oa",
+      "name": "Open access",
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1"
+    },
+    {
+      "key": "oa_llm",
+      "name": "Open access + LLM classified",
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND llm_is_hydrocarbon IS NOT NULL",
+      "requires_columns": ["llm_is_hydrocarbon"]
+    },
+    {
+      "key": "oa_llm_hc",
+      "name": "Open access + hydrocarbon",
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND llm_is_hydrocarbon = 1",
+      "requires_columns": ["llm_is_hydrocarbon"]
+    },
+    {
+      "key": "oa_llm_hc_ml",
+      "name": "Open access + hydrocarbon + ML",
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND llm_is_hydrocarbon = 1 AND EXISTS (SELECT 1 FROM json_each(llm_ml_role) j WHERE j.value IS NOT NULL AND TRIM(CAST(j.value AS TEXT)) != '' AND LOWER(CAST(j.value AS TEXT)) NOT IN ('none'))",
+      "requires_columns": ["llm_is_hydrocarbon", "llm_ml_role"]
+    }
+  ],
+
+  "charts": {
+    "search": [
+      {
+        "id": "publications_by_year",
+        "title": "Publications by Year",
+        "renderer": "bar",
+        "x_key": "year",
+        "y_key": "count",
+        "params": ["cutoff_year"],
+        "sql_template": "SELECT CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} THEN 'Unknown/≤{cutoff_year}' ELSE CAST(publication_year AS TEXT) END AS year, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY MIN(CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} THEN 0 ELSE publication_year END)"
+      },
+      {
+        "id": "top_countries",
+        "title": "Top Contributing Countries",
+        "renderer": "hbar",
+        "x_key": "country",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT value AS country, COUNT(*) AS count FROM filtered_records, json_each(authors_countries) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "top_journals",
+        "title": "Top Journals / Sources",
+        "renderer": "hbar",
+        "x_key": "journal",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT primary_location_source_display_name AS journal, COUNT(*) AS count FROM filtered_records WHERE primary_location_source_display_name IS NOT NULL GROUP BY journal ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "oa_status",
+        "title": "Open Access Status",
+        "renderer": "pie",
+        "x_key": "status",
+        "y_key": "count",
+        "sql_template": "SELECT COALESCE(open_access_oa_status, 'unknown') AS status, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY count DESC"
+      },
+      {
+        "id": "work_types",
+        "title": "Work Types",
+        "renderer": "bar",
+        "x_key": "type",
+        "y_key": "count",
+        "sql_template": "SELECT COALESCE(type, 'unknown') AS type, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY count DESC LIMIT 10"
+      },
+      {
+        "id": "top_institutions",
+        "title": "Top Institutions",
+        "renderer": "hbar",
+        "x_key": "institution",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT value AS institution, COUNT(*) AS count FROM filtered_records, json_each(authors_institutions) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      }
+    ],
+    "llm": [
+      {
+        "id": "llm_scope",
+        "title": "Fuel Classification (LLM)",
+        "renderer": "hbar",
+        "x_key": "fuel_type",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT value AS fuel_type, COUNT(*) AS count FROM filtered_records, json_each(llm_fuel_classification) WHERE value IS NOT NULL AND value != '' GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "llm_ml_role",
+        "title": "ML/AI Functional Role (LLM)",
+        "renderer": "hbar",
+        "x_key": "role",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT value AS role, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_role) WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "llm_ml_algorithm",
+        "title": "ML/AI Algorithm Family (LLM)",
+        "renderer": "hbar",
+        "x_key": "algorithm",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT value AS algorithm, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_algorithm) WHERE value IS NOT NULL AND value != '' AND LOWER(value) NOT IN ('none', 'other_ml') GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "llm_ml_usage",
+        "title": "ML/AI Usage Rate (LLM)",
+        "renderer": "pie",
+        "x_key": "uses_ml",
+        "y_key": "count",
+        "sql_template": "SELECT CASE WHEN llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS uses_ml, COUNT(*) AS count FROM filtered_records GROUP BY 1"
+      },
+      {
+        "id": "llm_value_chain",
+        "title": "Value-Chain Position (LLM)",
+        "renderer": "hbar",
+        "x_key": "stage",
+        "y_key": "count",
+        "params": ["top_n"],
+        "sql_template": "SELECT value AS stage, COUNT(*) AS count FROM filtered_records, json_each(llm_scope) WHERE value IS NOT NULL AND value != '' AND LOWER(value) != 'none' GROUP BY value ORDER BY count DESC LIMIT {top_n}"
+      },
+      {
+        "id": "llm_ml_datasource",
+        "title": "ML Data Source Distribution (LLM)",
+        "renderer": "pie",
+        "x_key": "source",
+        "y_key": "count",
+        "sql_template": "SELECT CASE WHEN llm_ml_data_source IS NULL OR llm_ml_data_source IN ('', 'none', 'null') THEN 'none' ELSE llm_ml_data_source END AS source, COUNT(*) AS count FROM filtered_records WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' GROUP BY 1 ORDER BY count DESC"
+      },
+      {
+        "id": "fuelclass_x_mlrole",
+        "title": "Fuel Classification × ML Role",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT f.value AS x_label, r.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_role) r WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL AND LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL GROUP BY f.value, r.value"
+      },
+      {
+        "id": "mlrole_x_algorithm",
+        "title": "ML Role × Algorithm Family",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT r.value AS x_label, a.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a WHERE LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL AND LOWER(a.value) NOT IN ('none', 'other_ml', '') AND a.value IS NOT NULL GROUP BY r.value, a.value"
+      },
+      {
+        "id": "fuelclass_x_algorithm",
+        "title": "Fuel Classification × Algorithm Family",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT f.value AS x_label, a.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f, json_each(llm_ml_algorithm) a WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL AND LOWER(a.value) NOT IN ('none', 'other_ml', '') AND a.value IS NOT NULL GROUP BY f.value, a.value"
+      },
+      {
+        "id": "fuelclass_x_datasource",
+        "title": "Fuel Classification × ML Data Source",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT f.value AS x_label, CASE WHEN llm_ml_data_source IS NULL OR llm_ml_data_source IN ('', 'none', 'null') THEN 'none' ELSE llm_ml_data_source END AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_fuel_classification) f WHERE LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL AND llm_ml_data_source IS NOT NULL AND LOWER(llm_ml_data_source) NOT IN ('none', '', 'null') GROUP BY f.value, y_label"
+      },
+      {
+        "id": "scope_x_mlrole",
+        "title": "Value-Chain Scope × ML Role",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT s.value AS x_label, r.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_scope) s, json_each(llm_ml_role) r WHERE LOWER(s.value) NOT IN ('none', '') AND s.value IS NOT NULL AND LOWER(r.value) NOT IN ('none', '') AND r.value IS NOT NULL GROUP BY s.value, r.value"
+      },
+      {
+        "id": "scope_x_fuelclass",
+        "title": "Value-Chain Scope × Fuel Classification",
+        "renderer": "heatmap",
+        "x_key": "x_label",
+        "y_key": "y_label",
+        "sql_template": "SELECT s.value AS x_label, f.value AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_scope) s, json_each(llm_fuel_classification) f WHERE LOWER(s.value) NOT IN ('none', '') AND s.value IS NOT NULL AND LOWER(f.value) NOT IN ('none', '') AND f.value IS NOT NULL GROUP BY s.value, f.value"
+      },
+      {
+        "id": "fuel_impact_model_cooccurrence",
+        "title": "Fuel × Impact × Model Type Co-occurrence",
+        "renderer": "cooccurrence_3d",
+        "x_key": "fuel_subgroup",
+        "y_key": "impact_subgroup",
+        "sql_template": "SELECT DISTINCT openalex_id, REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup, json_extract(m.value, '$.type') AS model_type, json_extract(m.value, '$.name') AS model_name FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg, json_each(llm_models) m WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_models IS NOT NULL AND llm_models != '[]' AND llm_models != 'null' AND json_valid(llm_models) AND json_extract(m.value, '$.type') IS NOT NULL"
+      },
+      {
+        "id": "fuel_subgroup_ml_cooccurrence",
+        "title": "Fuel Subgroup × Impact Subgroup (ML/AI Papers Only)",
+        "renderer": "cooccurrence_3d_bar",
+        "x_key": "fuel_subgroup",
+        "y_key": "openalex_id",
+        "sql_template": "SELECT DISTINCT openalex_id, REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS fuel_subgroup, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS impact_subgroup FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%'"
+      }
+    ]
+  },
+
+  "columns": {
+    "openalex_id":            {"type": "TEXT",    "source": "openalex",       "description": "Unique OpenAlex work identifier (e.g. W1234567890), used as primary key"},
+    "doi":                    {"type": "TEXT",    "source": "openalex",       "description": "Digital Object Identifier for the work"},
+    "title":                  {"type": "TEXT",    "source": "openalex",       "description": "Title of the academic work"},
+    "is_oa":                  {"type": "INTEGER", "source": "openalex",       "description": "Whether the work is open access (1=yes, 0=no)"},
+    "abstract_text":          {"type": "TEXT",    "source": "openalex",       "description": "Reconstructed abstract text from OpenAlex inverted index"},
+    "publication_year":       {"type": "INTEGER", "source": "openalex",       "description": "Year the work was published"},
+    "publication_date":       {"type": "TEXT",    "source": "openalex",       "description": "Full publication date as ISO string"},
+    "fwci":                   {"type": "REAL",    "source": "openalex",       "description": "Field-Weighted Citation Impact score"},
+    "language":               {"type": "TEXT",    "source": "openalex",       "description": "Language of the work (always 'en' due to pre-filter)"},
+    "type":                   {"type": "TEXT",    "source": "openalex",       "description": "Work type (article, review, book-chapter, etc.)"},
+    "open_access_is_oa":      {"type": "INTEGER", "source": "openalex",       "description": "OpenAlex open-access flag"},
+    "open_access_any_repository_has_fulltext": {"type": "INTEGER", "source": "openalex", "description": "Whether any repository hosts the full text"},
+    "open_access_oa_status":  {"type": "TEXT",    "source": "openalex",       "description": "OA status: gold, green, hybrid, bronze, closed"},
+    "open_access_oa_url":     {"type": "TEXT",    "source": "openalex",       "description": "Best open-access URL for the work"},
+    "primary_location_is_oa": {"type": "INTEGER", "source": "openalex",       "description": "Whether the primary location is open access"},
+    "primary_location_landing_page_url": {"type": "TEXT", "source": "openalex", "description": "Landing page URL at the primary source"},
+    "primary_location_license": {"type": "TEXT",  "source": "openalex",       "description": "License at the primary location (e.g. cc-by)"},
+    "primary_location_source_display_name": {"type": "TEXT", "source": "openalex", "description": "Journal or source name where the work is published"},
+    "primary_location_source_host_organization_name": {"type": "TEXT", "source": "openalex", "description": "Publisher or host organization name"},
+    "primary_location_source_type": {"type": "TEXT", "source": "openalex",    "description": "Source type: journal, repository, conference, etc."},
+    "has_fulltext":           {"type": "INTEGER", "source": "openalex",       "description": "Whether OpenAlex has indexed the full text"},
+    "fulltext_origin":        {"type": "TEXT",    "source": "openalex",       "description": "Origin of the full-text content"},
+    "best_oa_location_license": {"type": "TEXT",  "source": "openalex",       "description": "License at the best open-access location"},
+    "best_oa_location_pdf_url": {"type": "TEXT",  "source": "openalex",       "description": "Direct PDF URL at the best OA location"},
+    "best_oa_location_version": {"type": "TEXT",  "source": "openalex",       "description": "Version at the best OA location (publishedVersion, acceptedVersion, etc.)"},
+    "authors_institutions":   {"type": "TEXT",    "source": "openalex",       "description": "JSON array of objects with author names and their institution affiliations"},
+    "authors_countries":      {"type": "TEXT",    "source": "openalex",       "description": "JSON array of country codes extracted from author affiliations"},
+    "matched_fuel_terms":     {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of fuel keyword terms that matched in title/abstract"},
+    "matched_impact_terms":   {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of impact keyword terms that matched in title/abstract"},
+    "matched_fuel_stems":     {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of stemmed fuel terms that matched"},
+    "matched_impact_stems":   {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of stemmed impact terms that matched"},
+    "matched_fuel_subgroups": {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of fuel keyword subgroup names that matched (e.g. [\"Diesel & HVO\", \"Jet Fuels & SAF\"])"},
+    "matched_impact_subgroups": {"type": "TEXT",  "source": "pipeline_filter", "description": "JSON array of impact keyword subgroup names that matched (e.g. [\"GHG & Carbon\", \"Engine Performance\"])"},
+    "cited_by_count":         {"type": "INTEGER", "source": "openalex",       "description": "Number of citations according to OpenAlex"},
+    "primary_location_source_issn_l": {"type": "TEXT", "source": "openalex",  "description": "Linking ISSN of the primary source journal"},
+    "is_retracted":           {"type": "INTEGER", "source": "openalex",       "description": "Whether the work has been retracted (1=yes, 0=no)"},
+    "llm_is_hydrocarbon":     {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the work is relevant to hydrocarbon fuels (1=yes, 0=no)"},
+    "llm_fuel_classification": {"type": "TEXT",   "source": "openai_batch",   "description": "JSON array of LLM-assigned fuel type labels"},
+    "llm_ml_paradigm":        {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array — v2 backward compat: ML paradigm labels"},
+    "llm_ml_method":          {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array — v2 backward compat: ML method labels"},
+    "llm_ml_role":            {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML/AI functional roles assigned by LLM (e.g. [\"prediction\", \"optimization\"])"},
+    "llm_ml_algorithm":       {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML algorithm families identified by LLM"},
+    "llm_ml_data_source":     {"type": "TEXT",    "source": "openai_batch",   "description": "Single string: primary data source type used by ML models in the work"},
+    "llm_scope":              {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of value-chain positions (e.g. [\"production\", \"combustion\"])"},
+    "llm_confidence":         {"type": "TEXT",    "source": "openai_batch",   "description": "LLM self-reported confidence level for the classification"},
+    "llm_justification":      {"type": "TEXT",    "source": "openai_batch",   "description": "LLM explanation for its classification decisions"},
+    "llm_models":             {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of model objects with type and name fields identified in the work"},
+    "llm_result_raw":         {"type": "TEXT",    "source": "openai_batch",   "description": "Raw LLM output text (fallback when JSON parsing fails)"},
+    "llm_batch_id":           {"type": "TEXT",    "source": "openai_batch",   "description": "OpenAI batch job ID that produced this classification"},
+    "llm_processed_at":       {"type": "TEXT",    "source": "openai_batch",   "description": "ISO timestamp when LLM classification was saved"},
+    "llm_tokens_input":       {"type": "INTEGER", "source": "openai_batch",   "description": "Number of input tokens consumed for this work's classification"},
+    "llm_tokens_output":      {"type": "INTEGER", "source": "openai_batch",   "description": "Number of output tokens generated for this work's classification"},
+    "llm_tokens_reasoning":   {"type": "INTEGER", "source": "openai_batch",   "description": "Number of reasoning tokens used (for reasoning models)"}
+  }
+}

@@ -39,6 +39,83 @@ function batchProgressParts(counts) {
   return { total, completed, failed, processing, pctDone };
 }
 
+function formatBytes(n) {
+  if (n == null || !Number.isFinite(Number(n))) return '—';
+  let v = Number(n);
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let u = 0;
+  while (Math.abs(v) >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return u === 0 ? `${Math.round(v)} ${units[u]}` : `${v.toFixed(2)} ${units[u]}`;
+}
+
+function CollectProgressPanel({ progress }) {
+  if (!progress || progress.status === 'idle') return null;
+  const phase = progress.phase || '';
+  const isQueued = phase === 'queued' || phase === 'starting';
+  const isStream = phase === 'streaming' || phase === 'reading_file';
+  const isWrite = phase === 'writing';
+  const pct =
+    progress.total > 0 && progress.processed != null
+      ? Math.min(100, (100 * Number(progress.processed)) / Number(progress.total))
+      : null;
+
+  return (
+    <div
+      className="rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 mt-3"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="text-xs font-semibold text-emerald-900 mb-1">Collect progress</div>
+      <p className="text-[11px] text-emerald-900/90 mb-2 leading-snug">
+        {progress.message || phase || 'Working…'}
+      </p>
+      {typeof progress.bytes_received === 'number' && progress.bytes_received > 0 && (
+        <p className="text-[11px] text-gray-600 mb-2 tabular-nums">
+          {formatBytes(progress.bytes_received)} received
+          {isStream ? ' (download / stream)' : ''}
+        </p>
+      )}
+      {isWrite && pct != null && Number.isFinite(pct) && (
+        <>
+          <div
+            className="h-2.5 w-full rounded-full overflow-hidden bg-emerald-200/80 border border-emerald-100"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(pct)}
+          >
+            <div
+              className="h-full bg-emerald-600 transition-[width] duration-300 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="text-[11px] text-gray-700 mt-1.5 tabular-nums">
+            {(progress.processed ?? 0).toLocaleString()} / {(progress.total ?? 0).toLocaleString()} rows
+            {progress.pct != null && (
+              <span className="text-gray-500"> · {Number(progress.pct).toFixed(1)}%</span>
+            )}
+          </p>
+        </>
+      )}
+      {(isQueued || isStream || phase === 'done') && !(isWrite && pct != null) && (
+        <div className="h-2.5 w-full rounded-full overflow-hidden bg-emerald-200/80 border border-emerald-100">
+          <div
+            className="h-full w-1/3 bg-emerald-500/80 animate-pulse rounded-full"
+            style={{ animation: 'pulse 1.5s ease-in-out infinite' }}
+          />
+        </div>
+      )}
+      <p className="text-[10px] text-gray-500 mt-2">
+        Large batch outputs (multi‑GB) can take many minutes. This panel updates while the server works; you can leave
+        the page open.
+      </p>
+    </div>
+  );
+}
+
 function SegmentedBatchBar({ completed, failed, processing, total }) {
   if (total <= 0) {
     return (
@@ -106,6 +183,7 @@ export default function LlmStage({ pipeline }) {
   const [estimating, setEstimating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [collecting, setCollecting] = useState(false);
+  const [collectProgress, setCollectProgress] = useState(null);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError]         = useState('');
   const [catalog, setCatalog]     = useState(null);

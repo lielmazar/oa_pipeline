@@ -38,7 +38,7 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Load .env before importing openai so the API key is available
@@ -67,6 +67,9 @@ from llm_pricing import MODEL, MODEL_PRICING
 DB_PATH    = Path("openalex_works_filtered.sqlite")
 BATCH_DIR  = Path("batch_runs")
 STATE_FILE = BATCH_DIR / "state.json"
+COLLECT_PROGRESS_FILE = "collect_progress.json"
+STREAM_PROGRESS_BYTES = 32 * 1024 * 1024  # throttle disk writes while downloading multi‑GB output
+ROW_PROGRESS_EVERY = 2500
 
 
 def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
@@ -150,6 +153,26 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     BATCH_DIR.mkdir(exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _collect_progress_path() -> Path:
+    return BATCH_DIR / COLLECT_PROGRESS_FILE
+
+
+def _collect_progress_write(payload: dict) -> None:
+    """JSON file consumed by the API + web UI while ``save`` runs (best-effort)."""
+    try:
+        BATCH_DIR.mkdir(exist_ok=True)
+        data = {
+            **payload,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _collect_progress_path().write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def parse_llm_json(text: str) -> dict | None:
@@ -293,6 +316,7 @@ def phase_prepare(
     state["batch_input_filenames"] = [p.name for p in batch_files]
     state["prepared_at"]  = datetime.now().isoformat()
     state.pop("batch_id",        None)
+    state.pop("file_id",         None)  # new JSONL must be uploaded; do not reuse prior OpenAI file
     state.pop("output_file_id",  None)
     state.pop("error_file_id",   None)
     save_state(state)
@@ -470,8 +494,15 @@ def _parse_result_row(parsed: dict) -> tuple:
             confidence, justif, models_str)
 
 
-def _process_jsonl_lines(lines_iter, conn: sqlite3.Connection,
-                          batch_id: str, now_iso: str) -> tuple[int, int, int, int]:
+def _process_jsonl_lines(
+    lines_iter,
+    conn: sqlite3.Connection,
+    batch_id: str,
+    now_iso: str,
+    *,
+    collect_total: int | None = None,
+    collect_progress_every: int = 0,
+) -> tuple[int, int, int, int]:
     """
     Iterate over JSONL lines, parse each response, write to DB.
     Returns (saved, json_ok, json_fail, errors).
@@ -536,6 +567,21 @@ def _process_jsonl_lines(lines_iter, conn: sqlite3.Connection,
             ),
         )
         saved += 1
+        if collect_progress_every > 0 and saved % collect_progress_every == 0:
+            pct = (
+                round(100.0 * saved / collect_total, 2)
+                if collect_total and collect_total > 0
+                else None
+            )
+            _collect_progress_write(
+                {
+                    "status": "running",
+                    "phase": "writing",
+                    "processed": saved,
+                    "total": collect_total,
+                    "pct": pct,
+                }
+            )
         if saved % 5_000 == 0:
             conn.commit()
             print(f"  ... {saved:,} rows written")
@@ -554,66 +600,164 @@ def phase_save(local_file: Path | None = None) -> None:
     error_file_id = state.get("error_file_id")
     batch_id      = state.get("batch_id", "unknown")
 
+    rc_req = state.get("request_counts") or {}
+    collect_total: int | None = None
+    if isinstance(rc_req, dict):
+        t = rc_req.get("total")
+        if isinstance(t, int) and t > 0:
+            collect_total = t
+    if collect_total is None:
+        rc = state.get("record_count")
+        if isinstance(rc, int) and rc > 0:
+            collect_total = rc
+
+    _collect_progress_write(
+        {
+            "status": "running",
+            "phase": "starting",
+            "processed": 0,
+            "bytes_received": 0,
+            "total": collect_total,
+            "message": "Starting collect…",
+        }
+    )
+
     conn = sqlite3.connect(DB_PATH)
     ensure_result_columns(conn)
     now_iso = datetime.now().isoformat()
+    saved = json_ok = json_fail = errors = 0
 
-    if local_file:
-        if not local_file.exists():
-            print(f"File not found: {local_file}")
-            conn.close()
-            return
-        size_mb = local_file.stat().st_size / 1024 / 1024
-        print(f"Reading local file {local_file.name} ({size_mb:.0f} MB) ...")
-        with local_file.open("r", encoding="utf-8") as fh:
-            saved, json_ok, json_fail, errors = _process_jsonl_lines(
-                fh, conn, batch_id, now_iso
+    try:
+        if local_file:
+            if not local_file.exists():
+                print(f"File not found: {local_file}")
+                _collect_progress_write(
+                    {"status": "error", "phase": "failed", "message": f"File not found: {local_file}"}
+                )
+                return
+            size_mb = local_file.stat().st_size / 1024 / 1024
+            print(f"Reading local file {local_file.name} ({size_mb:.0f} MB) ...")
+            _collect_progress_write(
+                {
+                    "status": "running",
+                    "phase": "reading_file",
+                    "message": f"Reading local output ({size_mb:.0f} MB)…",
+                    "total": collect_total,
+                }
             )
-    else:
-        output_file_id = state.get("output_file_id")
-        if not output_file_id:
-            print("No output file ID in state — batch may not have completed yet.")
-            conn.close()
-            return
-        client = get_client()
-        print(f"Streaming results from {output_file_id} ...")
-        # Stream chunk-by-chunk so large files don't drop the connection
-        with client.files.with_streaming_response.content(output_file_id) as stream:
-            def _stream_lines():
-                buf = b""
-                for chunk in stream.iter_bytes(chunk_size=65_536):
-                    buf += chunk
-                    while b"\n" in buf:
-                        line_bytes, buf = buf.split(b"\n", 1)
-                        yield line_bytes
-                if buf:
-                    yield buf
-            saved, json_ok, json_fail, errors = _process_jsonl_lines(
-                _stream_lines(), conn, batch_id, now_iso
+            with local_file.open("r", encoding="utf-8") as fh:
+                saved, json_ok, json_fail, errors = _process_jsonl_lines(
+                    fh,
+                    conn,
+                    batch_id,
+                    now_iso,
+                    collect_total=collect_total,
+                    collect_progress_every=ROW_PROGRESS_EVERY,
+                )
+        else:
+            output_file_id = state.get("output_file_id")
+            if not output_file_id:
+                print("No output file ID in state — batch may not have completed yet.")
+                _collect_progress_write(
+                    {
+                        "status": "error",
+                        "phase": "failed",
+                        "message": "No output file ID in state — batch may not have completed yet.",
+                    }
+                )
+                return
+            client = get_client()
+            print(f"Streaming results from {output_file_id} ...")
+            _collect_progress_write(
+                {
+                    "status": "running",
+                    "phase": "streaming",
+                    "bytes_received": 0,
+                    "total": collect_total,
+                    "message": "Downloading output from OpenAI…",
+                }
             )
+            byte_total = 0
+            last_stream_log_at = 0
+            with client.files.with_streaming_response.content(output_file_id) as stream:
+                def _stream_lines():
+                    nonlocal byte_total, last_stream_log_at
+                    buf = b""
+                    for chunk in stream.iter_bytes(chunk_size=65_536):
+                        byte_total += len(chunk)
+                        buf += chunk
+                        if byte_total - last_stream_log_at >= STREAM_PROGRESS_BYTES:
+                            last_stream_log_at = byte_total
+                            gib = byte_total / (1024 ** 3)
+                            _collect_progress_write(
+                                {
+                                    "status": "running",
+                                    "phase": "streaming",
+                                    "bytes_received": byte_total,
+                                    "total": collect_total,
+                                    "message": f"Downloading batch output ({gib:.2f} GiB)…",
+                                }
+                            )
+                        while b"\n" in buf:
+                            line_bytes, buf = buf.split(b"\n", 1)
+                            yield line_bytes
+                    if buf:
+                        yield buf
 
-    conn.commit()
-    conn.close()
+                saved, json_ok, json_fail, errors = _process_jsonl_lines(
+                    _stream_lines(),
+                    conn,
+                    batch_id,
+                    now_iso,
+                    collect_total=collect_total,
+                    collect_progress_every=ROW_PROGRESS_EVERY,
+                )
 
-    print(f"\nRows saved      : {saved:,}")
-    print(f"JSON parsed OK  : {json_ok:,}")
-    print(f"JSON parse fail : {json_fail}  (raw text in llm_result_raw)")
-    print(f"API errors      : {errors}")
+        conn.commit()
 
-    if error_file_id and not local_file:
-        client = get_client()
-        print(f"\nDownloading error log {error_file_id} ...")
-        err_content = client.files.content(error_file_id).text
-        err_path = BATCH_DIR / "errors.jsonl"
-        err_path.write_text(err_content, encoding="utf-8")
-        print(f"Error details -> {err_path}")
+        pct_done = (
+            round(100.0 * saved / collect_total, 2)
+            if collect_total and collect_total > 0
+            else None
+        )
+        _collect_progress_write(
+            {
+                "status": "completed",
+                "phase": "done",
+                "processed": saved,
+                "total": collect_total if collect_total else saved,
+                "pct": pct_done,
+                "json_ok": json_ok,
+                "json_fail": json_fail,
+                "errors": errors,
+                "message": "Collect finished.",
+            }
+        )
 
-    if error_file_id:
-        print(f"\nDownloading error log {error_file_id} ...")
-        err_content = client.files.content(error_file_id).text
-        err_path    = BATCH_DIR / "errors.jsonl"
-        err_path.write_text(err_content, encoding="utf-8")
-        print(f"Error details -> {err_path}")
+        print(f"\nRows saved      : {saved:,}")
+        print(f"JSON parsed OK  : {json_ok:,}")
+        print(f"JSON parse fail : {json_fail}  (raw text in llm_result_raw)")
+        print(f"API errors      : {errors}")
+
+        if error_file_id and not local_file:
+            client = get_client()
+            print(f"\nDownloading error log {error_file_id} ...")
+            err_content = client.files.content(error_file_id).text
+            err_path = BATCH_DIR / "errors.jsonl"
+            err_path.write_text(err_content, encoding="utf-8")
+            print(f"Error details -> {err_path}")
+
+    except Exception as exc:
+        _collect_progress_write(
+            {
+                "status": "error",
+                "phase": "failed",
+                "message": str(exc)[:2000],
+            }
+        )
+        raise
+    finally:
+        conn.close()
 
 
 # ── Cost Estimator ─────────────────────────────────────────────────────────

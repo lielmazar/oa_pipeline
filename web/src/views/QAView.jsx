@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../api/client';
-import { useRecordStars } from '../stages/analysis/useRecordStars.js';
-import { loadQaIrrSubsetId, saveQaIrrSubsetId } from '../stages/analysis/analysisStageStorage.js';
+
+const QA_SUBSET_KEY = (pid) => `qa_irr_subset_${pid}`;
+const loadQaIrrSubsetId  = (pid) => localStorage.getItem(QA_SUBSET_KEY(pid)) || '';
+const saveQaIrrSubsetId  = (pid, sid) => localStorage.setItem(QA_SUBSET_KEY(pid), sid ?? '');
 
 function QualityBadge({ quality }) {
   const colors = {
@@ -28,7 +30,6 @@ function pillLabel(fieldId, raw) {
 function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) {
   const [selected, setSelected] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
-  const { isStarred, toggleStar } = useRecordStars(pipelineId);
 
   useEffect(() => {
     setSelected(new Set());
@@ -67,14 +68,6 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <div className="mb-3 flex items-start gap-2">
-        <button
-          type="button"
-          onClick={() => toggleStar(record.openalex_id)}
-          className={`shrink-0 text-lg leading-none mt-0.5 ${isStarred(record.openalex_id) ? 'text-amber-500' : 'text-gray-300 hover:text-amber-400'}`}
-          title={isStarred(record.openalex_id) ? 'Unstar' : 'Star record'}
-        >
-          ★
-        </button>
         <h3 className="text-base font-semibold text-gray-900 leading-snug flex-1 min-w-0">
           {record.title || record.openalex_id}
         </h3>

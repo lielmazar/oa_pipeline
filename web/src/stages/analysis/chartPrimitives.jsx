@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from '../../api/client';
-import { buildChartDrilldownSql } from './chartDrilldown.js';
 
 const CHART_LAYOUT_STORAGE_KEY = 'oa-pipeline-chart-bar-layout';
 const EXPLORER_CHART_PREFS_KEY = 'oa-pipeline-explorer-chart-prefs';
@@ -365,7 +364,6 @@ export function ChartCard({
   subsetId = null,
   chartPrefs = { topN: 20, cutoffYear: 2000 },
   onChartPrefsChange = () => {},
-  onDrilldown,
 }) {
   const topN = chartPrefs.topN;
   const cutoffYear = chartPrefs.cutoffYear;
@@ -397,10 +395,8 @@ export function ChartCard({
     setLoading(true);
     setError('');
     try {
-      const body =
-        subsetId != null
-          ? { chart_id: chart.id, subset_id: subsetId, top_n: topN, cutoff_year: cutoffYear }
-          : { sql: chart.sql };
+      const body = { sql: chart.sql };
+      if (subsetId != null) body.subset_id = subsetId;
       const res = await apiFetch(`/api/pipeline/${pipelineId}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -415,7 +411,7 @@ export function ChartCard({
     } finally {
       setLoading(false);
     }
-  }, [pipelineId, chart.id, chart.sql, subsetId, topN, cutoffYear]);
+  }, [pipelineId, chart.sql, subsetId]);
 
   useEffect(() => {
     if (!open) return;
@@ -428,10 +424,6 @@ export function ChartCard({
     return chart.renderer;
   })();
 
-  const handleDrill = (r) => {
-    const sql = buildChartDrilldownSql({ chartId: chart.id, row: r, cutoffYear });
-    if (sql) onDrilldown?.(sql);
-  };
 
   return (
     <div id={`chart-${chart.id}`} className="border border-gray-200/90 rounded-xl overflow-hidden scroll-mt-4 bg-white shadow-sm">
@@ -544,7 +536,7 @@ export function ChartCard({
           {data && !loading && (
             <>
               <div className="max-w-xl mx-auto w-full max-h-52 overflow-auto">
-                <ChartResult renderer={renderer} rows={rows} onCountClick={handleDrill} />
+                <ChartResult renderer={renderer} rows={rows} />
               </div>
               <p className="text-[11px] text-gray-400 mt-1.5 text-right">{rows.length} rows</p>
             </>
