@@ -354,7 +354,8 @@ export default function RecordsViewer({ pipelineId, subsets = [], initialFilters
   const toggleStar = useCallback(async (openalexId) => {
     const isStarred = starredIds.has(openalexId);
     if (isStarred) {
-      await apiFetch(`/api/pipeline/${pipelineId}/starred/${encodeURIComponent(openalexId)}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/pipeline/${pipelineId}/starred/${openalexId}`, { method: 'DELETE' });
+      if (!res.ok) return;
       setStarredIds(prev => { const n = new Set(prev); n.delete(openalexId); return n; });
     } else {
       await apiFetch(`/api/pipeline/${pipelineId}/starred`, {

@@ -129,7 +129,7 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
 export default function QAView({ initialContext, onContextConsumed, lockedPipelineId }) {
   const [pipelines, setPipelines]   = useState([]);
   const [pipelineId, setPipelineId] = useState('');
-  const [field, setField]           = useState('llm_fuel_classification');
+  const [field, setField]           = useState('llm_is_hydrocarbon');
   const [qaFields, setQaFields]     = useState([]);
   const [records, setRecords]       = useState([]);
   const [fieldLabels, setFieldLabels] = useState([]);

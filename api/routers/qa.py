@@ -57,7 +57,7 @@ def qa_records(
     pipeline_id: int,
     user: CurrentUser,
     db: Db,
-    field: str = "llm_fuel_classification",
+    field: str = "llm_is_hydrocarbon",
     size: int = 20,
 ):
     db_path = _resolve_pipeline_db(db, pipeline_id, user["id"])

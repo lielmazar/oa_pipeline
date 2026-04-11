@@ -26,12 +26,12 @@ _VALID_FIELD = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # ── Field definitions ─────────────────────────────────────────────────────────
 
 QA_FIELDS = [
-    {"id": "llm_fuel_classification", "label": "Fuel Classification", "type": "multi"},
-    {"id": "llm_is_hydrocarbon",      "label": "Is Hydrocarbon",      "type": "binary"},
-    {"id": "llm_ml_role",             "label": "ML Role",             "type": "multi"},
-    {"id": "llm_ml_algorithm",        "label": "ML Algorithm",        "type": "multi"},
-    {"id": "llm_confidence",          "label": "LLM Confidence",      "type": "ordinal"},
-    {"id": "llm_scope",               "label": "Value Chain",         "type": "multi"},
+    {"id": "llm_is_hydrocarbon",      "label": "Is Hydrocarbon",       "type": "binary"},
+    {"id": "llm_research_objective",  "label": "Research Objective",   "type": "json_scalar"},
+    {"id": "llm_ml_role",             "label": "ML Role",              "type": "json_scalar"},
+    {"id": "llm_ml_algorithm",        "label": "ML Algorithm",         "type": "multi"},
+    {"id": "llm_ml_data_source",      "label": "ML Data Source",       "type": "ordinal"},
+    {"id": "llm_confidence",          "label": "Confidence",           "type": "ordinal"},
 ]
 
 FIELD_BY_ID = {f["id"]: f for f in QA_FIELDS}
@@ -92,7 +92,7 @@ def list_distinct_field_labels(
                 rows = conn.execute(wrap(inner_sql), (limit,)).fetchall()
                 return [str(r[0]) for r in rows if r[0] is not None]
 
-            if t == "multi":
+            if t in ("multi", "json_scalar"):
                 inner_sql = (
                     f"SELECT DISTINCT TRIM(CAST(value AS TEXT)) AS v FROM _fr_subset, json_each({qi}) "
                     f"WHERE value IS NOT NULL AND TRIM(CAST(value AS TEXT)) != '' "
@@ -156,7 +156,7 @@ def get_qa_sample(
     pipeline_db_path: Path,
     pipeline_id: int,
     user_id: int,
-    field: str = "llm_fuel_classification",
+    field: str = "llm_is_hydrocarbon",
     size: int = 20,
     subset_id: int | None = None,
     subset_inner: str | None = None,
@@ -353,8 +353,9 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
     results = []
     for fid, units in by_field.items():
         fmeta = FIELD_BY_ID.get(fid, {})
-        vtype = "set" if fmeta.get("type") == "multi" else (
-            "ordinal" if fmeta.get("type") == "ordinal" else "nominal"
+        ft = fmeta.get("type")
+        vtype = "set" if ft == "multi" else (
+            "ordinal" if ft == "ordinal" else "nominal"
         )
         alpha = krippendorff_alpha(units, value_type=vtype)
         by_unit: dict[str, list] = {}

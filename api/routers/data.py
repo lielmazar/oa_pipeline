@@ -175,7 +175,7 @@ def add_star(pipeline_id: int, body: StarBody, user: CurrentUser, db: Db):
     return {"ok": True}
 
 
-@router.delete("/{pipeline_id}/starred/{openalex_id}")
+@router.delete("/{pipeline_id}/starred/{openalex_id:path}")
 def remove_star(pipeline_id: int, openalex_id: str, user: CurrentUser, db: Db):
     db.execute(
         "DELETE FROM starred_records WHERE pipeline_id = ? AND openalex_id = ? AND user_id = ?",
