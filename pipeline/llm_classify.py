@@ -82,7 +82,7 @@ def _configure_paths(db: Path | None, batch_dir: Path | None) -> None:
     STATE_FILE = BATCH_DIR / "state.json"
 
 PROMPT_ID      = "pmpt_694c136369fc81939aa9e7eb310bd3170ecd05cb5a9fb123"
-PROMPT_VERSION = "24"
+PROMPT_VERSION = "26"
 BATCH_SIZE_LIMIT = 50_000   # OpenAI hard limit per batch
 
 # Assumed average output tokens per paper (classification JSON ≈ 300–500 tok)
@@ -101,29 +101,33 @@ def ensure_result_columns(conn: sqlite3.Connection) -> None:
     """
     Add all LLM output columns to filtered_records.
 
-    Column mapping from prompt v5 JSON output:
-      llm_is_hydrocarbon       ← fuel_relevant (boolean)
-      llm_fuel_classification  ← fuel_classification  (JSON array)
-      llm_ml_role              ← ml_role              (JSON array)  — v3+
-      llm_ml_algorithm         ← ml_algorithm         (JSON array)  — v3+
-      llm_ml_data_source       ← ml_data_source       (string)      — v3+
-      llm_scope                ← scope                (JSON array)  — v5
+    Column mapping — prompt v8 JSON output:
+      llm_is_hydrocarbon       ← fuel_relevant          (boolean → 1/0)
+      llm_research_objective   ← research_objective      (string → JSON array)  — v8
+      llm_value_chain_stage    ← value_chain_stage       (string → JSON array)  — v8
+      llm_ml_role              ← ml_role                 (string → JSON array)  — v8 (was array pre-v8)
+      llm_ml_algorithm         ← ml_algorithm            (JSON array)
+      llm_ml_data_source       ← ml_data_source          (string)
       llm_confidence           ← confidence
       llm_justification        ← justification
-      llm_models               ← models  (JSON array of model objects)
+      llm_models               ← models                  (JSON array of model objects)
       llm_result_raw           ← full raw text (fallback if JSON parse fails)
-      llm_ml_paradigm          ← kept for backward compat with v2 data
-      llm_ml_method            ← kept for backward compat with v2 data
+
+    Backward-compat columns (kept for old data, written as empty for v8+):
+      llm_fuel_classification  ← fuel_classification     (removed in v8)
+      llm_scope                ← scope                   (replaced by value_chain_stage in v8)
+      llm_ml_paradigm          ← v2 compat
+      llm_ml_method            ← v2 compat
     """
     new_cols = [
         ("llm_is_hydrocarbon",      "INTEGER"),   # 1 / 0 / NULL
-        ("llm_fuel_classification", "TEXT"),       # JSON array
+        ("llm_fuel_classification", "TEXT"),       # JSON array (pre-v8; empty for v8+)
         ("llm_ml_paradigm",         "TEXT"),       # v2 compat — JSON array
         ("llm_ml_method",           "TEXT"),       # v2 compat — JSON array
-        ("llm_ml_role",             "TEXT"),       # v3+ — JSON array
-        ("llm_ml_algorithm",        "TEXT"),       # v3+ — JSON array
-        ("llm_ml_data_source",      "TEXT"),       # v3+ — single string
-        ("llm_scope",               "TEXT"),       # v5 — JSON array (value-chain position)
+        ("llm_ml_role",             "TEXT"),       # JSON array (single-element for v8)
+        ("llm_ml_algorithm",        "TEXT"),       # JSON array
+        ("llm_ml_data_source",      "TEXT"),       # single string
+        ("llm_scope",               "TEXT"),       # JSON array (pre-v8; empty for v8+)
         ("llm_confidence",          "TEXT"),
         ("llm_justification",       "TEXT"),
         ("llm_models",              "TEXT"),       # JSON array of objects
@@ -133,6 +137,8 @@ def ensure_result_columns(conn: sqlite3.Connection) -> None:
         ("llm_tokens_input",        "INTEGER"),
         ("llm_tokens_output",       "INTEGER"),
         ("llm_tokens_reasoning",    "INTEGER"),
+        ("llm_research_objective",  "TEXT"),       # v8 — JSON array (single-element)
+        ("llm_value_chain_stage",   "TEXT"),       # v8 — JSON array (single-element)
     ]
     for col, typedef in new_cols:
         try:
@@ -462,36 +468,52 @@ _UPDATE_SQL = """
         llm_processed_at        = ?,
         llm_tokens_input        = ?,
         llm_tokens_output       = ?,
-        llm_tokens_reasoning    = ?
+        llm_tokens_reasoning    = ?,
+        llm_research_objective  = ?,
+        llm_value_chain_stage   = ?
     WHERE openalex_id = ?
 """
 
 
+def _ensure_json_array(val) -> list:
+    """Normalize a value to a list: wrap scalars, pass-through lists."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    return [val]
+
+
 def _parse_result_row(parsed: dict) -> tuple:
     """
-    Extract DB column values from a v5 LLM JSON response.
-    Schema: fuel_relevant, fuel_classification, ml_role, ml_algorithm,
-            scope, ml_data_source, models, confidence, justification
+    Extract DB column values from a v8 LLM JSON response.
+
+    Handles both v8 (scalar ml_role, research_objective, value_chain_stage)
+    and pre-v8 (array ml_role, fuel_classification, scope) responses so
+    existing batch results can be re-imported without issues.
     """
     hydro_raw = parsed.get("fuel_relevant")
     is_hydro  = 1 if hydro_raw is True else 0 if hydro_raw is False else None
 
-    fuel_cls     = json.dumps(parsed.get("fuel_classification", []), ensure_ascii=False)
-    # v3+ fields
-    ml_role      = json.dumps(parsed.get("ml_role",      []), ensure_ascii=False)
-    ml_algo      = json.dumps(parsed.get("ml_algorithm", []), ensure_ascii=False)
-    scope        = json.dumps(parsed.get("scope",         []), ensure_ascii=False)
+    fuel_cls     = json.dumps(_ensure_json_array(parsed.get("fuel_classification")), ensure_ascii=False)
+    ml_role      = json.dumps(_ensure_json_array(parsed.get("ml_role")),             ensure_ascii=False)
+    ml_algo      = json.dumps(_ensure_json_array(parsed.get("ml_algorithm")),        ensure_ascii=False)
+    scope        = json.dumps(_ensure_json_array(parsed.get("scope")),               ensure_ascii=False)
     ml_data_src  = str(parsed.get("ml_data_source", "") or "")
-    # v2 compat: null out old fields — v5 prompt no longer produces them
+    # v2 compat
     ml_para      = json.dumps([], ensure_ascii=False)
     ml_method    = json.dumps([], ensure_ascii=False)
-    models_str   = json.dumps(parsed.get("models",       []), ensure_ascii=False)
+    models_str   = json.dumps(parsed.get("models", []),                              ensure_ascii=False)
     confidence   = str(parsed.get("confidence",    "") or "")
     justif       = str(parsed.get("justification", "") or "")
+    # v8 new dimensions (stored as JSON arrays for consistent json_each() in charts)
+    res_obj      = json.dumps(_ensure_json_array(parsed.get("research_objective")),  ensure_ascii=False)
+    vc_stage     = json.dumps(_ensure_json_array(parsed.get("value_chain_stage")),   ensure_ascii=False)
 
     return (is_hydro, fuel_cls, ml_para, ml_method,
             ml_role, ml_algo, scope, ml_data_src,
-            confidence, justif, models_str)
+            confidence, justif, models_str,
+            res_obj, vc_stage)
 
 
 def _process_jsonl_lines(
@@ -542,13 +564,15 @@ def _process_jsonl_lines(
             json_ok += 1
             (is_hydro, fuel_cls, ml_para, ml_method,
              ml_role, ml_algo, scope, ml_data_src,
-             confidence, justif, models_str) = _parse_result_row(parsed)
+             confidence, justif, models_str,
+             res_obj, vc_stage) = _parse_result_row(parsed)
         else:
             json_fail   = json_fail + 1
             is_hydro    = None
             fuel_cls    = ml_para = ml_method = None
             ml_role     = ml_algo = scope = ml_data_src = None
             confidence  = justif = models_str = None
+            res_obj     = vc_stage = None
 
         usage            = body.get("usage", {})
         tokens_input     = usage.get("input_tokens", 0)
@@ -563,6 +587,7 @@ def _process_jsonl_lines(
                 confidence, justif, models_str, raw_text,
                 batch_id, now_iso,
                 tokens_input, tokens_output, tokens_reasoning,
+                res_obj, vc_stage,
                 custom_id,
             ),
         )
