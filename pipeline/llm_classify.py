@@ -147,6 +147,9 @@ def ensure_result_columns(conn: sqlite3.Connection) -> None:
             )
         except sqlite3.OperationalError:
             pass  # already exists
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fr_openalex_id ON filtered_records(openalex_id)"
+    )
     conn.commit()
 
 
@@ -615,6 +618,118 @@ def _process_jsonl_lines(
     return saved, json_ok, json_fail, errors
 
 
+DOWNLOAD_MAX_RETRIES = 10
+DOWNLOAD_CHUNK_SIZE = 256 * 1024  # 256 KiB
+
+
+def _download_output_file(
+    file_id: str,
+    dest: Path,
+    collect_total: int | None,
+) -> None:
+    """Download an OpenAI file to disk with retry on connection drops.
+
+    Uses HTTP Range requests to resume from where the previous attempt
+    left off, so multi-GB files survive transient network failures.
+    """
+    import httpx
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(".jsonl.partial")
+
+    already = partial.stat().st_size if partial.exists() else 0
+
+    client = get_client()
+    api_key = client.api_key
+    base_url = str(client.base_url).rstrip("/")
+    url = f"{base_url}/files/{file_id}/content"
+    headers_base = {"Authorization": f"Bearer {api_key}"}
+
+    for attempt in range(1, DOWNLOAD_MAX_RETRIES + 1):
+        already = partial.stat().st_size if partial.exists() else 0
+        headers = {**headers_base}
+        if already > 0:
+            headers["Range"] = f"bytes={already}-"
+            print(f"  Resuming download from {already / 1024**2:.1f} MB (attempt {attempt}) ...")
+        else:
+            print(f"  Starting download (attempt {attempt}) ...")
+
+        _collect_progress_write(
+            {
+                "status": "running",
+                "phase": "streaming",
+                "bytes_received": already,
+                "total": collect_total,
+                "message": f"Downloading output file (attempt {attempt}, "
+                           f"{already / 1024**2:.1f} MB so far)…",
+            }
+        )
+
+        try:
+            with httpx.stream("GET", url, headers=headers, timeout=httpx.Timeout(30, read=120)) as resp:
+                if resp.status_code == 416:
+                    print("  Server returned 416 Range Not Satisfiable — file already complete.")
+                    break
+                resp.raise_for_status()
+
+                content_length = resp.headers.get("content-length")
+                expected_total = int(content_length) + already if content_length else None
+
+                with partial.open("ab") as fh:
+                    last_log_at = already
+                    for chunk in resp.iter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                        fh.write(chunk)
+                        already += len(chunk)
+                        if already - last_log_at >= STREAM_PROGRESS_BYTES:
+                            last_log_at = already
+                            mib = already / 1024**2
+                            pct_str = ""
+                            if expected_total:
+                                pct_str = f" ({100 * already / expected_total:.1f}%)"
+                            print(f"  ... {mib:.1f} MiB downloaded{pct_str}")
+                            _collect_progress_write(
+                                {
+                                    "status": "running",
+                                    "phase": "streaming",
+                                    "bytes_received": already,
+                                    "total": collect_total,
+                                    "message": f"Downloading ({mib:.0f} MiB{pct_str})…",
+                                }
+                            )
+
+            print(f"  Download complete: {already / 1024**2:.1f} MiB")
+            break
+
+        except (httpx.RemoteProtocolError, httpx.ReadTimeout,
+                httpx.ConnectError, httpx.ReadError, OSError) as exc:
+            mib = already / 1024**2
+            print(f"  Attempt {attempt} failed at {mib:.1f} MiB: {exc}")
+            if attempt == DOWNLOAD_MAX_RETRIES:
+                _collect_progress_write(
+                    {
+                        "status": "error",
+                        "phase": "failed",
+                        "message": f"Download failed after {DOWNLOAD_MAX_RETRIES} attempts "
+                                   f"({mib:.1f} MiB received): {exc}",
+                    }
+                )
+                raise
+            wait = min(2 ** attempt, 60)
+            print(f"  Retrying in {wait}s ...")
+            time.sleep(wait)
+
+    partial.rename(dest)
+    _collect_progress_write(
+        {
+            "status": "running",
+            "phase": "streaming",
+            "bytes_received": already,
+            "total": collect_total,
+            "message": "Download complete, processing results…",
+        }
+    )
+
+
 def phase_save(local_file: Path | None = None) -> None:
     """
     Parse batch output and write results to the DB.
@@ -692,46 +807,27 @@ def phase_save(local_file: Path | None = None) -> None:
                     }
                 )
                 return
-            client = get_client()
-            print(f"Streaming results from {output_file_id} ...")
+
+            local_output = BATCH_DIR / f"output_{batch_id}.jsonl"
+            if local_output.exists() and local_output.stat().st_size > 0:
+                print(f"Reusing previously downloaded file: {local_output}  "
+                      f"({local_output.stat().st_size / 1024**2:.0f} MB)")
+            else:
+                _download_output_file(output_file_id, local_output, collect_total)
+
+            size_mb = local_output.stat().st_size / 1024 / 1024
+            print(f"Processing local file {local_output.name} ({size_mb:.0f} MB) ...")
             _collect_progress_write(
                 {
                     "status": "running",
-                    "phase": "streaming",
-                    "bytes_received": 0,
+                    "phase": "reading_file",
+                    "message": f"Processing downloaded output ({size_mb:.0f} MB)…",
                     "total": collect_total,
-                    "message": "Downloading output from OpenAI…",
                 }
             )
-            byte_total = 0
-            last_stream_log_at = 0
-            with client.files.with_streaming_response.content(output_file_id) as stream:
-                def _stream_lines():
-                    nonlocal byte_total, last_stream_log_at
-                    buf = b""
-                    for chunk in stream.iter_bytes(chunk_size=65_536):
-                        byte_total += len(chunk)
-                        buf += chunk
-                        if byte_total - last_stream_log_at >= STREAM_PROGRESS_BYTES:
-                            last_stream_log_at = byte_total
-                            gib = byte_total / (1024 ** 3)
-                            _collect_progress_write(
-                                {
-                                    "status": "running",
-                                    "phase": "streaming",
-                                    "bytes_received": byte_total,
-                                    "total": collect_total,
-                                    "message": f"Downloading batch output ({gib:.2f} GiB)…",
-                                }
-                            )
-                        while b"\n" in buf:
-                            line_bytes, buf = buf.split(b"\n", 1)
-                            yield line_bytes
-                    if buf:
-                        yield buf
-
+            with local_output.open("r", encoding="utf-8") as fh:
                 saved, json_ok, json_fail, errors = _process_jsonl_lines(
-                    _stream_lines(),
+                    fh,
                     conn,
                     batch_id,
                     now_iso,
