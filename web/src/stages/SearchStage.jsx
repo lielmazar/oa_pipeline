@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from '../api/client';
 import { useInterval } from '../hooks/useInterval';
 
@@ -23,11 +23,13 @@ function formatDuration(seconds) {
   return `${sec}s`;
 }
 
-export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
-  const [runState, setRunState] = useState(null);  // null = not loaded yet
+export default function SearchStage({ pipeline, onChange, onRunMetaChange, onRunFinished }) {
+  const [runState, setRunState] = useState(null);
   const [starting, setStarting] = useState(false);
   const [killing, setKilling]   = useState(false);
   const [error, setError]       = useState('');
+  const [logOpen, setLogOpen]   = useState(true);
+  const prevRunning = useRef(false);
 
   const poll = useCallback(async () => {
     try {
@@ -39,7 +41,14 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
   useEffect(() => { poll(); }, [poll]);
 
   const isRunning = runState?.run && !runState?.run?.ended_at;
-  useInterval(poll, isRunning ? 3000 : null);  // fast-poll only while running
+  useInterval(poll, isRunning ? 3000 : null);
+
+  useEffect(() => {
+    if (prevRunning.current && !isRunning && runState?.run?.ended_at) {
+      onRunFinished?.();
+    }
+    prevRunning.current = !!isRunning;
+  }, [isRunning, runState, onRunFinished]);
 
   const start = async () => {
     setStarting(true); setError('');
@@ -110,6 +119,9 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
     });
     return () => onRunMetaChange?.(null);
   }, [onRunMetaChange, isRunning, status, pipeline.id, pipeline.name, processed, total, percent, etaSec, mbPerSec]);
+
+  const dbPath = pipeline?.output_db_path || null;
+  const hasDb = !!dbPath;
 
   return (
     <div className="space-y-4">
@@ -219,21 +231,58 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange }) {
           </div>
         )}
 
-        {/* Log tail */}
+        {/* Log tail — collapsible */}
         {logTail.length > 0 && (
           <div>
-            <p className="text-xs text-gray-500 mb-1 font-medium">#{pipeline.id} Log tail</p>
-            <div className="bg-gray-900 text-gray-100 rounded-lg p-3 text-xs font-mono overflow-auto max-h-64">
-              {logTail.map((line, i) => (
-                <div key={i} className="leading-5 whitespace-pre-wrap break-all">{line}</div>
-              ))}
+            <button onClick={() => setLogOpen(p => !p)}
+              className="flex items-center gap-1.5 text-xs text-gray-500 font-medium mb-1 hover:text-gray-700 transition">
+              <span className="text-[10px]">{logOpen ? '▾' : '▸'}</span>
+              #{pipeline.id} Log tail ({logTail.length} lines)
+            </button>
+            {logOpen && (
+              <div className="bg-gray-900 text-gray-100 rounded-lg p-3 text-xs font-mono overflow-auto max-h-64">
+                {logTail.map((line, i) => (
+                  <div key={i} className="leading-5 whitespace-pre-wrap break-all">{line}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Idle state — nice summary */}
+        {!run && status === 'idle' && (
+          <div className="border border-slate-200 rounded-lg p-5 text-center space-y-3">
+            <div className="text-slate-400">
+              <svg className="w-10 h-10 mx-auto mb-2 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+              </svg>
+            </div>
+            <div className="text-sm font-medium text-slate-600">No filter run yet</div>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto">
+              Configure your keyword groups above, then click <strong className="text-slate-600">Start Filter Run</strong> to
+              scan all OpenAlex partitions and collect matching records into the pipeline database.
+            </p>
+            <div className="flex justify-center gap-4 text-xs text-slate-400 pt-1">
+              <span>{groups.length} keyword group{groups.length !== 1 ? 's' : ''}</span>
+              <span className="text-slate-300">|</span>
+              <span>{totalTerms} terms configured</span>
+              <span className="text-slate-300">|</span>
+              <span>Database: {hasDb ? 'ready' : 'will be created'}</span>
             </div>
           </div>
         )}
 
-        {!run && status === 'idle' && (
-          <div className="text-sm text-gray-400 text-center py-4">
-            No filter run yet. Click "Start Filter Run" to begin.
+        {/* Failed / killed without results */}
+        {!isRunning && run && (status === 'failed' || status === 'killed') && (
+          <div className={`border rounded-lg p-3 mb-3 ${status === 'failed' ? 'bg-red-50 border-red-200' : 'bg-orange-50 border-orange-200'}`}>
+            <div className={`text-sm font-medium mb-1 ${status === 'failed' ? 'text-red-800' : 'text-orange-800'}`}>
+              Run {status === 'failed' ? 'failed' : 'was stopped'}
+            </div>
+            <div className={`text-xs ${status === 'failed' ? 'text-red-700' : 'text-orange-700'}`}>
+              {processed > 0 && `Processed ${processed.toLocaleString()} / ${total.toLocaleString()} files before stopping. `}
+              {inserted > 0 && `${inserted.toLocaleString()} records were saved. `}
+              Click <strong>Re-run</strong> to try again.
+            </div>
           </div>
         )}
       </div>

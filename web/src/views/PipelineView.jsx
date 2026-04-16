@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from '../api/client';
 import KeywordStage from '../stages/KeywordStage';
 import SearchStage from '../stages/SearchStage';
@@ -22,11 +22,23 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
   const [subsets, setSubsets] = useState([]);
   const [dataFilters, setDataFilters] = useState(null);
   const [drilldownKey, setDrilldownKey] = useState(0);
+  const [summaryKey, setSummaryKey] = useState(0);
+  const drilldownPending = useRef(false);
 
   const handleDrilldown = useCallback((filters) => {
     setDataFilters(filters);
+    drilldownPending.current = true;
     setDrilldownKey(k => k + 1);
     setActiveTab('data');
+  }, []);
+
+  const handleTabClick = useCallback((tabId) => {
+    if (tabId === 'data' && !drilldownPending.current) {
+      setDataFilters(null);
+      setDrilldownKey(k => k + 1);
+    }
+    drilldownPending.current = false;
+    setActiveTab(tabId);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -49,6 +61,11 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
     return () => { cancelled = true; };
   }, [pipeline.id]);
 
+  const handleSearchRunFinished = useCallback(() => {
+    refresh();
+    setSummaryKey(k => k + 1);
+  }, [refresh]);
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
       {/* Header */}
@@ -68,7 +85,7 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
           <button
             key={t.id}
             type="button"
-            onClick={() => setActiveTab(t.id)}
+            onClick={() => handleTabClick(t.id)}
             className={`flex-1 text-center text-xs py-2 border-r border-slate-200 last:border-r-0 transition cursor-pointer font-medium
               ${activeTab === t.id
                 ? 'bg-teal-600 text-white'
@@ -83,8 +100,8 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
       {activeTab === 'search' && (
         <div className="space-y-4">
           <KeywordStage pipeline={pipeline} onChange={setPipeline} />
-          <SearchStage pipeline={pipeline} onChange={setPipeline} onRunMetaChange={onFilterRunChange} />
-          <SummaryTables pipelineId={pipeline.id} tab="search" onDrilldown={handleDrilldown} />
+          <SearchStage pipeline={pipeline} onChange={setPipeline} onRunMetaChange={onFilterRunChange} onRunFinished={handleSearchRunFinished} />
+          <SummaryTables key={`search-${summaryKey}`} pipelineId={pipeline.id} tab="search" onDrilldown={handleDrilldown} />
         </div>
       )}
 

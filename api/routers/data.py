@@ -143,12 +143,47 @@ _LLM_SUMMARIES = [
 ]
 
 
+_EXPANDABLE_SUMMARIES = {
+    "top_countries":
+        "SELECT value AS label, COUNT(*) AS count "
+        "FROM filtered_records, json_each(authors_countries) "
+        "GROUP BY value ORDER BY count DESC",
+    "top_journals":
+        "SELECT primary_location_source_display_name AS label, COUNT(*) AS count "
+        "FROM filtered_records WHERE primary_location_source_display_name IS NOT NULL "
+        "GROUP BY label ORDER BY count DESC",
+}
+
+
+_OA_FILTERS = {
+    "oa": "is_oa = 1",
+    "closed": "is_oa = 0",
+}
+
+
+def _inject_oa_filter(sql: str, oa_filter: str | None) -> str:
+    """Inject an OA WHERE clause into an existing summary SQL statement."""
+    if not oa_filter or oa_filter not in _OA_FILTERS:
+        return sql
+    cond = _OA_FILTERS[oa_filter]
+    upper = sql.upper()
+    where_pos = upper.find(" WHERE ")
+    if where_pos != -1:
+        insert_at = where_pos + len(" WHERE ")
+        return sql[:insert_at] + cond + " AND " + sql[insert_at:]
+    group_pos = upper.find(" GROUP BY")
+    if group_pos != -1:
+        return sql[:group_pos] + " WHERE " + cond + sql[group_pos:]
+    return sql + " WHERE " + cond
+
+
 @router.get("/{pipeline_id}/summary")
 def summary_tables(
     pipeline_id: int,
     user: CurrentUser,
     db: Db,
     tab: str = Query(default="search", description="search or llm"),
+    oa_filter: str | None = Query(default=None, description="oa, closed, or null for all"),
 ):
     db_path = _resolve_db(db, pipeline_id, user["id"])
     queries = _SEARCH_SUMMARIES if tab == "search" else _LLM_SUMMARIES
@@ -168,11 +203,34 @@ def summary_tables(
                 if not needed_ok:
                     result[name] = []
                     continue
-                rows = conn.execute(sql).fetchall()
+                final_sql = _inject_oa_filter(sql, oa_filter)
+                rows = conn.execute(final_sql).fetchall()
                 result[name] = [{"label": r[0], "count": r[1]} for r in rows]
             except _sqlite3.OperationalError:
                 result[name] = []
         return result
+    finally:
+        conn.close()
+
+
+@router.get("/{pipeline_id}/summary/{table_key}")
+def summary_table_full(
+    pipeline_id: int,
+    table_key: str,
+    user: CurrentUser,
+    db: Db,
+):
+    """Return the full (unlimited) version of a summary table."""
+    sql = _EXPANDABLE_SUMMARIES.get(table_key)
+    if not sql:
+        raise HTTPException(404, f"Unknown summary table: {table_key}")
+    db_path = _resolve_db(db, pipeline_id, user["id"])
+    conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(sql).fetchall()
+        return {"key": table_key, "rows": [{"label": r[0], "count": r[1]} for r in rows]}
+    except _sqlite3.OperationalError as exc:
+        raise HTTPException(500, str(exc))
     finally:
         conn.close()
 
