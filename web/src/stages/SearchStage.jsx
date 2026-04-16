@@ -34,28 +34,16 @@ export default function SearchStage({ pipeline, onChange, onRunMetaChange, onRun
   const poll = useCallback(async () => {
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/run`);
-      if (res.ok) {
-        const data = await res.json();
-        // #region agent log
-        fetch('http://127.0.0.1:7274/ingest/378bd32f-0cd0-488f-8da3-5a0b4e1df045',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ac9e08'},body:JSON.stringify({sessionId:'ac9e08',location:'SearchStage.jsx:poll',message:'poll_response',data:{status:data.status,ended_at:data.run?.ended_at,pid:data.run?.pid,_debug_pid:data._debug_pid,stateFiles:data.state?.files_processed,stateTotal:data.state?.total_files},timestamp:Date.now(),hypothesisId:'H1_H2_H4'})}).catch(()=>{});
-        // #endregion
-        setRunState(data);
-      }
+      if (res.ok) setRunState(await res.json());
     } catch {}
   }, [pipeline.id]);
 
   useEffect(() => { poll(); }, [poll]);
 
   const isRunning = runState?.run && !runState?.run?.ended_at;
-  // #region agent log
-  fetch('http://127.0.0.1:7274/ingest/378bd32f-0cd0-488f-8da3-5a0b4e1df045',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ac9e08'},body:JSON.stringify({sessionId:'ac9e08',location:'SearchStage.jsx:isRunning',message:'isRunning_eval',data:{isRunning:!!isRunning,hasRun:!!runState?.run,endedAt:runState?.run?.ended_at,pollingInterval:isRunning?3000:null},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-  // #endregion
   useInterval(poll, isRunning ? 3000 : null);
 
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7274/ingest/378bd32f-0cd0-488f-8da3-5a0b4e1df045',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ac9e08'},body:JSON.stringify({sessionId:'ac9e08',location:'SearchStage.jsx:transition',message:'transition_check',data:{prevRunning:prevRunning.current,isRunning:!!isRunning,endedAt:runState?.run?.ended_at,wouldFire:prevRunning.current&&!isRunning&&!!runState?.run?.ended_at},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
-    // #endregion
     if (prevRunning.current && !isRunning && runState?.run?.ended_at) {
       onRunFinished?.();
     }
