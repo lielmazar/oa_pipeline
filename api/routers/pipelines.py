@@ -6,10 +6,7 @@ import importlib.util
 import json
 import os
 import sqlite3
-import subprocess
-import sys
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,7 +47,7 @@ from api.deps import CurrentUser, Db
 router = APIRouter(prefix="/api/pipeline", tags=["pipelines"])
 
 
-# -- LLM model catalog (from pipeline/llm_classify.py) -----------------------
+# -- LLM model catalog (from pipeline/llm_pricing.py) ------------------------
 
 @functools.lru_cache(maxsize=1)
 def _llm_pricing_module():
@@ -442,85 +439,21 @@ def pipeline_logs(pipeline_id: int, user: CurrentUser, db: Db, lines: int = 200)
 
 # -- LLM classification -------------------------------------------------------
 
-def _llm_classify_cmd(pipeline_id: int) -> list[str]:
-    p_base = settings.pipelines_base_dir / str(pipeline_id)
-    script  = settings.pipeline_scripts_dir / "llm_classify.py"
-    db_path = p_base / "output.sqlite"
-    batch_dir = p_base / "batch_runs"
-    return [sys.executable, str(script), "--db", str(db_path), "--batch-dir", str(batch_dir)]
+from api.business import llm_batch as _llm
 
 
-def _run_llm_cmd(
-    args: list[str],
-    pipeline_dir: Path,
-    *,
-    timeout_sec: int | None = 120,
-) -> tuple[int, str]:
-    try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            cwd=str(pipeline_dir),
-            timeout=timeout_sec,
-        )
-        return result.returncode, (result.stdout or "") + (result.stderr or "")
-    except subprocess.TimeoutExpired:
-        if timeout_sec is None:
-            return -1, "Command timed out (unexpected: no timeout was set)"
-        return -1, f"Command timed out after {timeout_sec} seconds"
-    except Exception as exc:
-        return -1, str(exc)
+def _batch_dir(pipeline_id: int) -> Path:
+    return settings.pipelines_base_dir / str(pipeline_id) / "batch_runs"
 
 
-def _load_batch_state(pipeline_id: int) -> dict | None:
-    path = settings.pipelines_base_dir / str(pipeline_id) / "batch_runs" / "state.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
-
-
-def _save_batch_state(pipeline_id: int, state: dict) -> None:
-    path = settings.pipelines_base_dir / str(pipeline_id) / "batch_runs" / "state.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2))
-
-
-def _collect_progress_path(pipeline_id: int) -> Path:
-    return settings.pipelines_base_dir / str(pipeline_id) / "batch_runs" / "collect_progress.json"
-
-
-def _finalize_collect_subprocess(pipeline_id: int, rc: int, out: str) -> None:
-    path = _collect_progress_path(pipeline_id)
-    cur: dict = {}
-    if path.exists():
-        try:
-            cur = json.loads(path.read_text())
-        except Exception:
-            cur = {}
-    cur["returncode"] = rc
-    cur["stdout"] = (out or "")[-120_000:]
-    cur["finished_at"] = datetime.now(timezone.utc).isoformat()
-    if rc != 0:
-        cur["status"] = "error"
-        cur["phase"] = "failed"
-        if not cur.get("message"):
-            cur["message"] = (out or "")[:2000]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cur, indent=2), encoding="utf-8")
-    if rc == 0:
-        try:
-            with get_db() as db:
-                record_event(db, pipeline_id, "llm_collected")
-        except Exception:
-            pass
+def _db_path(p: dict) -> Path:
+    path = p.get("output_db_path")
+    if not path:
+        raise HTTPException(400, "pipeline has no research database path")
+    return Path(path)
 
 
 def _resolve_llm_subset_sql(db, pipeline_id: int, subset_id: int | None) -> str | None:
-    """Return inner SQL for llm_classify --subset-sql, or None for the full table."""
     if subset_id is None:
         return None
     sub = get_subset(db, pipeline_id, subset_id)
@@ -535,6 +468,12 @@ def _effective_llm_batch_limit(requested: int | None) -> int | None:
     return settings.llm_batch_default_limit
 
 
+def _get_pipeline_prompt_config(p: dict) -> tuple[str, str]:
+    """Get prompt_id and prompt_version from pipeline config."""
+    cfg = p.get("config") or {}
+    return cfg.get("llm_prompt_id", ""), cfg.get("llm_prompt_version", "")
+
+
 def _llm_scope_stats(db_path: Path, inner_sql: str | None) -> dict:
     if not db_path.is_file():
         return {"db_exists": False, "total": 0, "llm_done": 0, "llm_pending": 0, "has_llm_column": False}
@@ -544,7 +483,7 @@ def _llm_scope_stats(db_path: Path, inner_sql: str | None) -> dict:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
         except sqlite3.OperationalError:
             return {"db_exists": True, "total": 0, "llm_done": 0, "llm_pending": 0, "has_llm_column": False}
-        has_llm = "llm_is_hydrocarbon" in cols
+        has_llm = "fuel_relevant" in cols
         if inner_sql:
             clean_subset = inner_sql.strip().rstrip(";")
             cte = f"WITH _fr_subset AS (\n{clean_subset}\n)\n"
@@ -554,7 +493,7 @@ def _llm_scope_stats(db_path: Path, inner_sql: str | None) -> dict:
             frm = "filtered_records"
         total = conn.execute(f"{cte}SELECT COUNT(*) FROM {frm}").fetchone()[0]
         done = conn.execute(
-            f"{cte}SELECT COUNT(*) FROM {frm} WHERE llm_is_hydrocarbon IS NOT NULL"
+            f"{cte}SELECT COUNT(*) FROM {frm} WHERE fuel_relevant IS NOT NULL"
         ).fetchone()[0] if has_llm else 0
         pending = max(0, total - done)
         return {"db_exists": True, "total": int(total), "llm_done": int(done), "llm_pending": int(pending), "has_llm_column": has_llm}
@@ -575,22 +514,24 @@ def llm_estimate(pipeline_id: int, body: LlmEstimateBody, user: CurrentUser, db:
         raise HTTPException(404, "not found")
     _require_known_llm_model(body.model)
     inner = _resolve_llm_subset_sql(db, pipeline_id, body.subset_id)
-    cmd = _llm_classify_cmd(pipeline_id) + ["estimate", "--model", body.model]
-    if inner:
-        cmd += ["--subset-sql", inner]
+    mod = _llm_pricing_module()
+    pricing = getattr(mod, "MODEL_PRICING", {})
     eff = _effective_llm_batch_limit(body.limit)
-    if eff:
-        cmd += ["--limit", str(eff)]
-    rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
-    if rc != 0:
-        raise HTTPException(500, out[:2000])
-    return {"output": out, "returncode": rc}
+    result = _llm.estimate_cost(
+        _db_path(p), body.model, pricing,
+        limit=eff, subset_sql=inner,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
 
 
 class LlmSubmitBody(BaseModel):
     model: str = "gpt-5.4-nano"
     limit: int | None = Field(default=None, gt=0)
     subset_id: int | None = None
+    prompt_id: str | None = None
+    prompt_version: str | None = None
 
 
 @router.get("/{pipeline_id}/llm/stats")
@@ -598,13 +539,11 @@ def llm_stats(pipeline_id: int, user: CurrentUser, db: Db, subset_id: int | None
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
-    db_path = Path(p["output_db_path"]) if p.get("output_db_path") else None
-    if not db_path:
-        raise HTTPException(400, "pipeline has no research database path")
     inner = _resolve_llm_subset_sql(db, pipeline_id, subset_id)
-    stats = _llm_scope_stats(db_path, inner)
+    stats = _llm_scope_stats(_db_path(p), inner)
     eff = _effective_llm_batch_limit(None)
-    return {**stats, "effective_default_limit": eff}
+    cfg_pid, cfg_pv = _get_pipeline_prompt_config(p)
+    return {**stats, "effective_default_limit": eff, "prompt_id": cfg_pid, "prompt_version": cfg_pv}
 
 
 @router.post("/{pipeline_id}/llm/submit")
@@ -617,17 +556,26 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
     _require_known_llm_model(body.model)
+
+    cfg_pid, cfg_pv = _get_pipeline_prompt_config(p)
+    prompt_id = body.prompt_id or cfg_pid
+    prompt_version = body.prompt_version or cfg_pv
+    if not prompt_id:
+        raise HTTPException(400, "prompt_id is required (set it in the UI or pipeline config)")
+
     inner = _resolve_llm_subset_sql(db, pipeline_id, body.subset_id)
-    cmd = _llm_classify_cmd(pipeline_id) + ["prepare", "--model", body.model]
-    if inner:
-        cmd += ["--subset-sql", inner]
     eff_limit = _effective_llm_batch_limit(body.limit)
-    if eff_limit:
-        cmd += ["--limit", str(eff_limit)]
-    rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir)
-    if rc != 0:
-        raise HTTPException(500, out[:2000])
-    state = _load_batch_state(pipeline_id) or {}
+    bd = _batch_dir(pipeline_id)
+
+    files = _llm.prepare_batch(
+        _db_path(p), bd,
+        prompt_id=prompt_id, prompt_version=prompt_version or "1",
+        model=body.model, limit=eff_limit, subset_sql=inner,
+    )
+    if not files:
+        raise HTTPException(400, "No unprocessed records to submit")
+
+    state = _llm.load_state(bd)
     if body.subset_id is not None:
         sub = get_subset(db, pipeline_id, body.subset_id)
         state["subset_id"] = body.subset_id
@@ -636,14 +584,17 @@ def llm_submit(pipeline_id: int, body: LlmSubmitBody, user: CurrentUser, db: Db)
         state["subset_id"] = None
         state["subset_name"] = "Entire dataset (unprocessed records)"
     state["effective_batch_limit"] = eff_limit
-    _save_batch_state(pipeline_id, state)
-    cmd2 = _llm_classify_cmd(pipeline_id) + ["submit"]
-    rc2, out2 = _run_llm_cmd(cmd2, settings.pipeline_scripts_dir)
-    if rc2 != 0:
-        raise HTTPException(500, out2[:2000])
+    _llm.save_state(bd, state)
+
+    # Save prompt config back to pipeline
+    cfg = dict(p.get("config") or {})
+    cfg["llm_prompt_id"] = prompt_id
+    cfg["llm_prompt_version"] = prompt_version or "1"
+    update_pipeline(db, pipeline_id, user["id"], config=cfg)
+
+    batch_ids = _llm.submit_batch(bd)
     record_event(db, pipeline_id, "llm_submitted")
-    state = _load_batch_state(pipeline_id) or {}
-    return {"ok": True, "batch_id": state.get("batch_id"), "output": out2, "effective_batch_limit": eff_limit}
+    return {"ok": True, "batch_ids": batch_ids, "effective_batch_limit": eff_limit, "record_count": state.get("record_count")}
 
 
 _TERMINAL_STATUSES = {"completed", "failed", "expired", "cancelled"}
@@ -655,13 +606,14 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
-    state = _load_batch_state(pipeline_id)
+    bd = _batch_dir(pipeline_id)
+    state = _llm.load_state(bd)
     if not state:
         return {"status": "not_started", "batch_id": None}
-    batch_id = state.get("batch_id")
     current_status = state.get("status", "")
     if current_status in _TERMINAL_STATUSES:
         return state
+    batch_id = state.get("batch_id")
     last_checked = state.get("checked_at")
     stale = True
     if last_checked:
@@ -676,27 +628,7 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
         return state
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
-    try:
-        from openai import OpenAI
-        batch = OpenAI().batches.retrieve(batch_id)
-        counts = batch.request_counts
-        state["status"] = batch.status
-        state["checked_at"] = datetime.now(timezone.utc).isoformat()
-        state["request_counts"] = {
-            "completed": counts.completed if counts else 0,
-            "failed": counts.failed if counts else 0,
-            "total": counts.total if counts else 0,
-        }
-        if batch.status in _TERMINAL_STATUSES:
-            state["completed_at"] = datetime.now(timezone.utc).isoformat()
-            if batch.output_file_id:
-                state["output_file_id"] = batch.output_file_id
-            if batch.error_file_id:
-                state["error_file_id"] = batch.error_file_id
-        _save_batch_state(pipeline_id, state)
-        return state
-    except Exception as exc:
-        raise HTTPException(500, str(exc))
+    return _llm.check_status(bd)
 
 
 @router.get("/{pipeline_id}/llm/collect_status")
@@ -704,7 +636,8 @@ def llm_collect_status(pipeline_id: int, user: CurrentUser, db: Db):
     p = get_pipeline(db, pipeline_id, user["id"])
     if not p:
         raise HTTPException(404, "not found")
-    path = _collect_progress_path(pipeline_id)
+    bd = _batch_dir(pipeline_id)
+    path = bd / _llm.COLLECT_PROGRESS_FILE
     if not path.exists():
         return {"status": "idle"}
     try:
@@ -722,7 +655,8 @@ def llm_collect(pipeline_id: int, user: CurrentUser, db: Db):
         raise HTTPException(403, "not owner")
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
-    progress_path = _collect_progress_path(pipeline_id)
+    bd = _batch_dir(pipeline_id)
+    progress_path = bd / _llm.COLLECT_PROGRESS_FILE
     if progress_path.exists():
         try:
             prior = json.loads(progress_path.read_text())
@@ -730,18 +664,18 @@ def llm_collect(pipeline_id: int, user: CurrentUser, db: Db):
                 raise HTTPException(409, "Collect is already running.")
         except json.JSONDecodeError:
             pass
-    progress_path.parent.mkdir(parents=True, exist_ok=True)
-    progress_path.write_text(json.dumps({
-        "status": "running", "phase": "queued",
-        "message": "Starting collect job...",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }, indent=2), encoding="utf-8")
+
+    db_p = _db_path(p)
+    pid = pipeline_id
 
     def _worker() -> None:
-        cmd = _llm_classify_cmd(pipeline_id) + ["save"]
-        rc, out = _run_llm_cmd(cmd, settings.pipeline_scripts_dir, timeout_sec=None)
         try:
-            _finalize_collect_subprocess(pipeline_id, rc, out)
+            _llm.collect_results(db_p, bd)
+            try:
+                with get_db() as meta_db:
+                    record_event(meta_db, pid, "llm_collected")
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -756,17 +690,12 @@ def llm_cancel(pipeline_id: int, user: CurrentUser, db: Db):
         raise HTTPException(404, "not found")
     if p["user_id"] != user["id"]:
         raise HTTPException(403, "not owner")
-    state = _load_batch_state(pipeline_id)
-    if not state or not state.get("batch_id"):
-        raise HTTPException(404, "no active batch")
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
-    try:
-        from openai import OpenAI
-        batch = OpenAI().batches.cancel(state["batch_id"])
-        state["status"] = batch.status
-        _save_batch_state(pipeline_id, state)
-        record_event(db, pipeline_id, "llm_cancelled")
-        return {"ok": True, "status": batch.status}
-    except Exception as exc:
-        raise HTTPException(500, str(exc))
+    bd = _batch_dir(pipeline_id)
+    state = _llm.load_state(bd)
+    if not state or not state.get("batch_id"):
+        raise HTTPException(404, "no active batch")
+    result = _llm.cancel_batch(bd)
+    record_event(db, pipeline_id, "llm_cancelled")
+    return {"ok": True, "status": result["status"]}

@@ -1,11 +1,11 @@
-"""Data router — stats, schema, records, and chart queries for a pipeline's research DB."""
+"""Data router — stats, schema, records, and summary tables for a pipeline's research DB."""
 from __future__ import annotations
 
+import sqlite3 as _sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
-from api.business.chart_defs import get_chart_configs
 from api.config import settings
 from api.db.pipelines import get_pipeline, get_subset
 from api.db.research import get_db_stats, get_distinct_values, get_records, get_schema, run_query
@@ -87,46 +87,94 @@ def db_records(
     return result
 
 
-@router.get("/{pipeline_id}/charts")
-def list_charts(
-    pipeline_id: int,
-    user: CurrentUser,
-    db: Db,
-    tab: str | None = Query(default=None, description="Tab to get charts for: search or llm"),
-):
-    pipeline = get_pipeline(db, pipeline_id, user["id"])
-    if not pipeline:
-        raise HTTPException(404, "pipeline not found")
-    return get_chart_configs(tab=tab)
-
-
 from pydantic import BaseModel
 
 
-class QueryBody(BaseModel):
-    sql: str = ""
-    subset_id: int | None = None
+# -- Summary tables -----------------------------------------------------------
+
+_SEARCH_SUMMARIES = [
+    ("publications_by_year",
+     "SELECT CAST(publication_year AS TEXT) AS label, COUNT(*) AS count "
+     "FROM filtered_records WHERE publication_year IS NOT NULL "
+     "GROUP BY publication_year ORDER BY publication_year DESC LIMIT 25"),
+    ("top_countries",
+     "SELECT value AS label, COUNT(*) AS count "
+     "FROM filtered_records, json_each(authors_countries) "
+     "GROUP BY value ORDER BY count DESC LIMIT 15"),
+    ("top_journals",
+     "SELECT primary_location_source_display_name AS label, COUNT(*) AS count "
+     "FROM filtered_records WHERE primary_location_source_display_name IS NOT NULL "
+     "GROUP BY label ORDER BY count DESC LIMIT 15"),
+    ("oa_status",
+     "SELECT COALESCE(open_access_oa_status, 'unknown') AS label, COUNT(*) AS count "
+     "FROM filtered_records GROUP BY 1 ORDER BY count DESC"),
+    ("work_types",
+     "SELECT COALESCE(type, 'unknown') AS label, COUNT(*) AS count "
+     "FROM filtered_records GROUP BY 1 ORDER BY count DESC LIMIT 10"),
+    ("fuel_subgroups",
+     "SELECT value AS label, COUNT(*) AS count "
+     "FROM filtered_records, json_each(matched_fuel_subgroups) "
+     "WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' "
+     "GROUP BY label ORDER BY count DESC"),
+    ("impact_subgroups",
+     "SELECT value AS label, COUNT(*) AS count "
+     "FROM filtered_records, json_each(matched_impact_subgroups) "
+     "WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' "
+     "GROUP BY label ORDER BY count DESC"),
+]
+
+_LLM_SUMMARIES = [
+    ("research_field",
+     "SELECT COALESCE(research_field, '(unclassified)') AS label, COUNT(*) AS count "
+     "FROM filtered_records WHERE fuel_relevant IS NOT NULL "
+     "GROUP BY label ORDER BY count DESC"),
+    ("uses_ml",
+     "SELECT CASE WHEN uses_ml = 1 THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS label, "
+     "COUNT(*) AS count FROM filtered_records WHERE fuel_relevant IS NOT NULL "
+     "GROUP BY label ORDER BY count DESC"),
+    ("confidence",
+     "SELECT COALESCE(confidence, '(empty)') AS label, COUNT(*) AS count "
+     "FROM filtered_records WHERE fuel_relevant IS NOT NULL "
+     "GROUP BY label ORDER BY count DESC"),
+    ("fuel_relevant",
+     "SELECT CASE WHEN fuel_relevant = 1 THEN 'Fuel relevant' ELSE 'Not fuel relevant' END AS label, "
+     "COUNT(*) AS count FROM filtered_records WHERE fuel_relevant IS NOT NULL "
+     "GROUP BY label ORDER BY count DESC"),
+]
 
 
-@router.post("/{pipeline_id}/query")
-def db_query(pipeline_id: int, body: QueryBody, user: CurrentUser, db: Db):
-    """Run a preset chart SQL query against the research DB, optionally scoped to a subset."""
+@router.get("/{pipeline_id}/summary")
+def summary_tables(
+    pipeline_id: int,
+    user: CurrentUser,
+    db: Db,
+    tab: str = Query(default="search", description="search or llm"),
+):
     db_path = _resolve_db(db, pipeline_id, user["id"])
-    if not body.sql or not body.sql.strip():
-        raise HTTPException(400, "sql is required")
-
-    final_sql = body.sql.strip()
-    if body.subset_id is not None:
-        sub = get_subset(db, pipeline_id, body.subset_id)
-        if not sub:
-            raise HTTPException(404, "subset not found")
-        inner = sub["sql_query"].strip().rstrip(";")
-        final_sql = final_sql.replace("FROM filtered_records", f"FROM ({inner}) AS filtered_records")
-
-    result = run_query(db_path, final_sql, max_rows=settings.db_query_max_rows)
-    if "error" in result:
-        raise HTTPException(400, result["error"])
-    return result
+    queries = _SEARCH_SUMMARIES if tab == "search" else _LLM_SUMMARIES
+    conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
+        result = {}
+        for name, sql in queries:
+            try:
+                needed_ok = True
+                if "research_field" in sql and "research_field" not in cols:
+                    needed_ok = False
+                if "uses_ml" in sql and "uses_ml" not in cols:
+                    needed_ok = False
+                if "fuel_relevant" in sql and "fuel_relevant" not in cols:
+                    needed_ok = False
+                if not needed_ok:
+                    result[name] = []
+                    continue
+                rows = conn.execute(sql).fetchall()
+                result[name] = [{"label": r[0], "count": r[1]} for r in rows]
+            except _sqlite3.OperationalError:
+                result[name] = []
+        return result
+    finally:
+        conn.close()
 
 
 @router.get("/{pipeline_id}/records/distinct")

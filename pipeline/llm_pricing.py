@@ -1,12 +1,12 @@
 """
-Shared LLM pricing catalog for llm_classify.py and the API / web UI.
+Shared LLM pricing catalog for the API / web UI.
 
 No third-party imports — safe to load in FastAPI without the OpenAI SDK installed.
 Source notes: platform.openai.com/docs/pricing (Batch API where applicable).
 """
 from __future__ import annotations
 
-# Default model embedded in batch JSONL (see llm_classify.phase_prepare)
+# Default model embedded in batch JSONL
 MODEL = "gpt-5.4-nano"
 
 # ── Pricing table (per 1M tokens) ─────────────────────────────────────────

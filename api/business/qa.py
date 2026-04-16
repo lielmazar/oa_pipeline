@@ -26,12 +26,10 @@ _VALID_FIELD = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 # ── Field definitions ─────────────────────────────────────────────────────────
 
 QA_FIELDS = [
-    {"id": "llm_is_hydrocarbon",      "label": "Is Hydrocarbon",       "type": "binary"},
-    {"id": "llm_research_objective",  "label": "Research Objective",   "type": "json_scalar"},
-    {"id": "llm_ml_role",             "label": "ML Role",              "type": "json_scalar"},
-    {"id": "llm_ml_algorithm",        "label": "ML Algorithm",         "type": "multi"},
-    {"id": "llm_ml_data_source",      "label": "ML Data Source",       "type": "ordinal"},
-    {"id": "llm_confidence",          "label": "Confidence",           "type": "ordinal"},
+    {"id": "fuel_relevant",   "label": "Fuel Relevant",    "type": "binary"},
+    {"id": "research_field",  "label": "Research Field",   "type": "ordinal"},
+    {"id": "uses_ml",         "label": "Uses ML/AI",       "type": "binary"},
+    {"id": "confidence",      "label": "Confidence",       "type": "ordinal"},
 ]
 
 FIELD_BY_ID = {f["id"]: f for f in QA_FIELDS}
@@ -40,24 +38,20 @@ FIELD_BY_ID = {f["id"]: f for f in QA_FIELDS}
 def _normalize_llm_value(field: str, raw: str) -> str:
     """Normalize a raw DB value so it matches human-label format.
 
-    ``json_scalar`` fields (e.g. ``llm_research_objective``) are stored in the
-    research DB as single-element JSON arrays like ``'["fuel_production"]'``.
-    The QA UI presents — and the human selects — plain scalars, so we unwrap
-    before storing in ``qa_ratings`` / comparing for disagreements & IRR.
+    With the new schema all LLM fields are plain scalars (TEXT or INTEGER),
+    so this is a near-passthrough.  Kept for backward compat with any
+    existing qa_ratings rows that may have old JSON-wrapped values.
     """
-    meta = FIELD_BY_ID.get(field)
-    if not meta:
+    if not raw:
         return raw
-    ftype = meta.get("type")
-    if ftype == "json_scalar":
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list) and len(parsed) == 1:
-                return str(parsed[0])
-            if isinstance(parsed, list) and len(parsed) == 0:
-                return "none"
-        except (json.JSONDecodeError, TypeError):
-            pass
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list) and len(parsed) == 1:
+            return str(parsed[0])
+        if isinstance(parsed, list) and len(parsed) == 0:
+            return "none"
+    except (json.JSONDecodeError, TypeError):
+        pass
     return raw
 
 
@@ -109,28 +103,14 @@ def list_distinct_field_labels(
             if t == "binary":
                 return ["0", "1"]
 
-            if t == "ordinal":
-                inner_sql = (
-                    f"SELECT DISTINCT {qi} AS v FROM _fr_subset WHERE {qi} IS NOT NULL "
-                    f"AND TRIM(CAST({qi} AS TEXT)) != '' ORDER BY v LIMIT ?"
-                )
-                rows = conn.execute(wrap(inner_sql), (limit,)).fetchall()
-                return [str(r[0]) for r in rows if r[0] is not None]
-
-            if t in ("multi", "json_scalar"):
-                inner_sql = (
-                    f"SELECT DISTINCT TRIM(CAST(value AS TEXT)) AS v FROM _fr_subset, json_each({qi}) "
-                    f"WHERE value IS NOT NULL AND TRIM(CAST(value AS TEXT)) != '' "
-                    f"AND LOWER(TRIM(CAST(value AS TEXT))) NOT IN ('none', 'null') "
-                    f"ORDER BY v LIMIT ?"
-                )
-                rows = conn.execute(wrap(inner_sql), (limit,)).fetchall()
-                out = [str(r[0]) for r in rows if r[0] is not None]
-                return sorted(set(out), key=lambda x: x.lower())
+            inner_sql = (
+                f"SELECT DISTINCT {qi} AS v FROM _fr_subset WHERE {qi} IS NOT NULL "
+                f"AND TRIM(CAST({qi} AS TEXT)) != '' ORDER BY v LIMIT ?"
+            )
+            rows = conn.execute(wrap(inner_sql), (limit,)).fetchall()
+            return [str(r[0]) for r in rows if r[0] is not None]
     except Exception:
         return []
-
-    return []
 
 
 ANNOTATION_DIMENSIONS = [
@@ -181,7 +161,7 @@ def get_qa_sample(
     pipeline_db_path: Path,
     pipeline_id: int,
     user_id: int,
-    field: str = "llm_is_hydrocarbon",
+    field: str = "fuel_relevant",
     size: int = 20,
     subset_id: int | None = None,
     subset_inner: str | None = None,
@@ -209,11 +189,16 @@ def get_qa_sample(
         cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
         if field not in cols:
             return []
-        has_confidence = "llm_confidence" in cols
+        has_confidence = "confidence" in cols
         abs_expr = (
             "COALESCE(abstract_text, '') AS abstract_text"
             if "abstract_text" in cols
             else "'' AS abstract_text"
+        )
+
+        conf_order = (
+            "CASE LOWER(confidence) "
+            "WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 ELSE 4 END"
         )
 
         if subset_inner:
@@ -222,20 +207,17 @@ def get_qa_sample(
             if has_confidence:
                 rows = conn.execute(
                     base
-                    + f"""llm_confidence, {field} AS field_value
+                    + f"""confidence, {field} AS field_value
                     FROM _fr_subset
                     WHERE {field} IS NOT NULL
-                    ORDER BY
-                      CASE llm_confidence
-                        WHEN 'Low' THEN 1 WHEN 'Medium' THEN 2 WHEN 'High' THEN 3 ELSE 4
-                      END, RANDOM()
+                    ORDER BY {conf_order}, RANDOM()
                     LIMIT ?""",
                     (size * 5,),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     base
-                    + f"""NULL AS llm_confidence, {field} AS field_value
+                    + f"""NULL AS confidence, {field} AS field_value
                     FROM _fr_subset
                     WHERE {field} IS NOT NULL
                     ORDER BY RANDOM()
@@ -245,20 +227,17 @@ def get_qa_sample(
         elif has_confidence:
             rows = conn.execute(
                 f"""SELECT openalex_id, title, doi, {abs_expr},
-                           llm_confidence, {field} AS field_value
+                           confidence, {field} AS field_value
                     FROM filtered_records
                     WHERE {field} IS NOT NULL
-                    ORDER BY
-                      CASE llm_confidence
-                        WHEN 'Low' THEN 1 WHEN 'Medium' THEN 2 WHEN 'High' THEN 3 ELSE 4
-                      END, RANDOM()
+                    ORDER BY {conf_order}, RANDOM()
                     LIMIT ?""",
                 (size * 5,),
             ).fetchall()
         else:
             rows = conn.execute(
                 f"""SELECT openalex_id, title, doi, {abs_expr},
-                           NULL AS llm_confidence, {field} AS field_value
+                           NULL AS confidence, {field} AS field_value
                     FROM filtered_records
                     WHERE {field} IS NOT NULL
                     ORDER BY RANDOM()
@@ -310,22 +289,13 @@ def list_ratings(meta_db: sqlite3.Connection, pipeline_id: int) -> list[dict]:
 def fix_malformed_llm_values(meta_db: sqlite3.Connection, pipeline_id: int) -> int:
     """Retroactively normalize llm_value in existing qa_ratings rows.
 
-    Fixes json_scalar fields where llm_value was stored as a JSON array
-    (e.g. ``'["fuel_production"]'``) instead of a plain scalar.
-    Returns the number of rows updated.
+    With the new schema (no json_scalar fields), this is a safety no-op that
+    still cleans up any legacy JSON-wrapped values from old ratings.
     """
-    json_scalar_fields = [
-        fid for fid, fmeta in FIELD_BY_ID.items()
-        if fmeta.get("type") == "json_scalar"
-    ]
-    if not json_scalar_fields:
-        return 0
-
-    ph = ",".join("?" for _ in json_scalar_fields)
     rows = meta_db.execute(
-        f"SELECT id, field, llm_value FROM qa_ratings "
-        f"WHERE pipeline_id=? AND field IN ({ph}) AND llm_value IS NOT NULL",
-        [pipeline_id] + json_scalar_fields,
+        "SELECT id, field, llm_value FROM qa_ratings "
+        "WHERE pipeline_id=? AND llm_value IS NOT NULL",
+        (pipeline_id,),
     ).fetchall()
 
     updated = 0
@@ -419,9 +389,7 @@ def compute_irr(meta_db: sqlite3.Connection, pipeline_id: int) -> dict:
     for fid, units in by_field.items():
         fmeta = FIELD_BY_ID.get(fid, {})
         ft = fmeta.get("type")
-        vtype = "set" if ft == "multi" else (
-            "ordinal" if ft == "ordinal" else "nominal"
-        )
+        vtype = "ordinal" if ft == "ordinal" else "nominal"
         alpha = krippendorff_alpha(units, value_type=vtype)
         by_unit: dict[str, list] = {}
         for u in units:

@@ -811,6 +811,10 @@ def process_records_to_rows(
                 if (record.get("language") or "").strip().lower() != "en":
                     _s("not_english"); continue
 
+                _work_type = (record.get("type") or "").strip().lower()
+                if _work_type not in _ALLOWED_WORK_TYPES:
+                    _s("wrong_type"); continue
+
                 abstract_ii = record.get("abstract_inverted_index") or {}
                 if not abstract_ii:
                     _s("no_abstract"); continue
@@ -921,12 +925,17 @@ _CLEAR_LINE  = "\033[K"
 _HIDE_CURSOR = "\033[?25l"
 _SHOW_CURSOR = "\033[?25h"
 
+_ALLOWED_WORK_TYPES: frozenset[str] = frozenset({
+    "article", "book-chapter", "report", "review",
+})
+
 _SKIP_LABELS: dict[str, str] = {
     "not_oa": "not open access", "not_english": "not English",
     "no_doi": "no DOI", "no_abstract": "no abstract",
     "no_keywords": "no keywords", "empty_abstract": "empty abstract",
     "json_error": "JSON error", "empty_line": "empty line",
     "no_id": "no ID", "processing_error": "error",
+    "wrong_type": "excluded work type",
 }
 
 

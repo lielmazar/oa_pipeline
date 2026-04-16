@@ -4,215 +4,84 @@ import { apiFetch } from '../api/client';
 /* ── Dimension definitions (mirrored from ML Classification Prompt v8) ──────── */
 
 const DIMENSION_DEFS = {
-  llm_is_hydrocarbon: {
+  fuel_relevant: {
     title: 'Fuel Relevant',
     description:
-      'true if the paper studies combustible liquid fuels for transportation (fossil, bio-derived, synthetic, alcohol blends) as the primary topic.',
-    falseNote:
-      'false if the paper studies: exhaust aftertreatment systems (SCR, DPF, DOC, TWC, catalytic converters) as the primary topic; ambient air quality, atmospheric dispersion, source apportionment, or health impacts of airborne pollutants; hydrogen-only or ammonia-only systems; fuel cells, batteries, solar, electric motors, ADAS; or any topic outside the fuel research fields.',
+      'Whether the paper falls within the scope of sustainable hydrocarbon fuel research for transportation.',
     scope:
-      'Scope: Combustible liquid fuels for transportation — fossil, bio-derived, synthetic, and alcohol blends — from feedstock through combustion and tailpipe emissions.',
+      'IN SCOPE: Petroleum-derived fuels, bio-derived hydrocarbon fuels, synthetic fuels, alcohol fuels in blends/engines, fuel additives, engine/turbine combustion, production/feedstocks/processing/LCA of the above.',
     outOfScope:
-      'Out of scope: exhaust aftertreatment systems (SCR, DPF, DOC, TWC), ambient air quality / atmospheric dispersion / source apportionment, hydrogen-only, ammonia-only, fuel cells, batteries, solar, electric motors, ADAS.',
+      'OUT OF SCOPE: Hydrogen as primary fuel, fuel cells, ammonia as fuel, battery electric vehicles, natural gas/CNG/LNG (unless dual-fuel), coal combustion, lubricants (unless fuel-lubricant interaction), food science/cosmetics/pharma, pure catalysis without fuel application, papers mentioning fuel terms only in passing.',
     codes: [
-      { code: 'Yes (1)', desc: 'Paper studies combustible liquid fuels for transportation as primary topic.' },
-      { code: 'No (0)', desc: 'Paper is out of scope (see above).' },
+      { code: 'Yes (1)', desc: 'Paper is about hydrocarbon fuels for transportation as defined in scope.' },
+      { code: 'No (0)', desc: 'Paper is out of scope.' },
     ],
   },
 
-  llm_research_objective: {
-    title: 'Research Objective',
-    description: "The paper's PRIMARY research goal. Pick the single most dominant.",
+  research_field: {
+    title: 'Research Field',
+    description: 'Assign exactly one code based on what the paper primarily investigates. If not fuel-relevant, assign "none".',
     codes: [
       {
         code: 'engine_emissions',
-        desc: 'Measuring, reducing, or predicting engine-out or tailpipe emissions as the primary goal.',
-        boundary:
-          'vs engine_performance: assign engine_emissions unless emissions are clearly secondary/minor. When in doubt → engine_emissions. vs combustion_science: engine hardware or operating conditions to address real emissions → engine_emissions; fundamental emission-formation mechanisms without engine context → combustion_science.',
+        desc: 'Measuring, predicting, or reducing exhaust pollutants: NOx, PM, CO, HC, smoke, soot.',
+        boundary: 'Paper optimizes engine parameters to reduce NOx -> engine_emissions. If both emissions and performance equally weighted -> engine_emissions (default).',
       },
       {
         code: 'engine_performance',
-        desc: 'Improving or characterizing engine performance as the primary goal.',
-        boundary:
-          'vs engine_emissions: use ONLY when emissions are secondary/minor and the stated goal is efficiency or power output. vs combustion_science: optimizing or testing an engine system → engine_performance; fundamental heat release, flame, or ignition research → combustion_science.',
+        desc: 'Engine power, thermal efficiency, fuel consumption, calibration.',
+        boundary: 'Paper optimizes engine parameters to improve BTE -> engine_performance.',
       },
       {
-        code: 'combustion_science',
-        desc: 'Fundamental combustion research — flame structure, burning velocity, ignition delay, chemical kinetics, reaction pathways, spray dynamics, soot formation mechanisms, surrogate fuel formulation.',
-        boundary:
-          'No engine optimization or hardware-specific testing. Shock tube ignition delay → combustion_science. Same fuel tested in a diesel engine → engine_emissions or engine_performance.',
+        code: 'combustion_dynamics',
+        desc: 'Fundamental combustion physics: flame structure, spray dynamics, ignition delay, heat release rate, knock.',
+        boundary: 'Paper studies spray breakup physics -> combustion_dynamics.',
       },
       {
-        code: 'fuel_production',
-        desc: 'Producing fuels from feedstocks via any conversion route. Includes process optimization and yield improvement.',
-        boundary:
-          'vs blend_optimization: converting raw feedstock into fuel → fuel_production; mixing existing fuels → blend_optimization. vs sustainability_assessment: if producing the fuel IS the contribution → fuel_production; if the LCA/TEA IS the contribution → sustainability_assessment. vs feedstock_assessment: if a conversion step is performed → fuel_production; if only feedstock is characterized → feedstock_assessment.',
+        code: 'fuel_characterization',
+        desc: 'Physicochemical properties (viscosity, density, cetane, octane, flash point, stability, lubricity, heating value), spectroscopic analysis, fuel quality testing, QSPR.',
+        boundary: 'Paper predicts biodiesel cetane number from fatty acid profiles -> fuel_characterization.',
       },
       {
-        code: 'feedstock_assessment',
-        desc: 'Evaluating feedstock potential, composition, cultivation, collection, or logistics. No fuel conversion step.',
-        boundary:
-          'vs fuel_production: conversion present → fuel_production. vs sustainability_assessment: lifecycle/economic assessment of supply chains → sustainability_assessment; feedstock characterization → feedstock_assessment.',
+        code: 'fuel_processing',
+        desc: 'All conversion, production, and formulation processes: transesterification, pyrolysis, hydrotreatment, Fischer-Tropsch, fermentation, extraction. Also blend formulation and additive optimization.',
+        boundary: 'Paper optimizes transesterification yield -> fuel_processing. Paper optimizes blend ratio for target properties -> fuel_processing.',
       },
       {
-        code: 'fuel_properties',
-        desc: 'Measuring, predicting, or characterizing physical/chemical fuel properties as the primary objective.',
-        boundary:
-          'vs fuel_production: if property measurement IS the contribution → fuel_properties; if it\'s validation of a production process → fuel_production.',
-      },
-      {
-        code: 'blend_optimization',
-        desc: 'Formulating fuel blends, designing additive packages, optimizing mixture ratios of existing fuels.',
-        boundary:
-          'vs fuel_production: input is already a usable fuel being combined → blend_optimization; input is a non-fuel feedstock being converted → fuel_production.',
-      },
-      {
-        code: 'sustainability_assessment',
-        desc: 'System-level evaluation: LCA, TEA, carbon footprint, well-to-wheel, policy, regulation, cost-benefit.',
-        boundary:
-          'vs fuel_production/feedstock_assessment: the assessment methodology or result IS the primary contribution → sustainability_assessment.',
+        code: 'sustainability',
+        desc: 'LCA, carbon accounting, TEA, well-to-wheel, fleet-level modeling, feedstock sustainability, biomass yield prediction, supply chain analysis.',
+        boundary: 'Paper assesses carbon footprint of biofuel pathway -> sustainability. Paper predicts biomass feedstock yield from soil data -> sustainability.',
       },
       {
         code: 'molecular_design',
-        desc: 'Computational screening or inverse design of novel fuel molecules, additives, or catalysts.',
+        desc: 'Computational fuel/molecule discovery: QSPR/QSAR for novel compounds, de novo molecular generation, inverse design, structure-property screening.',
+        boundary: 'Paper generates novel fuel molecules computationally -> molecular_design.',
       },
-      { code: 'none', desc: 'Not fuel-related, or out of scope.' },
+      { code: 'none', desc: 'Not fuel-relevant.' },
     ],
   },
 
-  llm_ml_role: {
-    title: 'ML Role',
+  uses_ml: {
+    title: 'Uses ML/AI',
     description:
-      'What the ML model DOES — its functional purpose. INDEPENDENT of research_objective.',
-    notes: [
-      'RSM, DOE, ANOVA, and metaheuristic optimization alone ≠ ML → set "none".',
-      'GA/PSO used ONLY for parameter search without a trained predictive model → "none".',
-      'GP/GEP producing trained symbolic models ARE ML.',
-      'PCA/t-SNE/UMAP used only for preprocessing → not "pattern_discovery".',
-      'ML-positive ONLY if the abstract describes a model trained, validated, or deployed in the paper itself.',
-    ],
+      'Whether the paper uses machine learning or AI as a substantive methodological tool.',
+    scope:
+      'TRUE: Trains/applies any ML/AI model (ANN, SVM, RF, DL, etc.); uses chemometric methods as analytical tool (PCA for classification, PLS for prediction); uses evolutionary algorithms AS the learning method (genetic programming); uses ML-derived surrogates in optimization.',
+    outOfScope:
+      'FALSE: Only conventional statistics (ANOVA, t-test, linear regression without ML framing); RSM/DOE only; PCA only for preprocessing; GA/PSO only as optimizer (not learner); merely cites/reviews ML methods without applying them.',
     codes: [
-      {
-        code: 'prediction',
-        desc: 'Estimating output quantities from input variables. The goal is inference or forecasting.',
-        boundary:
-          'vs optimization: model produces estimates without an explicit search/optimization loop → prediction. vs surrogate_modeling: replaces a known expensive simulation → surrogate_modeling; learns directly from data → prediction.',
-      },
-      {
-        code: 'optimization',
-        desc: 'Tuning parameters to maximize or minimize an objective via explicit search (GA, PSO, Bayesian opt, Pareto).',
-        boundary:
-          'Requires an explicit optimization loop, not just prediction. Prediction + manual interpretation ≠ optimization.',
-      },
-      {
-        code: 'surrogate_modeling',
-        desc: 'ML trained to replace or approximate expensive simulations (CFD, kinetics, process models) for faster evaluation.',
-        boundary:
-          'vs prediction: surrogate replaces an identified simulation; prediction learns from empirical or operational data directly.',
-      },
-      {
-        code: 'soft_sensor',
-        desc: 'Inferring hard-to-measure quantities in real time from available sensor signals.',
-        boundary:
-          'vs prediction: soft_sensor operates online in a running system; prediction operates offline on datasets.',
-      },
-      {
-        code: 'pattern_discovery',
-        desc: 'Unsupervised exploration as the PRIMARY contribution — clustering, latent structure identification.',
-        boundary:
-          'Not routine preprocessing. PCA for dimensionality reduction before regression ≠ pattern_discovery.',
-      },
-      {
-        code: 'image_analysis',
-        desc: 'Extracting information from visual data — flame images, spray morphology, microscopy.',
-      },
-      {
-        code: 'design',
-        desc: 'Generating, screening, or inverse-designing NEW molecular structures or compositions using ML.',
-        boundary:
-          'vs prediction: design creates new candidates; prediction estimates properties of known candidates.',
-      },
-      {
-        code: 'automation',
-        desc: 'Closed-loop control using ML — adaptive calibration, model-predictive control, RL-based controllers.',
-        boundary:
-          'vs optimization: automation operates in closed-loop real-time control; optimization is offline parameter tuning.',
-      },
-      {
-        code: 'anomaly_detection',
-        desc: 'Identifying faults, outliers, or degradation in fuel systems or processes.',
-        boundary:
-          'vs prediction: anomaly_detection flags abnormal states; prediction estimates continuous quantities.',
-      },
-      {
-        code: 'text_mining',
-        desc: 'NLP on fuel-related patents, literature, or regulatory text.',
-      },
-      { code: 'none', desc: 'No ML in this paper.' },
+      { code: 'Yes (1)', desc: 'Paper trains or applies ML/AI as a substantive tool.' },
+      { code: 'No (0)', desc: 'No ML/AI, or only conventional statistics / RSM / DOE.' },
     ],
   },
 
-  llm_ml_algorithm: {
-    title: 'ML Algorithm',
-    description:
-      'Specific ML model names or algorithm families mentioned in the abstract. Include ONLY machine learning models — not statistical tests, DOE, RSM, or physics-based simulations.',
-    notes: [
-      'Use ["none"] if no ML algorithm is present.',
-      'Never mix "none" with real values.',
-      'If ml_role ≠ "none" then ml_algorithm MUST contain at least one ML model name.',
-      'Examples: ["Random Forest", "XGBoost"], ["ANN", "Genetic Algorithm"], ["LSTM"], ["PLS"], ["SVM", "Random Forest", "Gradient Boosting"].',
-    ],
-  },
-
-  llm_ml_data_source: {
-    title: 'ML Data Source',
-    description: 'Primary origin of data used to train or feed the ML model.',
-    codes: [
-      {
-        code: 'experimental',
-        desc: 'Data generated by the authors through physical tests — laboratory, engine dynamometer, bench-scale measurements.',
-        boundary:
-          'vs operational: controlled laboratory/test-bench conditions → experimental; real-world uncontrolled conditions → operational.',
-      },
-      {
-        code: 'simulation',
-        desc: 'Data generated from computational models — CFD, chemical kinetics, process simulation, molecular dynamics.',
-        boundary:
-          'vs experimental: ML trains on simulation outputs → simulation; trains on physical measurements → experimental.',
-      },
-      {
-        code: 'database',
-        desc: 'Data retrieved from published repositories or standardized collections — NIST, PubChem, DIPPR, curated datasets.',
-        boundary:
-          'vs literature: structured database with API or download → database; data manually collected from papers → literature.',
-      },
-      {
-        code: 'literature',
-        desc: 'Data manually or systematically extracted from published papers.',
-        boundary: 'vs database: unstructured extraction from papers → literature.',
-      },
-      {
-        code: 'operational',
-        desc: 'Real-world data from deployed systems — fleet vehicles, refineries, power plants, onboard sensors, GPS logs, satellite/aerial monitoring.',
-        boundary:
-          'vs experimental: operational data comes from in-use or deployed systems, not controlled test setups.',
-      },
-      {
-        code: 'mixed',
-        desc: 'Two or more of the above contribute substantially.',
-        boundary: 'Use only when sources are genuinely co-equal, not when one dominates.',
-      },
-      { code: 'none', desc: 'No ML, or data source not identifiable from abstract.' },
-    ],
-  },
-
-  llm_confidence: {
+  confidence: {
     title: 'Confidence',
-    description: 'How clearly the abstract describes the ML method, target, and data.',
+    description: 'How clearly the classification can be determined from the title and abstract.',
     codes: [
-      { code: 'high', desc: 'ML method, target, and data clearly described.' },
-      { code: 'medium', desc: 'ML mentioned but vague, or fuel relevance ambiguous.' },
-      { code: 'low', desc: 'Ambiguous, title-abstract mismatch, or ML only implied.' },
+      { code: 'high', desc: 'Clear classification with no ambiguity.' },
+      { code: 'medium', desc: 'Some ambiguity in scope or field assignment.' },
+      { code: 'low', desc: 'Borderline case, unclear from title and abstract alone.' },
     ],
   },
 };
@@ -308,7 +177,7 @@ function QualityBadge({ quality }) {
 }
 
 function pillLabel(fieldId, raw) {
-  if (fieldId === 'llm_is_hydrocarbon') {
+  if (fieldId === 'fuel_relevant' || fieldId === 'uses_ml') {
     if (raw === '0' || raw === 0) return 'No';
     if (raw === '1' || raw === 1) return 'Yes';
   }
@@ -420,7 +289,7 @@ function RatingCard({ pipelineId, record, fieldId, fieldType, labels, onRate }) 
 export default function QAView({ initialContext, onContextConsumed, lockedPipelineId }) {
   const [pipelines, setPipelines]   = useState([]);
   const [pipelineId, setPipelineId] = useState('');
-  const [field, setField]           = useState('llm_is_hydrocarbon');
+  const [field, setField]           = useState('fuel_relevant');
   const [qaFields, setQaFields]     = useState([]);
   const [records, setRecords]       = useState([]);
   const [fieldLabels, setFieldLabels] = useState([]);

@@ -126,6 +126,7 @@ Run-SSH "rm -rf ${INSTALL_DIR}/api"
 Run-SCP-R "$REPO_ROOT\api" "${INSTALL_DIR}/"
 Run-SSH "rm -rf ${INSTALL_DIR}/pipeline"
 Run-SCP-R "$REPO_ROOT\pipeline" "${INSTALL_DIR}/"
+Run-SSH "find ${INSTALL_DIR}/api ${INSTALL_DIR}/pipeline -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true"
 
 # Step 4: Sync config + deploy scripts
 Write-Host "[4/5] Syncing config + deploy scripts..." -ForegroundColor Green

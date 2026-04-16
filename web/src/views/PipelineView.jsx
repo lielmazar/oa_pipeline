@@ -5,7 +5,7 @@ import SearchStage from '../stages/SearchStage';
 import LlmStage from '../stages/LlmStage';
 import QaStage from '../stages/QaStage';
 import ExportTab from '../stages/ExportTab';
-import PresetCharts from '../stages/analysis/PresetCharts.jsx';
+import SummaryTables from '../stages/SummaryTables.jsx';
 import RecordsViewer from '../stages/RecordsViewer.jsx';
 
 const TABS = [
@@ -21,9 +21,11 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
   const [activeTab, setActiveTab] = useState('search');
   const [subsets, setSubsets] = useState([]);
   const [dataFilters, setDataFilters] = useState(null);
+  const [drilldownKey, setDrilldownKey] = useState(0);
 
-  const handleDrillDown = useCallback((filters) => {
+  const handleDrilldown = useCallback((filters) => {
     setDataFilters(filters);
+    setDrilldownKey(k => k + 1);
     setActiveTab('data');
   }, []);
 
@@ -82,19 +84,19 @@ export default function PipelineView({ initialPipeline, onBack, onFilterRunChang
         <div className="space-y-4">
           <KeywordStage pipeline={pipeline} onChange={setPipeline} />
           <SearchStage pipeline={pipeline} onChange={setPipeline} onRunMetaChange={onFilterRunChange} />
-          <PresetCharts pipelineId={pipeline.id} tab="search" subsets={subsets} onDrillDown={handleDrillDown} />
+          <SummaryTables pipelineId={pipeline.id} tab="search" onDrilldown={handleDrilldown} />
         </div>
       )}
 
       {activeTab === 'llm' && (
         <div className="space-y-4">
           <LlmStage pipeline={pipeline} onChange={setPipeline} />
-          <PresetCharts pipelineId={pipeline.id} tab="llm" subsets={subsets} onDrillDown={handleDrillDown} />
+          <SummaryTables pipelineId={pipeline.id} tab="llm" onDrilldown={handleDrilldown} />
         </div>
       )}
 
       {activeTab === 'data' && (
-        <RecordsViewer pipelineId={pipeline.id} subsets={subsets} initialFilters={dataFilters} />
+        <RecordsViewer key={drilldownKey} pipelineId={pipeline.id} subsets={subsets} initialFilters={dataFilters} />
       )}
 
       {activeTab === 'qa' && <QaStage pipeline={pipeline} />}

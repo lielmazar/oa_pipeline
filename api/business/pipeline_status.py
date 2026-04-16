@@ -19,10 +19,10 @@ def build_stage_status(pipeline: dict) -> dict:
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(filtered_records)").fetchall()}
-            if "llm_is_hydrocarbon" in existing_cols:
+            if "fuel_relevant" in existing_cols:
                 row = conn.execute(
                     "SELECT COUNT(*) as total, "
-                    "SUM(CASE WHEN llm_is_hydrocarbon IS NOT NULL THEN 1 ELSE 0 END) as llm_done "
+                    "SUM(CASE WHEN fuel_relevant IS NOT NULL THEN 1 ELSE 0 END) as llm_done "
                     "FROM filtered_records"
                 ).fetchone()
                 status["llm_done"] = row[1] if row else 0

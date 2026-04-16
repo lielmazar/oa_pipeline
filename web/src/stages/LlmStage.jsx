@@ -169,7 +169,7 @@ function StatusBadge({ status }) {
   );
 }
 
-/** Short label for the model dropdown; full table comes from the API (same source as llm_classify.py MODEL_PRICING). */
+/** Short label for the model dropdown; full table comes from the API (llm_pricing.py MODEL_PRICING). */
 function modelSelectLabel(id, row) {
   if (!row) return id;
   let s = `${id} — $${row.input}/$${row.output} per 1M in/out`;
@@ -192,7 +192,9 @@ export default function LlmStage({ pipeline }) {
   const [subsetId, setSubsetId]   = useState(null);
   const [batchLimit, setBatchLimit] = useState('');
   const [llmStats, setLlmStats]   = useState(null);
-  const [output, setOutput]       = useState('');
+  const [estimate, setEstimate]   = useState(null);
+  const [promptId, setPromptId]   = useState('');
+  const [promptVersion, setPromptVersion] = useState('');
 
   useEffect(() => {
     apiFetch('/api/pipeline/llm/model-catalog')
@@ -219,7 +221,11 @@ export default function LlmStage({ pipeline }) {
     apiFetch(`/api/pipeline/${pipeline.id}/llm/stats${q}`)
       .then(r => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!cancelled) setLlmStats(d);
+        if (!cancelled) {
+          setLlmStats(d);
+          if (d?.prompt_id && !promptId) setPromptId(d.prompt_id);
+          if (d?.prompt_version && !promptVersion) setPromptVersion(d.prompt_version);
+        }
       })
       .catch(() => {
         if (!cancelled) setLlmStats(null);
@@ -245,6 +251,21 @@ export default function LlmStage({ pipeline }) {
   const catalogOk   = catalog && model != null;
   useInterval(fetchStatus, isActive ? POLL_ACTIVE_MS : null);
 
+  const fetchCollectProgress = useCallback(async () => {
+    try {
+      const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/collect_status`);
+      if (res.ok) {
+        const d = await res.json();
+        setCollectProgress(d);
+      }
+    } catch {}
+  }, [pipeline.id]);
+
+  const isCollectRunning = collectProgress?.status === 'running';
+  useInterval(fetchCollectProgress, isCollectRunning ? 3000 : null);
+
+  useEffect(() => { fetchCollectProgress(); }, [fetchCollectProgress]);
+
   const runEstimate = async () => {
     if (!catalogOk) return;
     const lim = parseBatchLimitInput(batchLimit);
@@ -252,7 +273,7 @@ export default function LlmStage({ pipeline }) {
       setError('Batch limit must be a positive integer, or leave blank.');
       return;
     }
-    setEstimating(true); setError(''); setOutput('');
+    setEstimating(true); setError(''); setEstimate(null);
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/estimate`, {
         method: 'POST',
@@ -260,7 +281,7 @@ export default function LlmStage({ pipeline }) {
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Estimate failed'); return; }
-      setOutput(d.output || '');
+      setEstimate(d);
     } finally { setEstimating(false); }
   };
 
@@ -279,26 +300,28 @@ export default function LlmStage({ pipeline }) {
           ? `Submit LLM batch (server default: up to ${Number(catalog.default_batch_limit).toLocaleString()} unprocessed rows per run; clear cap in .env for unlimited)? This will incur API costs.`
           : `Submit LLM batch${pending != null ? ` (${pending.toLocaleString()} pending in this scope)` : ''}? This will incur API costs.`;
     if (!confirm(msg)) return;
-    setSubmitting(true); setError(''); setOutput('');
+    setSubmitting(true); setError(''); setEstimate(null);
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/submit`, {
         method: 'POST',
-        body: JSON.stringify({ model, subset_id: subsetId, limit: lim.value }),
+        body: JSON.stringify({
+          model, subset_id: subsetId, limit: lim.value,
+          prompt_id: promptId || undefined,
+          prompt_version: promptVersion || undefined,
+        }),
       });
       const d = await res.json();
       if (!res.ok) { setError(d.detail || 'Submit failed'); return; }
-      setOutput(d.output || '');
       await fetchStatus();
     } finally { setSubmitting(false); }
   };
 
   const collect = async () => {
-    setCollecting(true); setError(''); setOutput('');
+    setCollecting(true); setError(''); setEstimate(null);
     try {
       const res = await apiFetch(`/api/pipeline/${pipeline.id}/llm/collect`, { method: 'POST' });
       const d   = await res.json();
       if (!res.ok) { setError(d.detail || 'Collect failed'); return; }
-      setOutput(d.output || '');
       await fetchStatus();
     } finally { setCollecting(false); }
   };
@@ -357,13 +380,10 @@ export default function LlmStage({ pipeline }) {
           {status && <StatusBadge status={batchStatus} />}
         </div>
         <p className="text-xs text-gray-500 mb-4">
-          Classify records via OpenAI Batch API. Requires{' '}
+          Classify records via OpenAI Batch API using stored prompts. Requires{' '}
           <code className="bg-gray-100 px-1 rounded">OPENAI_API_KEY</code> on the server.
-          Results are written back to the research database. Choose which subset to estimate and batch (same subsets as Dataset access).
+          Results are written back to the research database. Choose which subset to estimate and batch.
           Already-classified rows are skipped on the next run; use a batch limit to send at most N pending rows per submit.
-          Model list and rates come from{' '}
-          <code className="bg-gray-100 px-1 rounded">pipeline/llm_pricing.py</code> (Batch API; same source as{' '}
-          <code className="bg-gray-100 px-1 rounded">llm_classify.py</code>).
         </p>
 
         {llmStats && !llmStats.db_exists && (
@@ -380,7 +400,7 @@ export default function LlmStage({ pipeline }) {
               <span className="tabular-nums">{llmStats.llm_pending.toLocaleString()}</span>
               {' '}still unprocessed
               {!llmStats.has_llm_column && (
-                <span className="text-gray-500"> (no <code className="bg-white/80 px-1 rounded">llm_is_hydrocarbon</code> column yet — treating all rows as pending)</span>
+                <span className="text-gray-500"> (no <code className="bg-white/80 px-1 rounded">fuel_relevant</code> column yet — treating all rows as pending)</span>
               )}
             </div>
             {catalog?.default_batch_limit != null && (
@@ -537,7 +557,7 @@ export default function LlmStage({ pipeline }) {
 
         {error && <p className="text-xs text-red-600 bg-red-50 rounded px-3 py-2 mb-3">{error}</p>}
 
-        {/* Subset scope — passed to llm_classify as --subset-sql */}
+        {/* Subset scope */}
         <div className="mb-4">
           <label className="block text-xs text-gray-600 font-medium mb-1.5">Subset scope</label>
           {subsets.length === 0 ? (
@@ -592,7 +612,41 @@ export default function LlmStage({ pipeline }) {
           </p>
         </div>
 
-        {/* Model selector — options from API (MODEL_PRICING in llm_classify.py) */}
+        {/* Stored prompt configuration */}
+        <div className="grid sm:grid-cols-2 gap-3 mb-4">
+          <div>
+            <label className="block text-xs text-gray-600 font-medium mb-1.5" htmlFor={`prompt-id-${pipeline.id}`}>
+              Stored Prompt ID
+            </label>
+            <input
+              id={`prompt-id-${pipeline.id}`}
+              type="text"
+              value={promptId}
+              onChange={e => setPromptId(e.target.value)}
+              placeholder="pmpt_..."
+              className="w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-teal-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 font-medium mb-1.5" htmlFor={`prompt-ver-${pipeline.id}`}>
+              Prompt Version
+            </label>
+            <input
+              id={`prompt-ver-${pipeline.id}`}
+              type="text"
+              value={promptVersion}
+              onChange={e => setPromptVersion(e.target.value)}
+              placeholder="1"
+              className="w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-teal-400"
+            />
+          </div>
+          <p className="text-[11px] text-gray-500 sm:col-span-2">
+            OpenAI stored prompt reference used in the batch JSONL. Saves tokens by not embedding the full prompt text.
+            Stored per pipeline — editable before each submit.
+          </p>
+        </div>
+
+        {/* Model selector */}
         <div className="flex flex-col gap-2 mb-4">
           <div className="flex items-center gap-3 flex-wrap">
             <label className="text-xs text-gray-600 font-medium shrink-0">Model</label>
@@ -676,15 +730,88 @@ export default function LlmStage({ pipeline }) {
             </>
           )}
         </div>
+
+        <CollectProgressPanel progress={collectProgress} />
       </div>
 
-      {/* Estimate / command output */}
-      {output && (
+      {/* Estimate results table */}
+      {estimate && (
         <div className="bg-white border border-gray-200 rounded-xl p-4">
-          <h3 className="text-sm font-medium text-gray-700 mb-2">Output</h3>
-          <pre className="bg-gray-900 text-gray-100 rounded-lg p-3 text-xs font-mono overflow-auto max-h-64 whitespace-pre-wrap">
-            {output}
-          </pre>
+          <h3 className="text-sm font-medium text-gray-700 mb-3">Cost Estimate</h3>
+          <div className="grid sm:grid-cols-2 gap-3 text-xs mb-4">
+            <div className="bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+              <div className="text-[10px] font-semibold uppercase text-slate-500">Records to process</div>
+              <div className="text-lg font-bold text-slate-900 tabular-nums">{(estimate.to_process ?? 0).toLocaleString()}</div>
+              <div className="text-slate-500 mt-0.5">
+                {(estimate.already_done ?? 0).toLocaleString()} already done · {(estimate.total_in_db ?? 0).toLocaleString()} total in DB
+              </div>
+            </div>
+            <div className="bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+              <div className="text-[10px] font-semibold uppercase text-emerald-700">Estimated total cost</div>
+              <div className="text-lg font-bold text-emerald-900 tabular-nums">${(estimate.total_cost ?? 0).toFixed(2)}</div>
+              <div className="text-emerald-700 mt-0.5">
+                Model: {estimate.model} {estimate.note && <span className="text-emerald-600">· {estimate.note}</span>}
+              </div>
+            </div>
+          </div>
+          <table className="w-full text-xs border-collapse">
+            <tbody>
+              <tr className="border-b border-slate-100">
+                <td className="py-1 text-slate-500">Avg chars/record</td>
+                <td className="py-1 text-right font-mono text-slate-700">{(estimate.avg_chars ?? 0).toLocaleString()}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1 text-slate-500">Est. input tokens</td>
+                <td className="py-1 text-right font-mono text-slate-700">{(estimate.est_input_tokens ?? 0).toLocaleString()}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1 text-slate-500">Est. output tokens</td>
+                <td className="py-1 text-right font-mono text-slate-700">{(estimate.est_output_tokens ?? 0).toLocaleString()}</td>
+              </tr>
+              {(estimate.est_reasoning_tokens ?? 0) > 0 && (
+                <tr className="border-b border-slate-100">
+                  <td className="py-1 text-slate-500">Est. reasoning tokens</td>
+                  <td className="py-1 text-right font-mono text-slate-700">{estimate.est_reasoning_tokens.toLocaleString()}</td>
+                </tr>
+              )}
+              <tr className="border-b border-slate-100">
+                <td className="py-1 text-slate-500">Input cost</td>
+                <td className="py-1 text-right font-mono text-slate-700">${(estimate.cost_input ?? 0).toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-slate-100">
+                <td className="py-1 text-slate-500">Output cost</td>
+                <td className="py-1 text-right font-mono text-slate-700">${(estimate.cost_output ?? 0).toFixed(2)}</td>
+              </tr>
+              {(estimate.cost_reasoning ?? 0) > 0 && (
+                <tr className="border-b border-slate-100">
+                  <td className="py-1 text-slate-500">Reasoning cost</td>
+                  <td className="py-1 text-right font-mono text-slate-700">${estimate.cost_reasoning.toFixed(2)}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+
+          {estimate.comparison?.length > 1 && (
+            <details className="mt-3 text-xs text-gray-600 border border-gray-100 rounded-lg px-3 py-2 bg-gray-50/80">
+              <summary className="cursor-pointer font-medium text-gray-700">Compare all models</summary>
+              <table className="w-full text-[11px] border-collapse mt-2">
+                <thead>
+                  <tr className="border-b border-gray-200 text-left text-gray-500">
+                    <th className="py-1 pr-2 font-medium">Model</th>
+                    <th className="py-1 text-right font-medium">Estimated Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {estimate.comparison.map(c => (
+                    <tr key={c.model} className={`border-t border-gray-100 ${c.selected ? 'font-semibold text-emerald-800 bg-emerald-50/50' : ''}`}>
+                      <td className="py-1 pr-2 font-mono">{c.model}{c.selected ? ' ✓' : ''}</td>
+                      <td className="py-1 text-right font-mono">${c.total.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          )}
         </div>
       )}
 

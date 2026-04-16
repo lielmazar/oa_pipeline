@@ -55,6 +55,15 @@ def _json_to_groups(text: str) -> list:
     return result
 
 
+@router.get("/taxonomy")
+def get_taxonomy(user: CurrentUser):
+    schema_path = settings.pipeline_scripts_dir / "research_schema.json"
+    if not schema_path.exists():
+        return {}
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    return schema.get("taxonomy", {})
+
+
 @router.get("/default-keywords")
 def get_default_keywords(user: CurrentUser):
     return _load_default_keywords()

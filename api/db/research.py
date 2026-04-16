@@ -34,9 +34,9 @@ def get_db_stats(db_path: Path) -> dict:
         with _connect_ro(db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM filtered_records").fetchone()[0]
             cols = _available_cols(conn)
-            if "llm_is_hydrocarbon" in cols:
+            if "fuel_relevant" in cols:
                 llm_count = conn.execute(
-                    "SELECT COUNT(*) FROM filtered_records WHERE llm_is_hydrocarbon IS NOT NULL"
+                    "SELECT COUNT(*) FROM filtered_records WHERE fuel_relevant IS NOT NULL"
                 ).fetchone()[0]
             else:
                 llm_count = 0
@@ -70,7 +70,6 @@ _JSON_ARRAY_COLS = frozenset({
     "matched_fuel_terms", "matched_impact_terms",
     "matched_fuel_stems", "matched_impact_stems",
     "matched_fuel_subgroups", "matched_impact_subgroups",
-    "llm_ml_role", "llm_ml_algorithm", "llm_research_objective",
 })
 
 _COL_TYPE_CACHE: dict[str, dict[str, str]] = {}

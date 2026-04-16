@@ -136,6 +136,28 @@
     ]
   },
 
+  "taxonomy": {
+    "research_field": {
+      "codes": ["engine_emissions", "engine_performance", "combustion_dynamics",
+                "fuel_characterization", "fuel_processing", "sustainability",
+                "molecular_design", "none"],
+      "labels": {
+        "engine_emissions": "Engine Emissions",
+        "engine_performance": "Engine Performance",
+        "combustion_dynamics": "Combustion Dynamics",
+        "fuel_characterization": "Fuel Characterization",
+        "fuel_processing": "Fuel Processing",
+        "sustainability": "Sustainability",
+        "molecular_design": "Molecular Design",
+        "none": "None"
+      }
+    },
+    "confidence": {
+      "codes": ["high", "medium", "low"],
+      "labels": { "high": "High", "medium": "Medium", "low": "Low" }
+    }
+  },
+
   "subsets": [
     {
       "key": "all",
@@ -150,260 +172,22 @@
     {
       "key": "oa_llm",
       "name": "Open access + LLM classified",
-      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND llm_is_hydrocarbon IS NOT NULL",
-      "requires_columns": ["llm_is_hydrocarbon"]
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND fuel_relevant IS NOT NULL",
+      "requires_columns": ["fuel_relevant"]
     },
     {
       "key": "oa_llm_hc",
-      "name": "Open access + hydrocarbon",
-      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND llm_is_hydrocarbon = 1",
-      "requires_columns": ["llm_is_hydrocarbon"]
+      "name": "Open access + fuel relevant",
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND fuel_relevant = 1",
+      "requires_columns": ["fuel_relevant"]
     },
     {
       "key": "oa_llm_hc_ml",
-      "name": "Open access + hydrocarbon + ML",
-      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND llm_is_hydrocarbon = 1 AND EXISTS (SELECT 1 FROM json_each(llm_ml_role) j WHERE j.value IS NOT NULL AND TRIM(CAST(j.value AS TEXT)) != '' AND LOWER(CAST(j.value AS TEXT)) NOT IN ('none'))",
-      "requires_columns": ["llm_is_hydrocarbon", "llm_ml_role"]
+      "name": "Open access + fuel relevant + ML",
+      "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND fuel_relevant = 1 AND uses_ml = 1",
+      "requires_columns": ["fuel_relevant", "uses_ml"]
     }
   ],
-
-  "charts": {
-    "search": [
-      {
-        "id": "publications_by_year",
-        "title": "Publications by Year",
-        "renderer": "bar",
-        "x_key": "year",
-        "y_key": "count",
-        "params": ["cutoff_year"],
-        "drill_column": "publication_year",
-        "sql_template": "SELECT CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} THEN 'Unknown/≤{cutoff_year}' ELSE CAST(publication_year AS TEXT) END AS year, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY MIN(CASE WHEN publication_year IS NULL OR publication_year <= {cutoff_year} THEN 0 ELSE publication_year END)"
-      },
-      {
-        "id": "top_countries",
-        "title": "Top Contributing Countries",
-        "renderer": "bar",
-        "x_key": "country",
-        "y_key": "count",
-        "params": ["top_n"],
-        "drill_column": "authors_countries",
-        "sql_template": "SELECT value AS country, COUNT(*) AS count FROM filtered_records, json_each(authors_countries) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
-        "id": "top_journals",
-        "title": "Top Journals / Sources",
-        "renderer": "bar",
-        "x_key": "journal",
-        "y_key": "count",
-        "params": ["top_n"],
-        "drill_column": "primary_location_source_display_name",
-        "sql_template": "SELECT primary_location_source_display_name AS journal, COUNT(*) AS count FROM filtered_records WHERE primary_location_source_display_name IS NOT NULL GROUP BY journal ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
-        "id": "oa_status",
-        "title": "Open Access Status",
-        "renderer": "pie",
-        "x_key": "status",
-        "y_key": "count",
-        "drill_column": "open_access_oa_status",
-        "sql_template": "SELECT COALESCE(open_access_oa_status, 'unknown') AS status, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY count DESC"
-      },
-      {
-        "id": "work_types",
-        "title": "Work Types",
-        "renderer": "bar",
-        "x_key": "type",
-        "y_key": "count",
-        "drill_column": "type",
-        "sql_template": "SELECT COALESCE(type, 'unknown') AS type, COUNT(*) AS count FROM filtered_records GROUP BY 1 ORDER BY count DESC LIMIT 10"
-      },
-      {
-        "id": "top_institutions",
-        "title": "Top Institutions",
-        "renderer": "bar",
-        "x_key": "institution",
-        "y_key": "count",
-        "params": ["top_n"],
-        "drill_column": "authors_institutions",
-        "sql_template": "SELECT value AS institution, COUNT(*) AS count FROM filtered_records, json_each(authors_institutions) GROUP BY value ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
-        "id": "fuel_subgroups",
-        "title": "Fuel Subgroups",
-        "renderer": "bar",
-        "x_key": "subgroup",
-        "y_key": "count",
-        "drill_column": "matched_fuel_subgroups",
-        "sql_template": "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, COUNT(*) AS count FROM filtered_records, json_each(matched_fuel_subgroups) WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY subgroup ORDER BY count DESC"
-      },
-      {
-        "id": "impact_subgroups",
-        "title": "Impact Subgroups",
-        "renderer": "bar",
-        "x_key": "subgroup",
-        "y_key": "count",
-        "drill_column": "matched_impact_subgroups",
-        "sql_template": "SELECT REPLACE(value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS subgroup, COUNT(*) AS count FROM filtered_records, json_each(matched_impact_subgroups) WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY subgroup ORDER BY count DESC"
-      },
-      {
-        "id": "fuel_x_impact_subgroups",
-        "title": "Fuel Subgroup × Impact Subgroup",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_fuel_subgroups", "matched_impact_subgroups"],
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
-      }
-    ],
-    "llm": [
-      {
-        "id": "llm_ml_role",
-        "title": "ML/AI Functional Role (LLM)",
-        "renderer": "bar",
-        "x_key": "role",
-        "y_key": "count",
-        "params": ["top_n"],
-        "drill_column": "llm_ml_role",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS role, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_role) GROUP BY role ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
-        "id": "llm_ml_algorithm",
-        "title": "ML/AI Algorithm (LLM)",
-        "renderer": "bar",
-        "x_key": "algorithm",
-        "y_key": "count",
-        "params": ["top_n"],
-        "drill_column": "llm_ml_algorithm",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS algorithm, COUNT(*) AS count FROM filtered_records, json_each(llm_ml_algorithm) GROUP BY algorithm ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
-        "id": "llm_ml_usage",
-        "title": "ML/AI Usage Rate (LLM)",
-        "renderer": "pie",
-        "x_key": "uses_ml",
-        "y_key": "count",
-        "sql_template": "SELECT CASE WHEN llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' THEN 'Uses ML/AI' ELSE 'No ML/AI' END AS uses_ml, COUNT(*) AS count FROM filtered_records GROUP BY 1"
-      },
-      {
-        "id": "llm_ml_datasource",
-        "title": "ML Data Source Distribution (LLM)",
-        "renderer": "pie",
-        "x_key": "source",
-        "y_key": "count",
-        "drill_column": "llm_ml_data_source",
-        "sql_template": "SELECT CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS source, COUNT(*) AS count FROM filtered_records WHERE llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') GROUP BY 1 ORDER BY count DESC"
-      },
-      {
-        "id": "mlrole_x_algorithm",
-        "title": "ML Role × Algorithm",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["llm_ml_role", "llm_ml_algorithm"],
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_ml_role) r, json_each(llm_ml_algorithm) a GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelsubgroup_x_mlrole",
-        "title": "Fuel Subgroup × ML Role",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_fuel_subgroups", "llm_ml_role"],
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_role) r WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelsubgroup_x_algorithm",
-        "title": "Fuel Subgroup × Algorithm",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_fuel_subgroups", "llm_ml_algorithm"],
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_ml_algorithm) a WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "impactsubgroup_x_mlrole",
-        "title": "Impact Subgroup × ML Role",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_impact_subgroups", "llm_ml_role"],
-        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_role) r WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "impactsubgroup_x_algorithm",
-        "title": "Impact Subgroup × Algorithm",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_impact_subgroups", "llm_ml_algorithm"],
-        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_ml_algorithm) a WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuel_x_impact_subgroups_ml",
-        "title": "Fuel × Impact Subgroup (ML/AI Papers Only)",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_fuel_subgroups", "matched_impact_subgroups"],
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(matched_impact_subgroups) isg WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_ml_role IS NOT NULL AND llm_ml_role NOT IN ('[]', 'null', '') AND LOWER(llm_ml_role) NOT LIKE '%\"none\"%' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "llm_research_objective",
-        "title": "Research Objective (LLM)",
-        "renderer": "bar",
-        "x_key": "objective",
-        "y_key": "count",
-        "params": ["top_n"],
-        "drill_column": "llm_research_objective",
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(value), ''), '(empty)') AS objective, COUNT(*) AS count FROM filtered_records, json_each(llm_research_objective) WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY objective ORDER BY count DESC LIMIT {top_n}"
-      },
-      {
-        "id": "resobj_x_mlrole",
-        "title": "Research Objective × ML Role",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["llm_research_objective", "llm_ml_role"],
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(r.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o, json_each(llm_ml_role) r WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "resobj_x_algorithm",
-        "title": "Research Objective × Algorithm",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["llm_research_objective", "llm_ml_algorithm"],
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, COALESCE(NULLIF(TRIM(a.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o, json_each(llm_ml_algorithm) a WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "resobj_x_datasource",
-        "title": "Research Objective × ML Data Source",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["llm_research_objective", "llm_ml_data_source"],
-        "sql_template": "SELECT COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS x_label, CASE WHEN llm_ml_data_source IS NULL OR TRIM(llm_ml_data_source) IN ('', 'null') THEN '(empty)' ELSE llm_ml_data_source END AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(llm_research_objective) o WHERE llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "fuelsubgroup_x_resobj",
-        "title": "Fuel Subgroup × Research Objective",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_fuel_subgroups", "llm_research_objective"],
-        "sql_template": "SELECT REPLACE(fs.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_fuel_subgroups) fs, json_each(llm_research_objective) o WHERE matched_fuel_subgroups IS NOT NULL AND matched_fuel_subgroups != '[]' AND llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
-      },
-      {
-        "id": "impactsubgroup_x_resobj",
-        "title": "Impact Subgroup × Research Objective",
-        "renderer": "heatmap",
-        "x_key": "x_label",
-        "y_key": "y_label",
-        "drill_columns": ["matched_impact_subgroups", "llm_research_objective"],
-        "sql_template": "SELECT REPLACE(isg.value, 'Feedstocks and Processed', 'Feedstocks and Processes') AS x_label, COALESCE(NULLIF(TRIM(o.value), ''), '(empty)') AS y_label, COUNT(DISTINCT openalex_id) AS count FROM filtered_records, json_each(matched_impact_subgroups) isg, json_each(llm_research_objective) o WHERE matched_impact_subgroups IS NOT NULL AND matched_impact_subgroups != '[]' AND llm_research_objective IS NOT NULL AND llm_research_objective != '[]' GROUP BY x_label, y_label"
-      }
-    ]
-  },
 
   "columns": {
     "openalex_id":            {"type": "TEXT",    "source": "openalex",       "description": "Unique OpenAlex work identifier (e.g. W1234567890), used as primary key"},
@@ -442,13 +226,11 @@
     "cited_by_count":         {"type": "INTEGER", "source": "openalex",       "description": "Number of citations according to OpenAlex"},
     "primary_location_source_issn_l": {"type": "TEXT", "source": "openalex",  "description": "Linking ISSN of the primary source journal"},
     "is_retracted":           {"type": "INTEGER", "source": "openalex",       "description": "Whether the work has been retracted (1=yes, 0=no)"},
-    "llm_is_hydrocarbon":     {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the work is relevant to hydrocarbon fuels (1=yes, 0=no)"},
-    "llm_ml_role":            {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML/AI functional roles (e.g. [\"prediction\"], [\"optimization\"])"},
-    "llm_ml_algorithm":       {"type": "TEXT",    "source": "openai_batch",   "description": "JSON array of ML model names extracted from abstract (e.g. [\"ANN\", \"Genetic Algorithm\"])"},
-    "llm_ml_data_source":     {"type": "TEXT",    "source": "openai_batch",   "description": "Single string: primary data source type used by ML models in the work"},
-    "llm_research_objective": {"type": "TEXT",   "source": "openai_batch",   "description": "JSON array (single-element) — primary research goal (e.g. [\"engine_emissions\"], [\"fuel_production\"])"},
-    "llm_confidence":         {"type": "TEXT",    "source": "openai_batch",   "description": "LLM self-reported confidence level for the classification"},
-    "llm_justification":      {"type": "TEXT",    "source": "openai_batch",   "description": "LLM explanation for its classification decisions"},
+    "fuel_relevant":          {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the work is relevant to hydrocarbon fuels (1=yes, 0=no)"},
+    "research_field":         {"type": "TEXT",    "source": "openai_batch",   "description": "LLM-assigned research field code: engine_emissions, engine_performance, combustion_dynamics, fuel_characterization, fuel_processing, sustainability, molecular_design, or none"},
+    "uses_ml":                {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the paper uses ML/AI as a substantive tool (1=yes, 0=no)"},
+    "confidence":             {"type": "TEXT",    "source": "openai_batch",   "description": "LLM self-reported confidence level: high, medium, or low"},
+    "justification":          {"type": "TEXT",    "source": "openai_batch",   "description": "LLM explanation for its classification decisions"},
     "llm_result_raw":         {"type": "TEXT",    "source": "openai_batch",   "description": "Raw LLM output text (fallback when JSON parsing fails)"},
     "llm_batch_id":           {"type": "TEXT",    "source": "openai_batch",   "description": "OpenAI batch job ID that produced this classification"},
     "llm_processed_at":       {"type": "TEXT",    "source": "openai_batch",   "description": "ISO timestamp when LLM classification was saved"},

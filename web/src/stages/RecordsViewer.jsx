@@ -11,8 +11,8 @@ const DEFAULT_VISIBLE = new Set([
   'title', 'publication_year', 'type',
   'primary_location_source_display_name', 'cited_by_count',
   'matched_fuel_subgroups', 'matched_impact_subgroups',
-  'llm_is_hydrocarbon', 'llm_research_objective',
-  'llm_ml_role', 'llm_ml_algorithm', 'llm_confidence',
+  'fuel_relevant', 'research_field',
+  'uses_ml', 'confidence',
 ]);
 
 const JSON_ARRAY_COLS = new Set([
@@ -20,15 +20,15 @@ const JSON_ARRAY_COLS = new Set([
   'matched_fuel_terms', 'matched_impact_terms',
   'matched_fuel_stems', 'matched_impact_stems',
   'matched_fuel_subgroups', 'matched_impact_subgroups',
-  'llm_ml_role', 'llm_ml_algorithm', 'llm_research_objective',
 ]);
 
-const BOOL_COLS = new Set(['llm_is_hydrocarbon', 'is_oa', 'is_retracted', 'has_fulltext',
+const BOOL_COLS = new Set(['fuel_relevant', 'uses_ml', 'is_oa', 'is_retracted', 'has_fulltext',
   'open_access_is_oa', 'primary_location_is_oa', 'open_access_any_repository_has_fulltext']);
 
 const HIDDEN_COLS = new Set([
   'llm_result_raw', 'llm_batch_id', 'llm_tokens_input',
   'llm_tokens_output', 'llm_tokens_reasoning', 'abstract_text',
+  'llm_processed_at',
 ]);
 
 const FRIENDLY = {
@@ -38,13 +38,11 @@ const FRIENDLY = {
   publication_year: 'Year',
   matched_fuel_subgroups: 'Fuel Subgroups',
   matched_impact_subgroups: 'Impact Subgroups',
-  llm_is_hydrocarbon: 'Hydrocarbon?',
-  llm_ml_role: 'ML Role',
-  llm_ml_algorithm: 'ML Algorithm',
-  llm_research_objective: 'Research Obj.',
-  llm_ml_data_source: 'Data Source',
-  llm_confidence: 'Confidence',
-  llm_justification: 'Justification',
+  fuel_relevant: 'Fuel Relevant?',
+  research_field: 'Research Field',
+  uses_ml: 'Uses ML?',
+  confidence: 'Confidence',
+  justification: 'Justification',
 };
 
 function friendlyName(col) {
@@ -759,15 +757,13 @@ function ExpandedRow({ row }) {
   const abstract = get('abstract_text');
   const doi = get('doi');
   const countries = parseJsonArray(get('authors_countries'));
-  const justification = get('llm_justification');
+  const justification = get('justification');
   const raw = get('llm_result_raw');
 
   const llmFields = [
-    ['Research Objective', get('llm_research_objective')],
-    ['ML Role', get('llm_ml_role')],
-    ['ML Algorithm', get('llm_ml_algorithm')],
-    ['Data Source', get('llm_ml_data_source')],
-    ['Confidence', get('llm_confidence')],
+    ['Research Field', get('research_field')],
+    ['Uses ML/AI', get('uses_ml') === 1 ? 'Yes' : get('uses_ml') === 0 ? 'No' : get('uses_ml')],
+    ['Confidence', get('confidence')],
   ];
 
   const [showRaw, setShowRaw] = useState(false);

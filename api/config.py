@@ -59,12 +59,6 @@ class Settings(BaseSettings):
                 "description": "Single-file processor — filters one .gz partition",
                 "no_color_flag": None,
             },
-            "llm_classify": {
-                "path": str(d / "llm_classify.py"),
-                "label": "llm_classify.py",
-                "description": "OpenAI Batch API pipeline for LLM classification",
-                "no_color_flag": None,
-            },
         }
 
 
