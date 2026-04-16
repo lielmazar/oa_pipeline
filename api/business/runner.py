@@ -41,6 +41,32 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+# #region agent log
+def _pid_debug_info(pid: int | None) -> dict:
+    """Return debug info about a PID for diagnosis."""
+    if not pid:
+        return {"pid": None, "alive": False, "status": "no_pid"}
+    alive = _pid_alive(pid)
+    info = {"pid": pid, "alive": alive, "status": "unknown"}
+    try:
+        stat_path = Path(f"/proc/{pid}/status")
+        if stat_path.exists():
+            for line in stat_path.read_text().splitlines():
+                if line.startswith("State:"):
+                    info["proc_state"] = line.split(":", 1)[1].strip()
+                elif line.startswith("PPid:"):
+                    info["ppid"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Name:"):
+                    info["proc_name"] = line.split(":", 1)[1].strip()
+            info["status"] = "proc_found"
+        else:
+            info["status"] = "no_proc_entry"
+    except Exception as e:
+        info["status"] = f"proc_read_error: {e}"
+    return info
+# #endregion
+
+
 # ── State-file reading ────────────────────────────────────────────────────────
 
 def _read_state(pipeline_id: int) -> dict[str, Any]:
@@ -148,6 +174,9 @@ def poll_filter_run(db: sqlite3.Connection, pipeline_id: int) -> dict:
 
     # Active run — check liveness
     pid = latest["pid"]
+    # #region agent log
+    debug_pid = _pid_debug_info(pid)
+    # #endregion
     if pid and not _pid_alive(pid):
         finish_run(db, run_id, "done")
         record_event(db, pipeline_id, "run_finished", f"run_id={run_id}")
@@ -158,6 +187,9 @@ def poll_filter_run(db: sqlite3.Connection, pipeline_id: int) -> dict:
         "run": dict(latest),
         "state": _read_state(pipeline_id),
         "log_tail": _tail_log(pipeline_id),
+        # #region agent log
+        "_debug_pid": debug_pid,
+        # #endregion
     }
 
 
