@@ -149,9 +149,12 @@ def parse_llm_json(text: str) -> dict | None:
     text = re.sub(r"\bTrue\b", "true", text)
     text = re.sub(r"\bFalse\b", "false", text)
     try:
-        return json.loads(text)
+        result = json.loads(text)
     except json.JSONDecodeError:
         return None
+    if isinstance(result, list) and len(result) == 1 and isinstance(result[0], dict):
+        return result[0]
+    return result if isinstance(result, dict) else None
 
 
 def _extract_output_text(body: dict) -> str:
@@ -356,34 +359,74 @@ def check_status(batch_dir: Path) -> dict:
     if not state:
         return {"status": "not_started", "batch_id": None}
 
-    batch_id = state.get("batch_id")
+    batch_ids = state.get("batch_ids") or []
+    if not batch_ids:
+        single = state.get("batch_id")
+        batch_ids = [single] if single else []
+    if not batch_ids:
+        return state
+
     current = state.get("status", "")
     terminal = {"completed", "failed", "expired", "cancelled"}
 
     if current in terminal:
         return state
 
-    if not batch_id:
-        return state
-
     client = _get_client()
-    batch = client.batches.retrieve(batch_id)
-    counts = batch.request_counts
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    state["status"] = batch.status
-    state["checked_at"] = datetime.now(timezone.utc).isoformat()
-    state["request_counts"] = {
-        "completed": counts.completed if counts else 0,
-        "failed": counts.failed if counts else 0,
-        "total": counts.total if counts else 0,
-    }
+    agg_completed = agg_failed = agg_total = 0
+    all_terminal = True
+    per_batch: list[dict] = []
+    output_file_ids: list[str] = []
+    error_file_ids: list[str] = []
+    worst_status = "completed"
+    status_priority = {"completed": 0, "expired": 1, "cancelled": 2, "failed": 3,
+                       "in_progress": 4, "finalizing": 4, "validating": 5}
 
-    if batch.status in terminal:
-        state["completed_at"] = datetime.now(timezone.utc).isoformat()
+    for bid in batch_ids:
+        batch = client.batches.retrieve(bid)
+        counts = batch.request_counts
+        c = counts.completed if counts else 0
+        f = counts.failed if counts else 0
+        t = counts.total if counts else 0
+        agg_completed += c
+        agg_failed += f
+        agg_total += t
+
+        info = {"batch_id": bid, "status": batch.status,
+                "completed": c, "failed": f, "total": t,
+                "output_file_id": batch.output_file_id,
+                "error_file_id": batch.error_file_id}
+        per_batch.append(info)
+
         if batch.output_file_id:
-            state["output_file_id"] = batch.output_file_id
+            output_file_ids.append(batch.output_file_id)
         if batch.error_file_id:
-            state["error_file_id"] = batch.error_file_id
+            error_file_ids.append(batch.error_file_id)
+
+        if batch.status not in terminal:
+            all_terminal = False
+        if status_priority.get(batch.status, 5) > status_priority.get(worst_status, 0):
+            worst_status = batch.status
+
+    overall_status = worst_status if all_terminal else worst_status
+
+    state["status"] = overall_status
+    state["checked_at"] = now_iso
+    state["request_counts"] = {
+        "completed": agg_completed,
+        "failed": agg_failed,
+        "total": agg_total,
+    }
+    state["per_batch"] = per_batch
+    state["output_file_ids"] = output_file_ids
+    state["error_file_ids"] = error_file_ids
+
+    if all_terminal:
+        state["completed_at"] = now_iso
+        if len(output_file_ids) == 1:
+            state["output_file_id"] = output_file_ids[0]
 
     save_state(batch_dir, state)
     return state
@@ -466,6 +509,7 @@ def _process_jsonl_lines(
     batch_dir: Path,
     collect_total: int | None = None,
     collect_progress_every: int = 0,
+    processed_offset: int = 0,
 ) -> tuple[int, int, int, int]:
     saved = json_ok = json_fail = errors = 0
 
@@ -504,7 +548,8 @@ def _process_jsonl_lines(
         usage = body.get("usage", {})
         tokens_input = usage.get("input_tokens", 0)
         tokens_output = usage.get("output_tokens", 0)
-        tokens_reasoning = usage.get("output_tokens_details", {}).get("reasoning_tokens", 0)
+        otd = usage.get("output_tokens_details") or {}
+        tokens_reasoning = otd.get("reasoning_tokens", 0) if isinstance(otd, dict) else 0
 
         conn.execute(_UPDATE_SQL, (
             is_hydro, research_field, uses_ml, confidence, justification,
@@ -514,11 +559,12 @@ def _process_jsonl_lines(
         ))
         saved += 1
 
+        global_saved = processed_offset + saved
         if collect_progress_every > 0 and saved % collect_progress_every == 0:
-            pct = round(100.0 * saved / collect_total, 2) if collect_total and collect_total > 0 else None
+            pct = round(100.0 * global_saved / collect_total, 2) if collect_total and collect_total > 0 else None
             _progress_write(batch_dir, {
                 "status": "running", "phase": "writing",
-                "processed": saved, "total": collect_total, "pct": pct,
+                "processed": global_saved, "total": collect_total, "pct": pct,
             })
         if saved % 5_000 == 0:
             conn.commit()
@@ -526,9 +572,36 @@ def _process_jsonl_lines(
     return saved, json_ok, json_fail, errors
 
 
+def _resolve_batch_file_ids(state: dict) -> list[tuple[str, str]]:
+    """Return list of (batch_id, output_file_id) pairs to collect."""
+    per_batch = state.get("per_batch")
+    if isinstance(per_batch, list) and per_batch:
+        pairs = []
+        for pb in per_batch:
+            bid = pb.get("batch_id")
+            ofid = pb.get("output_file_id")
+            if bid and ofid:
+                pairs.append((bid, ofid))
+        if pairs:
+            return pairs
+
+    output_file_ids = state.get("output_file_ids")
+    batch_ids = state.get("batch_ids") or []
+    if isinstance(output_file_ids, list) and output_file_ids:
+        if len(batch_ids) == len(output_file_ids):
+            return list(zip(batch_ids, output_file_ids))
+        return [(batch_ids[i] if i < len(batch_ids) else f"part{i+1}", fid)
+                for i, fid in enumerate(output_file_ids)]
+
+    bid = state.get("batch_id", "unknown")
+    ofid = state.get("output_file_id")
+    if ofid:
+        return [(bid, ofid)]
+    return []
+
+
 def collect_results(db_path: Path, batch_dir: Path) -> dict:
     state = load_state(batch_dir)
-    batch_id = state.get("batch_id", "unknown")
 
     rc = state.get("request_counts") or {}
     collect_total: int | None = None
@@ -541,10 +614,18 @@ def collect_results(db_path: Path, batch_dir: Path) -> dict:
         if isinstance(n, int) and n > 0:
             collect_total = n
 
+    file_pairs = _resolve_batch_file_ids(state)
+    if not file_pairs:
+        _progress_write(batch_dir, {
+            "status": "error", "phase": "failed",
+            "message": "No output file IDs — batch(es) may not have completed.",
+        })
+        return {"error": "No output file IDs in state"}
+
     _progress_write(batch_dir, {
         "status": "running", "phase": "starting",
         "processed": 0, "bytes_received": 0, "total": collect_total,
-        "message": "Starting collect…",
+        "message": f"Starting collect ({len(file_pairs)} batch file(s))…",
     })
 
     conn = sqlite3.connect(db_path)
@@ -552,52 +633,60 @@ def collect_results(db_path: Path, batch_dir: Path) -> dict:
     now_iso = datetime.now().isoformat()
 
     try:
-        output_file_id = state.get("output_file_id")
-        if not output_file_id:
+        total_saved = total_json_ok = total_json_fail = total_errors = 0
+
+        for part_idx, (batch_id, output_file_id) in enumerate(file_pairs, 1):
+            local_output = batch_dir / f"output_{batch_id}.jsonl"
+            if not (local_output.exists() and local_output.stat().st_size > 0):
+                _progress_write(batch_dir, {
+                    "status": "running", "phase": "streaming",
+                    "processed": total_saved, "total": collect_total,
+                    "message": f"Downloading batch {part_idx}/{len(file_pairs)} output…",
+                })
+                _download_output_file(output_file_id, local_output, batch_dir, collect_total)
+
             _progress_write(batch_dir, {
-                "status": "error", "phase": "failed",
-                "message": "No output file ID — batch may not have completed.",
+                "status": "running", "phase": "reading_file",
+                "message": f"Processing batch {part_idx}/{len(file_pairs)} ({local_output.stat().st_size / 1024**2:.0f} MB)…",
+                "processed": total_saved, "total": collect_total,
             })
-            return {"error": "No output file ID in state"}
 
-        local_output = batch_dir / f"output_{batch_id}.jsonl"
-        if not (local_output.exists() and local_output.stat().st_size > 0):
-            _download_output_file(output_file_id, local_output, batch_dir, collect_total)
-
-        _progress_write(batch_dir, {
-            "status": "running", "phase": "reading_file",
-            "message": f"Processing downloaded output ({local_output.stat().st_size / 1024**2:.0f} MB)…",
-            "total": collect_total,
-        })
-
-        with local_output.open("r", encoding="utf-8") as fh:
-            saved, json_ok, json_fail, errors = _process_jsonl_lines(
-                fh, conn, batch_id, now_iso,
-                batch_dir=batch_dir,
-                collect_total=collect_total,
-                collect_progress_every=ROW_PROGRESS_EVERY,
-            )
-        conn.commit()
+            with local_output.open("r", encoding="utf-8") as fh:
+                saved, json_ok, json_fail, errors = _process_jsonl_lines(
+                    fh, conn, batch_id, now_iso,
+                    batch_dir=batch_dir,
+                    collect_total=collect_total,
+                    collect_progress_every=ROW_PROGRESS_EVERY,
+                    processed_offset=total_saved,
+                )
+            conn.commit()
+            total_saved += saved
+            total_json_ok += json_ok
+            total_json_fail += json_fail
+            total_errors += errors
 
         result = {
-            "saved": saved, "json_ok": json_ok,
-            "json_fail": json_fail, "errors": errors,
+            "saved": total_saved, "json_ok": total_json_ok,
+            "json_fail": total_json_fail, "errors": total_errors,
         }
 
         _progress_write(batch_dir, {
             "status": "completed", "phase": "done",
-            "processed": saved, "total": collect_total or saved,
-            "pct": round(100.0 * saved / collect_total, 2) if collect_total and collect_total > 0 else None,
-            "json_ok": json_ok, "json_fail": json_fail, "errors": errors,
+            "processed": total_saved, "total": collect_total or total_saved,
+            "pct": round(100.0 * total_saved / collect_total, 2) if collect_total and collect_total > 0 else None,
+            "json_ok": total_json_ok, "json_fail": total_json_fail, "errors": total_errors,
             "message": "Collect finished.",
         })
 
-        error_file_id = state.get("error_file_id")
-        if error_file_id:
+        error_file_ids = state.get("error_file_ids") or []
+        single_err = state.get("error_file_id")
+        if single_err and single_err not in error_file_ids:
+            error_file_ids.append(single_err)
+        for efid in error_file_ids:
             try:
                 client = _get_client()
-                err_content = client.files.content(error_file_id).text
-                (batch_dir / "errors.jsonl").write_text(err_content, encoding="utf-8")
+                err_content = client.files.content(efid).text
+                (batch_dir / f"errors_{efid}.jsonl").write_text(err_content, encoding="utf-8")
             except Exception:
                 pass
 

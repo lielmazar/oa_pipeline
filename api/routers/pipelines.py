@@ -613,7 +613,7 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
     current_status = state.get("status", "")
     if current_status in _TERMINAL_STATUSES:
         return state
-    batch_id = state.get("batch_id")
+    has_batch = state.get("batch_id") or state.get("batch_ids")
     last_checked = state.get("checked_at")
     stale = True
     if last_checked:
@@ -624,7 +624,7 @@ def llm_status(pipeline_id: int, user: CurrentUser, db: Db):
             stale = True
     if not stale:
         return state
-    if not batch_id:
+    if not has_batch:
         return state
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(500, "OPENAI_API_KEY not set")
