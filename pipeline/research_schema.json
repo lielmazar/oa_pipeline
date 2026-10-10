@@ -1,12 +1,13 @@
 {
   "research": {
     "title": "Sustainable Fuels Literature Review",
-    "description": "Systematic review of the OpenAlex academic corpus focusing on sustainable fuels, their environmental impact, combustion properties, and the application of machine learning in fuel research. The pipeline filters works by keyword co-occurrence (fuel + impact terms), classifies them via OpenAI Batch API, and supports inter-rater QA."
+    "description": "Systematic review of the OpenAlex academic corpus focusing on sustainable fuels, their environmental impact, combustion properties, and the application of machine learning in fuel research. Stage 2 keeps journal articles; stage 3 keeps those whose title/abstract contain both a fuel and an impact term. LLM classification and inter-rater QA are planned as later stages."
   },
 
   "keywords": {
     "groups": [
       {
+        "key": "fuel",
         "name": "Fuel Terms",
         "subgroups": [
           {
@@ -31,18 +32,18 @@
           {
             "name": "Jet Fuels & SAF",
             "terms": [
-              "sustainable aviation fuel", "jet fuel", "jet a1", "jet a-1",
-              "bio-jet fuel", "bio-aviation fuel", "renewable jet fuel", "kerosene",
-              "jp-8", "jp 8", "ASTM D7566", "ASTM D1655", "def stan 91-091",
-              "ATJ", "HEFA-SPK", "FT-SPK", "SIP fuel", "neat SAF"
+              "sustainable aviation fuel", "jet fuel", "jet a1", "jet a-1", "bio-jet fuel",
+              "bio-aviation fuel", "renewable jet fuel", "kerosene", "jp-8", "jp 8",
+              "ASTM D7566", "ASTM D1655", "def stan 91-091", "ATJ", "HEFA-SPK", "FT-SPK",
+              "SIP fuel", "neat SAF"
             ]
           },
           {
             "name": "Marine Fuels",
             "terms": [
               "marine fuel", "marine diesel", "bunker fuel", "HFO", "heavy fuel oil",
-              "VLSFO", "very low sulphur fuel oil", "MDO", "marine gas oil",
-              "IMO 2020", "MARPOL Annex VI"
+              "VLSFO", "very low sulphur fuel oil", "MDO", "marine gas oil", "IMO 2020",
+              "MARPOL Annex VI"
             ]
           },
           {
@@ -52,8 +53,8 @@
               "microalgae fuel", "pyrolysis oil", "bio-oil", "bio-crude",
               "hydrothermal liquefaction", "HTL fuel", "biomass-to-liquid", "BtL",
               "power-to-liquid", "paraffinic fuel", "Fischer-Tropsch fuel", "FT fuel",
-              "hydroprocessed fuel", "co-processed fuel", "co-processing",
-              "gas-to-liquid", "GTL", "vegetable oil", "e-fuel"
+              "hydroprocessed fuel", "co-processed fuel", "co-processing", "gas-to-liquid",
+              "GTL", "vegetable oil", "e-fuel"
             ]
           },
           {
@@ -68,6 +69,7 @@
         ]
       },
       {
+        "key": "impact",
         "name": "Impact Terms",
         "subgroups": [
           {
@@ -79,9 +81,9 @@
           {
             "name": "Regulated Pollutants",
             "terms": [
-              "NOx", "SOx", "carbon monoxide", "CO emissions", "soot",
-              "particulate matter", "PM2.5", "PM10", "black carbon",
-              "smoke opacity", "smoke number", "unburned hydrocarbons", "HC emissions"
+              "NOx", "SOx", "carbon monoxide", "CO emissions", "soot", "particulate matter",
+              "PM2.5", "PM10", "black carbon", "smoke opacity", "smoke number",
+              "unburned hydrocarbons", "HC emissions"
             ]
           },
           {
@@ -96,10 +98,10 @@
               "cetane number", "cetane index", "octane number", "flash point",
               "cloud point", "pour point", "cold filter plugging point", "CFPP",
               "viscosity", "kinematic viscosity", "density", "calorific value",
-              "heating value", "lower heating value", "higher heating value",
-              "volatility", "distillation curve", "boiling point", "lubricity",
-              "oxidation stability", "cold flow", "freezing point", "thermal stability",
-              "storage stability", "energy density", "Chemometrics"
+              "heating value", "lower heating value", "higher heating value", "volatility",
+              "distillation curve", "boiling point", "lubricity", "oxidation stability",
+              "cold flow", "freezing point", "thermal stability", "storage stability",
+              "energy density", "Chemometrics"
             ]
           },
           {
@@ -115,15 +117,15 @@
             "name": "Combustion Phenomena",
             "terms": [
               "ignition delay", "heat release rate", "cylinder pressure",
-              "combustion characteristics", "combustion duration",
-              "flame temperature", "auto-ignition"
+              "combustion characteristics", "combustion duration", "flame temperature",
+              "auto-ignition"
             ]
           },
           {
             "name": "Life Cycle",
             "terms": [
-              "lifecycle", "life cycle", "well-to-wheel", "well-to-wake",
-              "well-to-tank", "tank-to-wheel", "LCA", "life cycle assessment"
+              "lifecycle", "life cycle", "well-to-wheel", "well-to-wake", "well-to-tank",
+              "tank-to-wheel", "LCA", "life cycle assessment"
             ]
           },
           {
@@ -135,12 +137,18 @@
       }
     ]
   },
-
   "taxonomy": {
     "research_field": {
-      "codes": ["engine_emissions", "engine_performance", "combustion_dynamics",
-                "fuel_characterization", "fuel_processing", "sustainability",
-                "molecular_design", "none"],
+      "codes": [
+        "engine_emissions",
+        "engine_performance",
+        "combustion_dynamics",
+        "fuel_characterization",
+        "fuel_processing",
+        "sustainability",
+        "molecular_design",
+        "none"
+      ],
       "labels": {
         "engine_emissions": "Engine Emissions",
         "engine_performance": "Engine Performance",
@@ -153,11 +161,18 @@
       }
     },
     "confidence": {
-      "codes": ["high", "medium", "low"],
-      "labels": { "high": "High", "medium": "Medium", "low": "Low" }
+      "codes": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "labels": {
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      }
     }
   },
-
   "subsets": [
     {
       "key": "all",
@@ -173,69 +188,368 @@
       "key": "oa_llm",
       "name": "Open access + LLM classified",
       "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND fuel_relevant IS NOT NULL",
-      "requires_columns": ["fuel_relevant"]
+      "requires_columns": [
+        "fuel_relevant"
+      ]
     },
     {
       "key": "oa_llm_hc",
       "name": "Open access + fuel relevant",
       "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND fuel_relevant = 1",
-      "requires_columns": ["fuel_relevant"]
+      "requires_columns": [
+        "fuel_relevant"
+      ]
     },
     {
       "key": "oa_llm_hc_ml",
       "name": "Open access + fuel relevant + ML",
       "sql": "SELECT * FROM filtered_records WHERE is_oa = 1 AND fuel_relevant = 1 AND uses_ml = 1",
-      "requires_columns": ["fuel_relevant", "uses_ml"]
+      "requires_columns": [
+        "fuel_relevant",
+        "uses_ml"
+      ]
     }
   ],
-
   "columns": {
-    "openalex_id":            {"type": "TEXT",    "source": "openalex",       "description": "Unique OpenAlex work identifier (e.g. W1234567890), used as primary key"},
-    "doi":                    {"type": "TEXT",    "source": "openalex",       "description": "Digital Object Identifier for the work"},
-    "title":                  {"type": "TEXT",    "source": "openalex",       "description": "Title of the academic work"},
-    "is_oa":                  {"type": "INTEGER", "source": "openalex",       "description": "Whether the work is open access (1=yes, 0=no)"},
-    "abstract_text":          {"type": "TEXT",    "source": "openalex",       "description": "Reconstructed abstract text from OpenAlex inverted index"},
-    "publication_year":       {"type": "INTEGER", "source": "openalex",       "description": "Year the work was published"},
-    "publication_date":       {"type": "TEXT",    "source": "openalex",       "description": "Full publication date as ISO string"},
-    "fwci":                   {"type": "REAL",    "source": "openalex",       "description": "Field-Weighted Citation Impact score"},
-    "language":               {"type": "TEXT",    "source": "openalex",       "description": "Language of the work (always 'en' due to pre-filter)"},
-    "type":                   {"type": "TEXT",    "source": "openalex",       "description": "Work type (article, review, book-chapter, etc.)"},
-    "open_access_is_oa":      {"type": "INTEGER", "source": "openalex",       "description": "OpenAlex open-access flag"},
-    "open_access_any_repository_has_fulltext": {"type": "INTEGER", "source": "openalex", "description": "Whether any repository hosts the full text"},
-    "open_access_oa_status":  {"type": "TEXT",    "source": "openalex",       "description": "OA status: gold, green, hybrid, bronze, closed"},
-    "open_access_oa_url":     {"type": "TEXT",    "source": "openalex",       "description": "Best open-access URL for the work"},
-    "primary_location_is_oa": {"type": "INTEGER", "source": "openalex",       "description": "Whether the primary location is open access"},
-    "primary_location_landing_page_url": {"type": "TEXT", "source": "openalex", "description": "Landing page URL at the primary source"},
-    "primary_location_license": {"type": "TEXT",  "source": "openalex",       "description": "License at the primary location (e.g. cc-by)"},
-    "primary_location_source_display_name": {"type": "TEXT", "source": "openalex", "description": "Journal or source name where the work is published"},
-    "primary_location_source_host_organization_name": {"type": "TEXT", "source": "openalex", "description": "Publisher or host organization name"},
-    "primary_location_source_type": {"type": "TEXT", "source": "openalex",    "description": "Source type: journal, repository, conference, etc."},
-    "has_fulltext":           {"type": "INTEGER", "source": "openalex",       "description": "Whether OpenAlex has indexed the full text"},
-    "fulltext_origin":        {"type": "TEXT",    "source": "openalex",       "description": "Origin of the full-text content"},
-    "best_oa_location_license": {"type": "TEXT",  "source": "openalex",       "description": "License at the best open-access location"},
-    "best_oa_location_pdf_url": {"type": "TEXT",  "source": "openalex",       "description": "Direct PDF URL at the best OA location"},
-    "best_oa_location_version": {"type": "TEXT",  "source": "openalex",       "description": "Version at the best OA location (publishedVersion, acceptedVersion, etc.)"},
-    "authors_institutions":   {"type": "TEXT",    "source": "openalex",       "description": "JSON array of objects with author names and their institution affiliations"},
-    "authors_countries":      {"type": "TEXT",    "source": "openalex",       "description": "JSON array of country codes extracted from author affiliations"},
-    "matched_fuel_terms":     {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of fuel keyword terms that matched in title/abstract"},
-    "matched_impact_terms":   {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of impact keyword terms that matched in title/abstract"},
-    "matched_fuel_stems":     {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of stemmed fuel terms that matched"},
-    "matched_impact_stems":   {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of stemmed impact terms that matched"},
-    "matched_fuel_subgroups": {"type": "TEXT",    "source": "pipeline_filter", "description": "JSON array of fuel keyword subgroup names that matched (e.g. [\"Diesel & HVO\", \"Jet Fuels & SAF\"])"},
-    "matched_impact_subgroups": {"type": "TEXT",  "source": "pipeline_filter", "description": "JSON array of impact keyword subgroup names that matched (e.g. [\"GHG & Carbon\", \"Engine Performance\"])"},
-    "cited_by_count":         {"type": "INTEGER", "source": "openalex",       "description": "Number of citations according to OpenAlex"},
-    "primary_location_source_issn_l": {"type": "TEXT", "source": "openalex",  "description": "Linking ISSN of the primary source journal"},
-    "is_retracted":           {"type": "INTEGER", "source": "openalex",       "description": "Whether the work has been retracted (1=yes, 0=no)"},
-    "fuel_relevant":          {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the work is relevant to hydrocarbon fuels (1=yes, 0=no)"},
-    "research_field":         {"type": "TEXT",    "source": "openai_batch",   "description": "LLM-assigned research field code: engine_emissions, engine_performance, combustion_dynamics, fuel_characterization, fuel_processing, sustainability, molecular_design, or none"},
-    "uses_ml":                {"type": "INTEGER", "source": "openai_batch",   "description": "LLM classification: whether the paper uses ML/AI as a substantive tool (1=yes, 0=no)"},
-    "confidence":             {"type": "TEXT",    "source": "openai_batch",   "description": "LLM self-reported confidence level: high, medium, or low"},
-    "justification":          {"type": "TEXT",    "source": "openai_batch",   "description": "LLM explanation for its classification decisions"},
-    "llm_result_raw":         {"type": "TEXT",    "source": "openai_batch",   "description": "Raw LLM output text (fallback when JSON parsing fails)"},
-    "llm_batch_id":           {"type": "TEXT",    "source": "openai_batch",   "description": "OpenAI batch job ID that produced this classification"},
-    "llm_processed_at":       {"type": "TEXT",    "source": "openai_batch",   "description": "ISO timestamp when LLM classification was saved"},
-    "llm_tokens_input":       {"type": "INTEGER", "source": "openai_batch",   "description": "Number of input tokens consumed for this work's classification"},
-    "llm_tokens_output":      {"type": "INTEGER", "source": "openai_batch",   "description": "Number of output tokens generated for this work's classification"},
-    "llm_tokens_reasoning":   {"type": "INTEGER", "source": "openai_batch",   "description": "Number of reasoning tokens used (for reasoning models)"}
+    "openalex_id": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "OpenAlex work ID, short form (W1234567890)"
+    },
+    "doi": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "DOI without the https://doi.org/ prefix, lower-case"
+    },
+    "title": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Work title"
+    },
+    "abstract_text": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Abstract rebuilt from OpenAlex's inverted index (punctuation tokens may be missing)"
+    },
+    "publication_year": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Publication year"
+    },
+    "publication_date": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Publication date (ISO)"
+    },
+    "type": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "OpenAlex work type (article, review)"
+    },
+    "language": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Detected language code"
+    },
+    "journal_id": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "OpenAlex source ID of the journal (S...) — join key to the journals table"
+    },
+    "journal_name": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Journal name (OpenAlex display name)"
+    },
+    "journal_issn_l": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Linking ISSN — join key for external rankings (SJR, JCR, ...)"
+    },
+    "journal_issns": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "All ISSNs of the journal (JSON array in SQLite/CSV)"
+    },
+    "publisher": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Journal host organization (publisher)"
+    },
+    "journal_is_core": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Journal is in the CWTS core list"
+    },
+    "journal_is_in_doaj": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Journal is listed in DOAJ"
+    },
+    "journal_listed_in": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Journal lists (e.g. jufo-2, norway-1, erih-plus, cwts-core) (JSON array in SQLite/CSV)"
+    },
+    "journal_from_fallback": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Journal taken from a non-primary location (stage2.allow_location_fallback)"
+    },
+    "version": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Version at the journal location (publishedVersion, acceptedVersion, ...)"
+    },
+    "landing_page_url": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Landing page at the journal"
+    },
+    "license": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "License at the journal location"
+    },
+    "volume": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Volume"
+    },
+    "issue": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Issue"
+    },
+    "first_page": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "First page"
+    },
+    "last_page": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Last page (PubMed-style abbreviations are not expanded)"
+    },
+    "is_oa": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Open access (any location)"
+    },
+    "oa_status": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "OA status: gold, diamond, hybrid, bronze, green, closed"
+    },
+    "oa_url": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Best open-access URL"
+    },
+    "any_repository_has_fulltext": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "A repository holds the full text"
+    },
+    "best_oa_pdf_url": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "PDF URL at the best OA location"
+    },
+    "best_oa_version": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Version at the best OA location"
+    },
+    "best_oa_license": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "License at the best OA location"
+    },
+    "authors_count": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Number of authors"
+    },
+    "author_names": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Author display names in order (JSON array in SQLite/CSV)"
+    },
+    "institutions": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Distinct institution names across authors (JSON array in SQLite/CSV)"
+    },
+    "countries": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Distinct author country codes (JSON array in SQLite/CSV)"
+    },
+    "cited_by_count": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Citation count"
+    },
+    "fwci": {
+      "type": "REAL",
+      "source": "openalex",
+      "description": "Field-weighted citation impact (0 often means no data for old works)"
+    },
+    "citation_percentile": {
+      "type": "REAL",
+      "source": "openalex",
+      "description": "Citation percentile vs works of same field and year (0-1)"
+    },
+    "is_top_1_percent": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "In top 1% by normalized citations"
+    },
+    "is_top_10_percent": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "In top 10% by normalized citations"
+    },
+    "referenced_works_count": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Number of references"
+    },
+    "primary_topic_id": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "OpenAlex topic ID (T...)"
+    },
+    "primary_topic": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Primary topic name"
+    },
+    "primary_topic_score": {
+      "type": "REAL",
+      "source": "openalex",
+      "description": "Topic classifier confidence"
+    },
+    "subfield": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Topic subfield"
+    },
+    "field": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Topic field"
+    },
+    "domain": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Topic domain"
+    },
+    "is_retracted": {
+      "type": "INTEGER",
+      "source": "openalex",
+      "description": "Retracted"
+    },
+    "raw_json": {
+      "type": "TEXT",
+      "source": "openalex",
+      "description": "Full original OpenAlex record (JSON); null when stage2.store_raw_json is false"
+    },
+    "matched_fuel_terms": {
+      "type": "TEXT",
+      "source": "pipeline_filter",
+      "description": "Fuel Terms: terms found in title/abstract (JSON array in SQLite/CSV)"
+    },
+    "matched_fuel_stems": {
+      "type": "TEXT",
+      "source": "pipeline_filter",
+      "description": "Fuel Terms: normalised/stemmed form of those terms (JSON array in SQLite/CSV)"
+    },
+    "matched_fuel_subgroups": {
+      "type": "TEXT",
+      "source": "pipeline_filter",
+      "description": "Fuel Terms: subgroups of the matched terms (JSON array in SQLite/CSV)"
+    },
+    "fuel_in_title": {
+      "type": "INTEGER",
+      "source": "pipeline_filter",
+      "description": "Fuel Terms: at least one term is in the title"
+    },
+    "matched_impact_terms": {
+      "type": "TEXT",
+      "source": "pipeline_filter",
+      "description": "Impact Terms: terms found in title/abstract (JSON array in SQLite/CSV)"
+    },
+    "matched_impact_stems": {
+      "type": "TEXT",
+      "source": "pipeline_filter",
+      "description": "Impact Terms: normalised/stemmed form of those terms (JSON array in SQLite/CSV)"
+    },
+    "matched_impact_subgroups": {
+      "type": "TEXT",
+      "source": "pipeline_filter",
+      "description": "Impact Terms: subgroups of the matched terms (JSON array in SQLite/CSV)"
+    },
+    "impact_in_title": {
+      "type": "INTEGER",
+      "source": "pipeline_filter",
+      "description": "Impact Terms: at least one term is in the title"
+    },
+    "fuel_relevant": {
+      "type": "INTEGER",
+      "source": "openai_batch",
+      "description": "LLM classification: whether the work is relevant to hydrocarbon fuels (1=yes, 0=no)"
+    },
+    "research_field": {
+      "type": "TEXT",
+      "source": "openai_batch",
+      "description": "LLM-assigned research field code: engine_emissions, engine_performance, combustion_dynamics, fuel_characterization, fuel_processing, sustainability, molecular_design, or none"
+    },
+    "uses_ml": {
+      "type": "INTEGER",
+      "source": "openai_batch",
+      "description": "LLM classification: whether the paper uses ML/AI as a substantive tool (1=yes, 0=no)"
+    },
+    "confidence": {
+      "type": "TEXT",
+      "source": "openai_batch",
+      "description": "LLM self-reported confidence level: high, medium, or low"
+    },
+    "justification": {
+      "type": "TEXT",
+      "source": "openai_batch",
+      "description": "LLM explanation for its classification decisions"
+    },
+    "llm_result_raw": {
+      "type": "TEXT",
+      "source": "openai_batch",
+      "description": "Raw LLM output text (fallback when JSON parsing fails)"
+    },
+    "llm_batch_id": {
+      "type": "TEXT",
+      "source": "openai_batch",
+      "description": "OpenAI batch job ID that produced this classification"
+    },
+    "llm_processed_at": {
+      "type": "TEXT",
+      "source": "openai_batch",
+      "description": "ISO timestamp when LLM classification was saved"
+    },
+    "llm_tokens_input": {
+      "type": "INTEGER",
+      "source": "openai_batch",
+      "description": "Number of input tokens consumed for this work's classification"
+    },
+    "llm_tokens_output": {
+      "type": "INTEGER",
+      "source": "openai_batch",
+      "description": "Number of output tokens generated for this work's classification"
+    },
+    "llm_tokens_reasoning": {
+      "type": "INTEGER",
+      "source": "openai_batch",
+      "description": "Number of reasoning tokens used (for reasoning models)"
+    }
   }
 }
