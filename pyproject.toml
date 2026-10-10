@@ -23,7 +23,7 @@ llm = [            # for the not-yet-ported LLM classification / QA code in llm/
 ]
 dev = [
     "pytest>=8",
-    "moto[s3]>=5",
+    "moto[s3,ec2,iam,ssm]>=5",
 ]
 
 [tool.hatch.build.targets.wheel]

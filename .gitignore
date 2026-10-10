@@ -14,3 +14,4 @@ reports/
 exports/
 data/
 .pytest_cache/
+deploy/aws.local.env

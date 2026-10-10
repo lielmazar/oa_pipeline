@@ -24,8 +24,8 @@ flowchart LR
 | Guide | For | Where it runs |
 |---|---|---|
 | [Develop](#develop) | changing code or keywords, running tests | your machine, no AWS needed |
-| [Deploy](#deploy) | one-time AWS setup: bucket, permissions, EC2 instance | AWS console + instance |
-| [Run](#run) | smoke test, full run, reports, resuming | laptop (small tests) or EC2 (full corpus) |
+| [Deploy](#deploy) | one-time AWS setup: bucket, permissions, credentials | AWS console + your machine |
+| [Run](#run) | launch jobs on EC2, follow logs, get reports | your machine (jobs run on auto-terminating EC2) |
 
 ## Develop
 
@@ -68,7 +68,32 @@ After changing keywords, re-run stage 3 with `--restart` (or under a new `--run-
 
 ## Deploy
 
-One-time setup. Everything is in **us-east-1**, the same region as the OpenAlex bucket, so mirroring and reading have no data-transfer charge.
+One-time setup, done in the AWS console and on your machine. **You never log into an instance.** Each job runs on a fresh EC2 instance that your machine launches: it downloads your code from your own bucket, runs the pipeline, streams its log to S3, and terminates itself.
+
+```mermaid
+flowchart LR
+    ME["your machine<br/>deploy/remote.py"] -->|"1. code bundle"| B[("your S3 bucket")]
+    ME -->|"2. launch"| EC2["EC2 instance<br/>(fresh per job)"]
+    B -->|"3. code"| EC2
+    OA[("s3://openalex")] --> EC2
+    EC2 -->|"4. results + job.log"| B
+    B -->|"5. logs, reports, SQL"| ME
+```
+
+All AWS settings live in [`deploy/aws.env`](deploy/aws.env). Every value that must match something you create in the console is tagged `[console]` there, with a note on where to find it.
+
+| `deploy/aws.env` key | Must match (console) | Default |
+|---|---|---|
+| `AWS_PROFILE` | IAM user access key, saved with `aws configure` | default profile |
+| `AWS_REGION` | the bucket's region (S3 → bucket → Properties) | `us-east-1` |
+| `OA_BUCKET` | S3 → Buckets, and the bucket named in `deploy/iam_policy.json` | `liel-oa-pipeline` |
+| `EC2_INSTANCE_PROFILE` | IAM → Roles → the EC2 role | `oa-pipeline-ec2` |
+| `EC2_SUBNET_ID` | VPC → Subnets (needs internet access) | default VPC |
+| `EC2_SECURITY_GROUP_ID` | EC2 → Security Groups (outbound only) | VPC default group |
+| `EC2_KEY_NAME` | EC2 → Key pairs (optional, only for SSH debugging) | none |
+| `OA_STORAGE_ROOT`, `OA_RUN_ID`, `EC2_INSTANCE_TYPE`, `EC2_SPOT`, `EC2_ROOT_VOLUME_GB`, `EC2_AUTO_TERMINATE`, `EC2_MAX_HOURS`, `EC2_AMI_PARAMETER`, `EC2_NAME_TAG` | — (plain defaults) | see file |
+
+Put personal overrides in `deploy/aws.local.env` (gitignored). Real environment variables override both files.
 
 ### 1. Create the S3 bucket
 
@@ -79,175 +104,91 @@ In the S3 console, choose **Create bucket**:
 | Region | US East (N. Virginia) us-east-1 |
 | Bucket type | General purpose |
 | Bucket namespace | Global namespace |
-| Bucket name | e.g. `liel-oa-pipeline` (lowercase, digits, hyphens; no dots) |
+| Bucket name | e.g. `liel-oa-pipeline` (lowercase, digits, hyphens; no dots) → `OA_BUCKET` |
 | Object Ownership | ACLs disabled |
 | Block all public access | On |
 | Bucket Versioning | Disable (otherwise `--restart` and rewritten reports leave billed hidden copies) |
 | Default encryption | SSE-S3 |
 | Object Lock | Disable |
 
-Then set the bucket in [`config.yaml`](config.yaml): `storage_root: s3://<bucket>/openalex`.
+Also set the bucket in [`config.yaml`](config.yaml) (`storage_root: s3://<bucket>/openalex`). Local commands such as `explore.py` read it from there.
 
-### 2. Create the permissions policy
+### 2. Create two IAM policies
 
-1. In [`deploy/iam_policy.json`](deploy/iam_policy.json), make sure the `PipelineBucket` statement names your bucket.
-2. **IAM → Policies → Create policy → JSON**: paste the file, and name it `oa-pipeline-s3`.
+Go to **IAM → Policies → Create policy → JSON**, paste the file, and give it the name shown:
 
-The policy grants read access to the public OpenAlex bucket and read/write/delete on your bucket only.
+| Policy name | File | Grants |
+|---|---|---|
+| `oa-pipeline-s3` | [`deploy/iam_policy.json`](deploy/iam_policy.json) (edit the bucket name first) | read the public OpenAlex bucket; read/write/delete in your bucket |
+| `oa-pipeline-operator` | [`deploy/iam_policy_operator.json`](deploy/iam_policy_operator.json) | launch, watch and terminate instances with the `oa-pipeline-ec2` role; look up the Ubuntu image |
 
-### 3. Credentials for your laptop (optional, for small tests and downloading reports)
+### 3. Create the role the instances use
 
-1. **IAM → Users → Create user** `oa-pipeline-dev`, choose **Attach policies directly**, and select `oa-pipeline-s3`.
+Go to **IAM → Roles → Create role**, choose **AWS service → EC2**, attach `oa-pipeline-s3`, and name the role `oa-pipeline-ec2` (this becomes `EC2_INSTANCE_PROFILE`). `AmazonSSMManagedInstanceCore` is optional; it's only needed to open a browser shell on a kept instance.
+
+### 4. Credentials for your machine
+
+1. Go to **IAM → Users → Create user**, name it `oa-pipeline-dev`, choose **Attach policies directly**, and select **both** `oa-pipeline-s3` and `oa-pipeline-operator`.
 2. Open the user → **Security credentials → Create access key**, choose **Command Line Interface**, and copy the key and secret.
-3. Install the AWS CLI into the venv and configure it (region `us-east-1`):
+3. Store them locally with region `us-east-1`. If you use a named profile (`--profile NAME`), set `AWS_PROFILE=NAME` in `deploy/aws.env`.
 
 ```bash
 .venv/bin/pip install awscli && .venv/bin/aws configure
 ```
 
-### 4. EC2 role and instance
-
-1. **IAM → Roles → Create role**: choose **AWS service → EC2** and attach `oa-pipeline-s3`. Optionally also attach `AmazonSSMManagedInstanceCore`, which lets you connect from the browser without SSH keys. Name the role `oa-pipeline-ec2`.
-2. **EC2 → Launch instance** (us-east-1):
-   - AMI: Ubuntu Server 24.04 LTS (x86).
-   - Type: `c6id.2xlarge` (8 vCPU) for tests, `c6id.8xlarge` (32 vCPU, 1.9 TB NVMe) for the full corpus. Stage 2 scales with cores. The `d` types have local NVMe for scratch.
-   - Key pair for SSH, and a security group allowing SSH from **My IP** only.
-   - Root volume: 30 GB.
-   - **Advanced details → IAM instance profile**: `oa-pipeline-ec2`.
-   - Spot pricing is fine: every stage resumes after an interruption.
-
-### 5. Connect to the instance
-
-Either way works and lands you in the same place.
-
-**SSH from WSL/Linux.** SSH refuses keys that other users can read, and files under `/mnt/c/...` can't get the right permissions, so copy the key pair file into `~/.ssh` first:
+### 5. Check everything
 
 ```bash
-mkdir -p ~/.ssh && cp /mnt/c/Users/<you>/Downloads/<key>.pem ~/.ssh/ && chmod 400 ~/.ssh/<key>.pem
+.venv/bin/python deploy/remote.py check
 ```
 
-```bash
-ssh -i ~/.ssh/<key>.pem ubuntu@<public-ip>
-```
-
-The user is always `ubuntu` on Ubuntu AMIs. The public IP is shown in **EC2 → Instances** and changes after a stop/start. If the connection times out, the security group needs an inbound rule for SSH (22) from your *current* IP.
-
-**Session Manager (browser, no key, no open port).** This requires `AmazonSSMManagedInstanceCore` on the role. Go to **EC2 → Instances → Connect → Session Manager → Connect**. If the button is greyed out, wait a few minutes or reboot the instance so the agent registers. Sessions start as `ssm-user` in `sh`, so switch to `ubuntu` so that the repo and venv live in one home directory:
-
-```bash
-sudo su - ubuntu
-```
-
-Then start tmux, or reattach to an existing session, so dropped connections don't kill long jobs. Session Manager tabs close after about 20 minutes idle.
-
-```bash
-tmux new -A -s oa
-```
-
-### 6. Give the instance read access to the GitHub repo
-
-The repository is private, and GitHub doesn't accept account passwords for git (`Invalid username or token`). Use a **deploy key**: an SSH key that lives only on this instance and has read-only access to this one repo. Delete it on GitHub to revoke access.
-
-On the instance, create the key and print its public half:
-
-```bash
-ssh-keygen -t ed25519 -C "oa-pipeline-ec2" -f ~/.ssh/github_deploy -N ""
-```
-
-```bash
-cat ~/.ssh/github_deploy.pub
-```
-
-On GitHub, open **[repo → Settings → Deploy keys](https://github.com/lielmazar/oa_pipeline/settings/keys) → Add deploy key**. Paste the line, title it `oa-pipeline-ec2`, leave **Allow write access** unchecked, and choose **Add key**.
-
-Back on the instance, make SSH use that key for GitHub, then test the connection. Answer `yes` to the first host-key prompt; the expected reply is `Hi lielmazar/oa_pipeline! You've successfully authenticated…`.
-
-```bash
-printf 'Host github.com\n  IdentityFile ~/.ssh/github_deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config && chmod 600 ~/.ssh/config
-```
-
-```bash
-ssh -T git@github.com
-```
-
-A read-only fine-grained personal access token (Contents: Read-only, this repo only), pasted as the password over HTTPS, also works. It's tied to your account and expires, though, so the deploy key is preferred.
-
-### 7. Clone and bootstrap
-
-Clone over SSH (`git@github.com:…`), not HTTPS:
-
-```bash
-git clone git@github.com:lielmazar/oa_pipeline.git && cd oa_pipeline
-```
-
-To use a branch that isn't merged yet, add `-b <branch>`.
-
-```bash
-bash deploy/ec2_bootstrap.sh
-```
-
-The bootstrap script installs Python dependencies and tmux, mounts the NVMe disk at `/mnt/scratch`, and pre-installs DuckDB's S3 extensions.
-
-Finally, in `config.yaml` on the instance, set `tmp_dir: /mnt/scratch`. `storage_root` should already point to your bucket.
-
-### 8. Preflight check
-
-Run this on the instance, and on your laptop if you configured credentials:
+The check confirms your credentials, that the bucket exists, that the instance profile exists, the Ubuntu image lookup, and a **dry-run launch**, which proves you're allowed to start an instance with that role without starting one. Each failure prints which `aws.env` key or console item to fix. Also run the bucket-side preflight:
 
 ```bash
 .venv/bin/python -m pipeline.check_aws
 ```
 
-It checks credentials, reading the OpenAlex release manifest, write and delete in your bucket, and DuckDB reading Parquet from your bucket. All four lines should say `OK`:
-
-- **Credentials fail**: the instance profile isn't attached (EC2), or `aws configure` wasn't run (laptop).
-- **AccessDenied on write**: the bucket name in the policy doesn't match `storage_root`.
-
-### Updating the code on the instance
-
-```bash
-git pull && .venv/bin/pip install -e ".[dev]"
-```
+That's all the setup. You don't launch an instance by hand.
 
 ## Run
 
-All commands are run from the repo root with the venv active (`source .venv/bin/activate`). On EC2, run long jobs inside tmux so they survive disconnects. Use `tmux new -s oa` to start, Ctrl-B D to detach, and `tmux attach -t oa` to return.
+From the repo root on your machine, with the venv active (`source .venv/bin/activate`). `launch` uploads your working copy, including uncommitted edits, so what runs is exactly what you have locally.
 
-### 1. Smoke test (minutes)
-
-This mirrors 2 works partitions and runs every stage on them. It works from your laptop too, because the data involved is tiny:
+### 1. Smoke test (about 10 minutes, including about 4 minutes of instance start-up)
 
 ```bash
-python -m pipeline.run_all --smoke --run-id smoke
+python deploy/remote.py launch --run-id smoke -- python -m pipeline.run_all --smoke
 ```
 
-The reports will say **incomplete**, because the snapshot is partial. The oldest partitions are small 2016 files, so stage 3 may find no matches. What the smoke test proves is that every step, permission and report works.
+```bash
+python deploy/remote.py logs --follow
+```
+
+`logs --follow` streams the job's output until it finishes, then the instance terminates itself. While the instance is still installing, `python deploy/remote.py status` shows its start-up console instead. Expect the reports to say **incomplete** (the snapshot is partial) and stage 3 may find no matches, because the smoke test only processes 2 tiny 2016 partitions.
 
 ### 2. Full run
 
+On 32 cores, optionally with `--spot`:
+
 ```bash
-python -m pipeline.run_all
+python deploy/remote.py launch --instance-type c6id.8xlarge -- python -m pipeline.run_all
 ```
 
-Or stage by stage, which is useful to inspect each report before continuing:
+You can also launch the stages one at a time and read each report before continuing:
 
 ```bash
-python -m pipeline.stage1_mirror --dry-run
-```
-
-```bash
-python -m pipeline.stage1_mirror
-```
-
-```bash
-python -m pipeline.stage2_journals
+python deploy/remote.py launch -- python -m pipeline.stage1_mirror
 ```
 
 ```bash
-python -m pipeline.stage3_keywords
+python deploy/remote.py launch --instance-type c6id.8xlarge -- python -m pipeline.stage2_journals
 ```
 
-`--dry-run` lists the release and writes the stage 1 report (size, records, monthly storage cost) without copying anything.
+```bash
+python deploy/remote.py launch -- python -m pipeline.stage3_keywords
+```
+
+`python -m pipeline.stage1_mirror --dry-run` also runs fine locally. It lists the release and writes the stage 1 report (size, records, monthly storage cost) without copying anything.
 
 **What to expect** (OpenAlex release 2026-09-23, measured on real partitions):
 
@@ -258,22 +199,30 @@ python -m pipeline.stage3_keywords
 | Stage 2 throughput | ≈ 26,000 records/s per core | on 32 cores the CPU work is roughly 10–15 minutes; downloading 659 GB to the instance usually dominates |
 | Stage 3 throughput | ≈ 5,700 records/s per core | only runs on stage 2's output |
 
-Progress lines (partitions done, records/s, ETA) go to the terminal and to `logs/`.
+### 3. Watch, resume, re-run
 
-### 3. Monitor, resume, re-run
+| Command | What it does |
+|---|---|
+| `python deploy/remote.py list` | recent jobs: state, instance, command |
+| `python deploy/remote.py status [JOB]` | job + instance state and the last log lines (latest job if omitted; a prefix of the job id is enough) |
+| `python deploy/remote.py logs [JOB] [-f]` | the full log, optionally followed live |
+| `python deploy/remote.py terminate [JOB \| i-…]` | stop paying for a job's instance now |
 
-- **Interrupted?** (disconnect, spot reclaim, Ctrl-C, failed partitions) Run the same command again. Finished partitions are skipped, and failed ones are retried.
-- **Changed keywords?** Run `python -m pipeline.stage3_keywords --restart`, or use a new `--run-id` to keep the old results.
-- **Changed stage 2 rules?** Use a new `--run-id`, for example `--run-id fuels-v2-anylang`.
+- **Interrupted?** (spot reclaim, `EC2_MAX_HOURS` safety stop, failed partitions) Launch the same command again. Finished partitions are skipped, and failed ones are retried.
+- **Changed keywords?** Launch `python -m pipeline.stage3_keywords --restart`, or use a new `--run-id` to keep the old results.
+- **Changed stage 2 rules?** Use a new `--run-id`.
 - **Only want to regenerate a report?** Add `--report-only`.
-- **New OpenAlex release?** (quarterly) Running stage 1 again mirrors it under a new snapshot ID. Start a new run ID for it.
+- **New OpenAlex release?** (quarterly) Stage 1 mirrors it under a new snapshot ID. Start a new run ID for it.
+- **Debugging a failed start-up?** Add `--keep` to `launch` so the instance stays up after the job. Terminate it yourself afterwards.
+
+Job files (`job.json`, `status.json`, `job.log`, and the code bundle) are kept in `<storage_root>/deploy/jobs/<job_id>/`.
 
 ### 4. Get the reports
 
 Download a report from S3 to `./reports/<run_id>/`:
 
 ```bash
-python -m pipeline.explore report 2
+python -m pipeline.explore --run-id smoke report 2
 ```
 
 ```bash
@@ -282,9 +231,19 @@ python -m pipeline.explore report 3
 
 Each stage also writes `report.json` with the same numbers. See [Exploring the data](#exploring-the-data) for SQL access.
 
-### 5. Stop the instance
+### Costs and safety nets
 
-The results live in S3. Stop or terminate the EC2 instance when the run is done: an idle instance is the main cost, and the mirror costs about $15/month.
+- An instance only exists while a job runs (`EC2_AUTO_TERMINATE=true`).
+- `EC2_MAX_HOURS` (12 by default) shuts it down regardless of what the job is doing.
+- The mirror costs about $15/month. Check **EC2 → Instances** (filter by tag `oa-pipeline-job`) if in doubt.
+
+### Alternative: work on an instance yourself
+
+If you'd rather run commands interactively, launch an Ubuntu 24.04 instance with the `oa-pipeline-ec2` role, then:
+
+1. **Connect.** Either use **EC2 → Connect → Session Manager** (needs `AmazonSSMManagedInstanceCore` on the role; then run `sudo su - ubuntu`), or SSH as `ubuntu@<public-ip>` with your key pair, after copying the `.pem` into `~/.ssh` and `chmod 400` on it.
+2. **Get the code.** The repository is private, so add a read-only **deploy key**: run `ssh-keygen -t ed25519 -f ~/.ssh/github_deploy -N ""` on the instance, paste `~/.ssh/github_deploy.pub` under [repo → Settings → Deploy keys](https://github.com/lielmazar/oa_pipeline/settings/keys) with write access off, and add `Host github.com` / `IdentityFile ~/.ssh/github_deploy` / `IdentitiesOnly yes` to `~/.ssh/config`. Then clone `git@github.com:lielmazar/oa_pipeline.git`.
+3. **Set up and run.** Run `bash deploy/ec2_bootstrap.sh`, set `tmp_dir: /mnt/scratch` in `config.yaml`, run `python -m pipeline.check_aws`, and start jobs inside `tmux new -A -s oa`.
 
 ## Exploring the data
 
@@ -333,6 +292,8 @@ Everything is in [`config.yaml`](config.yaml). The most-used values can be overr
     stage2/parquet/*.parquet, stage2/stats/*.json, stage2/journals.parquet, stage2/report.html/json
     stage3/parquet/*.parquet, stage3/stats/*.json, stage3/keywords.json,
     stage3/results.parquet, stage3/filtered_records.sqlite, stage3/report.html/json
+  deploy/jobs/<job_id>/
+    code.tar.gz, job.json, status.json, job.log     remote jobs launched by deploy/remote.py
 ```
 
 ## Repository layout
@@ -349,6 +310,6 @@ pipeline/
   research_schema.json      keywords, column docs, LLM taxonomy
   lib/                      config, storage (S3/local), records, keywords, parallel runner, reports
 llm/                        parked LLM classification + QA code, to become stages 4–5
-deploy/                     EC2 bootstrap script and IAM policy
+deploy/                     remote.py (launch/watch EC2 jobs), job_agent.py, aws.env, IAM policies, bootstrap
 tests/                      synthetic-corpus tests (local + mocked S3)
 ```

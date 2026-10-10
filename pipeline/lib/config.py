@@ -88,9 +88,13 @@ def load_config(path: Path | None = None) -> Config:
     cfg.stage3 = _build(Stage3Config, stages["stage3"])
     cfg.config_path = path
 
-    # Environment overrides (handy on EC2 without editing the file).
-    cfg.storage_root = os.environ.get("OA_STORAGE_ROOT", cfg.storage_root)
-    cfg.run_id = os.environ.get("OA_RUN_ID", cfg.run_id)
+    # Environment overrides (used by remote jobs launched with deploy/remote.py).
+    cfg.storage_root = os.environ.get("OA_STORAGE_ROOT") or cfg.storage_root
+    cfg.run_id = os.environ.get("OA_RUN_ID") or cfg.run_id
+    cfg.tmp_dir = os.environ.get("OA_TMP_DIR") or cfg.tmp_dir
+    cfg.snapshot_id = os.environ.get("OA_SNAPSHOT_ID") or cfg.snapshot_id
+    if os.environ.get("OA_WORKERS"):
+        cfg.workers = int(os.environ["OA_WORKERS"])
     os.environ.setdefault("AWS_DEFAULT_REGION", cfg.aws_region)
     return cfg
 
