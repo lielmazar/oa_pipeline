@@ -1,12 +1,17 @@
 .claude/
 .troubleshoot/
-node_modules/
+.venv/
 .env
+__pycache__/
+*.pyc
 *.db
 *.sqlite
 *.sqlite3
-*.pyc
 
-# Vite production build (hashed entry bundles under api/static)
-api/static/assets/index-*.css
-api/static/assets/index-*.js
+# Local pipeline artefacts
+logs/
+reports/
+exports/
+data/
+.pytest_cache/
+deploy/aws.local.env

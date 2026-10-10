@@ -1,0 +1,39 @@
+# OpenAlex journal-article keyword pipeline — run configuration.
+# Every value can also be overridden on the command line (--storage-root, --run-id, ...).
+
+# Where snapshots and run outputs live: s3://<bucket>/<prefix> on AWS, or a local directory.
+# Env var OA_STORAGE_ROOT overrides this.
+storage_root: s3://liel-oa-pipeline/openalex
+aws_region: us-east-1           # keep the bucket in us-east-1, next to the public OpenAlex bucket
+
+# null = the newest snapshot mirrored by stage 1.
+snapshot_id: null
+
+# Name of this analysis. Stage 2/3 outputs go to <storage_root>/runs/<run_id>/.
+# Use a new run_id when you change stage 2 rules or want to keep an earlier result.
+run_id: sustainable-fuels-v1
+
+workers: null                   # null = one worker per CPU core
+tmp_dir: /tmp/oa-pipeline       # local scratch (point at instance NVMe, e.g. /mnt/scratch)
+
+stage1:
+  source: s3://openalex/data/jsonl   # OpenAlex quarterly snapshot (JSON Lines copy)
+  entities: [works, sources]    # sources = journal metadata used for journal metrics
+  copy_concurrency: 32
+
+stage2:
+  work_types: [article, review]
+  require_journal_source: true  # primary location's source must be a journal
+  allow_location_fallback: false  # if primary isn't a journal, accept a journal among other locations
+  exclude_paratext: true
+  exclude_retracted: true
+  exclude_xpac: true
+  require_doi: true
+  languages: [en]               # [] = any language
+  allow_unknown_language: false # keep records whose language is null (common for older Crossref records)
+  require_abstract: true
+  store_raw_json: true          # keep the full original record in the raw_json column
+
+stage3:
+  keywords_file: pipeline/research_schema.json   # uses its "keywords" section
+  sample_size: 40               # sample matches shown in the report

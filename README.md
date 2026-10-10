@@ -1,372 +1,315 @@
 # OA Pipeline
 
-A browser-based systematic literature review tool built on the [OpenAlex](https://openalex.org/) academic corpus. Designed for a sustainable-fuels research project, the pipeline filters millions of works by keyword co-occurrence, classifies them with the OpenAI Batch API, supports multi-researcher inter-rater reliability (IRR), and exports data for final analysis and article generation in Claude Desktop.
-
-## Workflow
-
-The application is organized into four tabs, each self-contained — configure, execute, view results:
-
-| Tab | What happens |
-|-----|-------------|
-| **Search** | Define keyword groups and subgroups, run the filter across OpenAlex `.gz` partitions, view preset charts (publications by year, top countries, journals, OA status, work types, institutions), select subsets |
-| **LLM** | Estimate cost, submit an OpenAI Batch API classification job, poll status, collect results into the database, view LLM charts (fuel classification, ML role, algorithm, heatmaps, co-occurrence matrices) |
-| **QA** | Inter-rater reliability — multiple researchers independently rate LLM labels, compute Krippendorff's alpha, review disagreements |
-| **Export** | Download the SQLite database, download auto-chunked CSVs (each under 30 MB) packaged with `research_schema.json` and `schema.csv` for Claude Desktop, or download the schema file alone |
-
-## Architecture
+A batch pipeline over the full [OpenAlex](https://openalex.org/) works corpus for a systematic
+literature review on sustainable fuels. It runs on a single EC2 instance, keeps all data in S3,
+and each stage writes an HTML analytics report plus Parquet you can query with SQL.
 
 ```mermaid
 flowchart LR
-    Browser["React SPA"] -->|HTTP| FastAPI
-    FastAPI -->|read/write| MetaDB["meta.db (SQLite)"]
-    FastAPI -->|read| ResearchDB["output.sqlite (per pipeline)"]
-    FastAPI -->|subprocess| PipelineScript["pipeline.py"]
-    FastAPI -->|subprocess| LlmScript["llm_classify.py"]
-    LlmScript -->|Batch API| OpenAI
-    PipelineScript -->|reads| GzFiles[".gz partitions (OpenAlex)"]
-    PipelineScript -->|writes| ResearchDB
-    LlmScript -->|writes| ResearchDB
+    OA["s3://openalex/data/jsonl<br/>(public, replaced quarterly)"] -->|"stage 1<br/>server-side copy"| SNAP["snapshots/&lt;id&gt;/<br/>works + sources"]
+    SNAP -->|"stage 2<br/>journal articles"| S2["runs/&lt;run&gt;/stage2<br/>Parquet + journals"]
+    S2 -->|"stage 3<br/>keyword pairs"| S3["runs/&lt;run&gt;/stage3<br/>results.parquet + SQLite"]
+    S2 & S3 --> EX["explore.py<br/>DuckDB SQL · CSV export"]
 ```
 
-- **Browser** — React 18 single-page application built with Vite and Tailwind CSS. Communicates exclusively over `/api/*` JSON endpoints. In production, FastAPI serves the built SPA from `api/static/`.
-- **FastAPI backend** — handles auth, pipeline CRUD, job orchestration, chart config, QA, and export. Uses two SQLite databases: a shared `meta.db` for users/pipelines/subsets/ratings, and a per-pipeline `output.sqlite` for filtered research records.
-- **Pipeline scripts** — heavy processing runs as Python subprocesses. `pipeline.py` filters OpenAlex `.gz` partitions using multiprocessing. `llm_classify.py` drives the OpenAI Batch API lifecycle (estimate, prepare, submit, poll, save).
+| Stage | Script | Does | Report shows |
+|---|---|---|---|
+| 1 | `pipeline/stage1_mirror.py` | Copies the OpenAlex `works` and `sources` entities into your bucket, pinned by OpenAlex release date | files, size, records by update month, manifest discrepancies, storage cost |
+| 2 | `pipeline/stage2_journals.py` | Keeps journal articles (type, journal source, not paratext/retracted/xpac, DOI, language, abstract) | full selection funnel, corpus composition, years, fields, publishers, top journals with impact metrics, data-quality checks |
+| 3 | `pipeline/stage3_keywords.py` | Keeps articles whose title/abstract contain a term from **every** keyword group (fuel × impact) | matching funnel, near-misses, subgroup co-occurrence heatmap, per-term hit counts, terms that never occur, top journals, sample matches with highlighted terms |
+| — | `pipeline/explore.py` | SQL over any run's outputs; CSV export for Claude Desktop | — |
 
-## Directory Structure
+## Guides
 
-```
-api/                          FastAPI backend
-  main.py                     App factory, router registration, SPA serving
-  config.py                   Settings from environment / .env
-  deps.py                     FastAPI dependency injection (auth, DB)
-  routers/
-    auth.py                   Login / logout / me (session cookie)
-    pipelines.py              Pipeline CRUD, filter run, keywords, subsets, LLM workflow
-    data.py                   Stats, schema, records, charts, query
-    export.py                 SQLite download, chunked CSV ZIP
-    qa.py                     QA ratings, IRR, annotations, disagreements
-    system.py                 System info, default keywords
-  business/
-    chart_defs.py             Reads chart definitions from research_schema.json
-    preset_subsets.py          Reads subset definitions from research_schema.json
-    export.py                 Builds chunked CSV ZIP with schema
-    qa.py                     QA domain logic (sampling, ratings, IRR computation)
-    qa_stats.py               Krippendorff's alpha and statistical helpers
-    runner.py                 Subprocess management for pipeline.py
-    pipeline_status.py        Aggregates pipeline progress from state files
-  db/
-    meta.py                   Meta database connection and init
-    pipelines.py              Pipeline, subset, event SQL helpers
-    research.py               Read-only helpers for per-pipeline output.sqlite
-    users.py                  User creation and password verification
-  static/                     Built React app (generated by Vite build)
+| Guide | For | Where it runs |
+|---|---|---|
+| [Develop](#develop) | changing code or keywords, running tests | your machine, no AWS needed |
+| [Deploy](#deploy) | one-time AWS setup: bucket, permissions, credentials | AWS console + your machine |
+| [Run](#run) | launch jobs on EC2, follow logs, get reports | your machine (jobs run on auto-terminating EC2) |
 
-pipeline/                     Processing scripts and research configuration
-  research_schema.json        Central config: keywords, subsets, charts, column docs
-  pipeline.py                 OpenAlex .gz filtering engine (multiprocessing)
-  llm_classify.py             OpenAI Batch API driver (estimate/prepare/submit/poll/save)
-  llm_pricing.py              Model pricing table for cost estimation
-  default_keywords.json       Legacy keyword file (research_schema.json is preferred)
+## Develop
 
-web/                          React + Vite + Tailwind frontend
-  src/
-    App.jsx                   Root component, routing, auth state
-    api/client.js             Fetch wrapper with auth handling
-    views/
-      HomeView.jsx            Pipeline list and creation
-      PipelineView.jsx        4-tab layout (Search, LLM, QA, Export)
-      QAView.jsx              Standalone QA interface
-    stages/
-      KeywordStage.jsx        Keyword group editor
-      SearchStage.jsx         Filter run controls and progress
-      LlmStage.jsx            LLM batch workflow UI
-      QaStage.jsx             Embeds QAView for pipeline context
-      ExportTab.jsx           Stats, download buttons, column reference
-      analysis/
-        chartPrimitives.jsx   Chart rendering (bar, hbar, pie, heatmap, co-occurrence)
-        PresetCharts.jsx      Fetches and renders preset charts per tab
-        SubsetSelector.jsx    Preset subset list with row counts
-    components/
-      LoginOverlay.jsx        Login form
-      NavBar.jsx              Top navigation with filter-run indicator
-    hooks/
-      useInterval.js          Polling helper
-
-deploy/                       Server deployment
-  deploy.sh                   One-command rsync deploy from dev to server
-  deploy.ps1                  PowerShell deploy variant
-  server_bootstrap.sh         Server-side setup (venv, systemd, nginx)
-  nginx.conf                  Nginx reverse proxy config
-  dashboard.service           Systemd unit reference
-  setup.sh                    Additional setup helpers
-```
-
-## The Research Schema
-
-`pipeline/research_schema.json` is the single source of truth for the entire research configuration. Both the application and Claude Desktop read it.
-
-| Section | Purpose |
-|---------|---------|
-| `research` | Title and description of the literature review |
-| `keywords` | Keyword groups (Fuel Terms, Impact Terms) with subgroups and term lists |
-| `subsets` | Named SQL subsets over `filtered_records` (all, open access, OA + LLM classified, etc.) with `requires_columns` guards |
-| `charts` | Chart definitions grouped by tab (`search`, `llm`), each with id, title, renderer type, SQL template, and axis keys |
-| `columns` | Documents every column in `filtered_records` — type, source (openalex / pipeline_filter / openai_batch), and description |
-
-The backend reads this file to configure chart queries, preset subsets, and default keywords. The export includes this file so Claude Desktop can understand the data structure and reproduce any preset analysis.
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Backend | FastAPI, uvicorn, SQLite (WAL mode), itsdangerous (signed session cookies) |
-| Frontend | React 18, Vite, Tailwind CSS |
-| Processing | Python multiprocessing (`pipeline.py`), OpenAI Batch API (`llm_classify.py`) |
-| Statistics | numpy, scipy (Krippendorff's alpha for inter-rater reliability) |
-| Deployment | systemd + nginx on Ubuntu, rsync-based deploys |
-
-## Local Development
-
-### Prerequisites
-
-- Python >= 3.11
-- Node.js >= 18
-
-### Backend
+Requirements: Python ≥ 3.11 and git. No AWS account is needed, because every stage also runs against a local directory and the tests use a synthetic corpus and mocked S3.
 
 ```bash
-cp .env.example .env          # fill in OPENAI_API_KEY if you need LLM features
-pip install -e .
-uvicorn api.main:app --reload --port 8000
+git clone https://github.com/lielmazar/oa_pipeline.git && cd oa_pipeline
 ```
-
-### Frontend
-
-In a separate terminal:
 
 ```bash
-cd web
-npm install
-npm run dev
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
-
-The Vite dev server runs on http://localhost:5173 and proxies `/api/*` requests to the FastAPI backend at port 8000 (configured in `web/vite.config.js`).
-
-### Create your first user
 
 ```bash
-python -c "
-from api.db.meta import init_db, get_db
-from api.db.users import create_user
-init_db()
-with get_db() as db:
-    create_user(db, 'admin', 'your-password')
-"
+.venv/bin/pytest
 ```
 
-Then open http://localhost:5173 and log in.
+The test suite runs all three stages end to end on a local folder, the S3 code paths against moto, multi-process workers, resume and restart, and partial runs. It takes a few seconds.
 
-### Production build
-
-To build the frontend into `api/static/` (so FastAPI serves it directly):
+To try the real pipeline on real OpenAlex data without AWS credentials, use a local `storage_root`. The public bucket is read anonymously, and `--smoke` mirrors only 2 small partitions:
 
 ```bash
-cd web
-npm run build
+.venv/bin/python -m pipeline.run_all --storage-root ./data --run-id local --smoke --workers 2
 ```
 
-Then access everything at http://localhost:8000.
+Reports end up in `./data/runs/local/stage2/report.html` and `stage3/report.html`.
 
-## Server Deployment
+Where to change things:
 
-### Prerequisites
+| Change | File |
+|---|---|
+| Keywords, subgroups, column docs | `pipeline/research_schema.json` (the `keywords` section) |
+| Stage 2 selection rules | `config.yaml` → `stage2:` |
+| How a record is screened / flattened | `pipeline/lib/records.py` (`screen`, `work_row`, `WORK_FIELDS`) |
+| Term normalisation and matching | `pipeline/lib/keywords.py` |
+| Report content | `build_report` in each `stage*.py`; HTML components in `pipeline/lib/report.py` |
+| S3/local file access | `pipeline/lib/storage.py` |
 
-- Ubuntu 24.04 server with SSH key authentication
-- OpenAlex `.gz` partition files at `/root/data/openalex/works/` (or configure `GZ_FILES_BASE_DIR`)
+After changing keywords, re-run stage 3 with `--restart` (or under a new `--run-id`). After changing stage 2 rules, use a new `--run-id`.
 
-### First deploy
+## Deploy
+
+One-time setup, done in the AWS console and on your machine. **You never log into an instance.** Each job runs on a fresh EC2 instance that your machine launches: it downloads your code from your own bucket, runs the pipeline, streams its log to S3, and terminates itself.
+
+```mermaid
+flowchart LR
+    ME["your machine<br/>deploy/remote.py"] -->|"1. code bundle"| B[("your S3 bucket")]
+    ME -->|"2. launch"| EC2["EC2 instance<br/>(fresh per job)"]
+    B -->|"3. code"| EC2
+    OA[("s3://openalex")] --> EC2
+    EC2 -->|"4. results + job.log"| B
+    B -->|"5. logs, reports, SQL"| ME
+```
+
+All AWS settings live in [`deploy/aws.env`](deploy/aws.env). Every value that must match something you create in the console is tagged `[console]` there, with a note on where to find it.
+
+| `deploy/aws.env` key | Must match (console) | Default |
+|---|---|---|
+| `AWS_PROFILE` | IAM user access key, saved with `aws configure` | default profile |
+| `AWS_REGION` | the bucket's region (S3 → bucket → Properties) | `us-east-1` |
+| `OA_BUCKET` | S3 → Buckets, and the bucket named in `deploy/iam_policy.json` | `liel-oa-pipeline` |
+| `EC2_INSTANCE_PROFILE` | IAM → Roles → the EC2 role | `oa-pipeline-ec2` |
+| `EC2_SUBNET_ID` | VPC → Subnets (needs internet access) | default VPC |
+| `EC2_SECURITY_GROUP_ID` | EC2 → Security Groups (outbound only) | VPC default group |
+| `EC2_KEY_NAME` | EC2 → Key pairs (optional, only for SSH debugging) | none |
+| `OA_STORAGE_ROOT`, `OA_RUN_ID`, `EC2_INSTANCE_TYPE`, `EC2_SPOT`, `EC2_ROOT_VOLUME_GB`, `EC2_AUTO_TERMINATE`, `EC2_MAX_HOURS`, `EC2_AMI_PARAMETER`, `EC2_NAME_TAG` | — (plain defaults) | see file |
+
+Put personal overrides in `deploy/aws.local.env` (gitignored). Real environment variables override both files.
+
+### 1. Create the S3 bucket
+
+In the S3 console, choose **Create bucket**:
+
+| Field | Value |
+|---|---|
+| Region | US East (N. Virginia) us-east-1 |
+| Bucket type | General purpose |
+| Bucket namespace | Global namespace |
+| Bucket name | e.g. `liel-oa-pipeline` (lowercase, digits, hyphens; no dots) → `OA_BUCKET` |
+| Object Ownership | ACLs disabled |
+| Block all public access | On |
+| Bucket Versioning | Disable (otherwise `--restart` and rewritten reports leave billed hidden copies) |
+| Default encryption | SSE-S3 |
+| Object Lock | Disable |
+
+Also set the bucket in [`config.yaml`](config.yaml) (`storage_root: s3://<bucket>/openalex`). Local commands such as `explore.py` read it from there.
+
+### 2. Create two IAM policies
+
+Go to **IAM → Policies → Create policy → JSON**, paste the file, and give it the name shown:
+
+| Policy name | File | Grants |
+|---|---|---|
+| `oa-pipeline-s3` | [`deploy/iam_policy.json`](deploy/iam_policy.json) (edit the bucket name first) | read the public OpenAlex bucket; read/write/delete in your bucket |
+| `oa-pipeline-operator` | [`deploy/iam_policy_operator.json`](deploy/iam_policy_operator.json) | launch, watch and terminate instances with the `oa-pipeline-ec2` role; look up the Ubuntu image |
+
+### 3. Create the role the instances use
+
+Go to **IAM → Roles → Create role**, choose **AWS service → EC2**, attach `oa-pipeline-s3`, and name the role `oa-pipeline-ec2` (this becomes `EC2_INSTANCE_PROFILE`). `AmazonSSMManagedInstanceCore` is optional; it's only needed to open a browser shell on a kept instance.
+
+### 4. Credentials for your machine
+
+1. Go to **IAM → Users → Create user**, name it `oa-pipeline-dev`, choose **Attach policies directly**, and select **both** `oa-pipeline-s3` and `oa-pipeline-operator`.
+2. Open the user → **Security credentials → Create access key**, choose **Command Line Interface**, and copy the key and secret.
+3. Store them locally with region `us-east-1`. If you use a named profile (`--profile NAME`), set `AWS_PROFILE=NAME` in `deploy/aws.env`.
 
 ```bash
-bash deploy/deploy.sh root@your-server
+.venv/bin/pip install awscli && .venv/bin/aws configure
 ```
 
-This single command:
-1. Builds the React frontend (`npm ci && npm run build`)
-2. Rsyncs `api/`, `pipeline/`, `deploy/`, and `pyproject.toml` to `/opt/oa-pipeline/`
-3. SSHs into the server and runs `server_bootstrap.sh`, which:
-   - Installs system packages (nginx, python3-venv)
-   - Creates a Python virtual environment and installs dependencies
-   - Generates a `SECRET_KEY` (stored at `/opt/oa-pipeline/data/.secret_key`)
-   - Configures systemd (`oa-pipeline.service`) and nginx
-4. Restarts the service
-
-After the first deploy, create an admin user on the server:
+### 5. Check everything
 
 ```bash
-ssh root@your-server
-/opt/oa-pipeline/venv/bin/python3 -c "
-from api.db.meta import init_db, get_db
-from api.db.users import create_user
-init_db()
-with get_db() as db:
-    create_user(db, 'admin', 'your-password')
-"
+.venv/bin/python deploy/remote.py check
 ```
 
-The app is then available at `http://your-server-ip`.
-
-### Subsequent deploys
-
-Run the same command — it is idempotent:
+The check confirms your credentials, that the bucket exists, that the instance profile exists, the Ubuntu image lookup, and a **dry-run launch**, which proves you're allowed to start an instance with that role without starting one. Each failure prints which `aws.env` key or console item to fix. Also run the bucket-side preflight:
 
 ```bash
-bash deploy/deploy.sh root@your-server
+.venv/bin/python -m pipeline.check_aws
 ```
 
-### Deploy flags
+That's all the setup. You don't launch an instance by hand.
 
-| Flag | Effect |
-|------|--------|
-| `--skip-build` | Skip the `npm ci && npm run build` step (use when only backend changed) |
-| `--restart-only` | Only restart the systemd service, no file sync |
+## Run
 
-### Server environment
+From the repo root on your machine, with the venv active (`source .venv/bin/activate`). `launch` uploads your working copy, including uncommitted edits, so what runs is exactly what you have locally.
 
-The bootstrap script auto-generates `SECRET_KEY`. To set additional variables (like `OPENAI_API_KEY`), place a `.env` file at `/opt/oa-pipeline/data/.env`. The systemd service loads it via `EnvironmentFile`.
+### 1. Smoke test (about 10 minutes, including about 4 minutes of instance start-up)
 
-## Environment Variables
+```bash
+python deploy/remote.py launch --run-id smoke -- python -m pipeline.run_all --smoke
+```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SECRET_KEY` | `dev-secret-change-in-production` | Session signing key. Auto-generated on server deploy. **Must override in production.** |
-| `OPENAI_API_KEY` | — | Required for LLM classification (OpenAI Batch API) |
-| `PIPELINES_BASE_DIR` | `/opt/oa-pipeline/data/pipelines` | Directory for per-pipeline output files |
-| `META_DB_PATH` | `/opt/oa-pipeline/data/dashboard.db` | Path to the shared metadata SQLite database |
-| `GZ_FILES_BASE_DIR` | `/opt/oa-pipeline/data/gz` | Directory containing OpenAlex `.gz` partition files |
-| `FILTERING_WORKERS` | `16` | Number of CPU cores for parallel `.gz` filtering |
-| `OA_LLM_BATCH_DEFAULT_LIMIT` | — | Optional cap on unprocessed rows per LLM batch submit |
-| `SESSION_COOKIE_NAME` | `session` | Name of the HTTP-only session cookie |
-| `SESSION_MAX_AGE_DAYS` | `7` | Session cookie lifetime in days |
-| `DB_PAGE_SIZE` | `100` | Default page size for record queries |
-| `DB_QUERY_MAX_ROWS` | `5000` | Maximum rows returned by chart/query endpoints |
+```bash
+python deploy/remote.py logs --follow
+```
 
-## Claude Desktop Integration
+`logs --follow` streams the job's output until it finishes, then the instance terminates itself. While the instance is still installing, `python deploy/remote.py status` shows its start-up console instead. Expect the reports to say **incomplete** (the snapshot is partial) and stage 3 may find no matches, because the smoke test only processes 2 tiny 2016 partitions.
 
-The Export tab produces a ZIP file designed for upload to a Claude Desktop project:
+### 2. Full run
 
-| File | Purpose |
-|------|---------|
-| `research_schema.json` | Full research configuration — Claude reads this to understand keyword groups, subset definitions, chart specifications, and column meanings |
-| `schema.csv` | Column-level documentation (name, type, source, description) for quick reference |
-| `records_part1.csv` ... `records_partN.csv` | The research data, auto-chunked at ~25 MB per file to stay under Claude's 30 MB upload limit |
+On 32 cores, optionally with `--spot`:
 
-**How to use:**
+```bash
+python deploy/remote.py launch --instance-type c6id.8xlarge -- python -m pipeline.run_all
+```
 
-1. In the Export tab, click "Download CSVs for Claude"
-2. Extract the ZIP
-3. Upload all files to a Claude Desktop project
-4. Claude can then: reproduce any preset chart analysis from the schema, generate new cross-tabulations, compute statistics, write article sections with proper methodology descriptions, and understand the full research design from the schema metadata
+You can also launch the stages one at a time and read each report before continuing:
 
-The SQLite database is also available as a separate download for researchers who prefer local querying.
+```bash
+python deploy/remote.py launch -- python -m pipeline.stage1_mirror
+```
 
-## API Reference
+```bash
+python deploy/remote.py launch --instance-type c6id.8xlarge -- python -m pipeline.stage2_journals
+```
 
-Interactive API documentation is available at `/api/docs` (OpenAPI / Swagger UI) when the server is running.
+```bash
+python deploy/remote.py launch -- python -m pipeline.stage3_keywords
+```
 
-### Authentication
+`python -m pipeline.stage1_mirror --dry-run` also runs fine locally. It lists the release and writes the stage 1 report (size, records, monthly storage cost) without copying anything.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/auth/login` | Authenticate with username/password, receive session cookie |
-| POST | `/api/auth/logout` | Clear session cookie |
-| GET | `/api/auth/me` | Return current user info |
+**What to expect** (OpenAlex release 2026-09-23, measured on real partitions):
 
-All `/api/*` endpoints (except login, docs) require a valid session cookie.
+| | Size | Notes |
+|---|---|---|
+| Works snapshot | 2,040 files, 659 GB gzipped, 476M records | `sources` adds 0.3 GB |
+| Mirror storage | ≈ $15/month (S3 Standard) | server-side copy, no transfer charge within us-east-1 |
+| Stage 2 throughput | ≈ 26,000 records/s per core | on 32 cores the CPU work is roughly 10–15 minutes; downloading 659 GB to the instance usually dominates |
+| Stage 3 throughput | ≈ 5,700 records/s per core | only runs on stage 2's output |
 
-### Pipeline Management
+### 3. Watch, resume, re-run
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline` | List all pipelines |
-| POST | `/api/pipeline` | Create a new pipeline |
-| GET | `/api/pipeline/{id}` | Get pipeline details |
-| PATCH | `/api/pipeline/{id}` | Update name, description, or config |
-| DELETE | `/api/pipeline/{id}` | Delete a pipeline |
-| POST | `/api/pipeline/{id}/set-stage` | Remember last-viewed tab |
-| GET | `/api/pipeline/{id}/status` | Aggregated pipeline status |
-| GET | `/api/pipeline/{id}/events` | Pipeline event log |
+| Command | What it does |
+|---|---|
+| `python deploy/remote.py list` | recent jobs: state, instance, command |
+| `python deploy/remote.py status [JOB]` | job + instance state and the last log lines (latest job if omitted; a prefix of the job id is enough) |
+| `python deploy/remote.py logs [JOB] [-f]` | the full log, optionally followed live |
+| `python deploy/remote.py terminate [JOB \| i-…]` | stop paying for a job's instance now |
 
-### Filter Run
+- **Interrupted?** (spot reclaim, `EC2_MAX_HOURS` safety stop, failed partitions) Launch the same command again. Finished partitions are skipped, and failed ones are retried.
+- **Changed keywords?** Launch `python -m pipeline.stage3_keywords --restart`, or use a new `--run-id` to keep the old results.
+- **Changed stage 2 rules?** Use a new `--run-id`.
+- **Only want to regenerate a report?** Add `--report-only`.
+- **New OpenAlex release?** (quarterly) Stage 1 mirrors it under a new snapshot ID. Start a new run ID for it.
+- **Debugging a failed start-up?** Add `--keep` to `launch` so the instance stays up after the job. Terminate it yourself afterwards.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/pipeline/{id}/run` | Start a filter run |
-| GET | `/api/pipeline/{id}/run` | Poll filter run progress |
-| DELETE | `/api/pipeline/{id}/run` | Stop a running filter |
-| GET | `/api/pipeline/run/active` | System-wide active run status |
-| GET | `/api/pipeline/{id}/file-count` | Total `.gz` files available |
+Job files (`job.json`, `status.json`, `job.log`, and the code bundle) are kept in `<storage_root>/deploy/jobs/<job_id>/`.
 
-### Keywords
+### 4. Get the reports
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/{id}/keywords/json` | Download pipeline keyword config |
-| POST | `/api/pipeline/{id}/keywords/json` | Upload/replace keyword config |
-| GET | `/api/system/default-keywords` | System-level keyword template |
+Download a report from S3 to `./reports/<run_id>/`:
 
-### Subsets (preset-only)
+```bash
+python -m pipeline.explore --run-id smoke report 2
+```
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/{id}/subsets` | List preset subsets |
-| GET | `/api/pipeline/{id}/subsets/summary` | Subsets with live row counts |
+```bash
+python -m pipeline.explore report 3
+```
 
-### Data
+Each stage also writes `report.json` with the same numbers. See [Exploring the data](#exploring-the-data) for SQL access.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/{id}/stats` | Database stats (size, record count, LLM count) |
-| GET | `/api/pipeline/{id}/schema` | Column names and types from the research database |
-| GET | `/api/pipeline/{id}/records` | Paginated records with search and sort |
-| GET | `/api/pipeline/{id}/charts` | Preset chart definitions (filterable by `?tab=search` or `?tab=llm`) |
-| POST | `/api/pipeline/{id}/query` | Run a chart SQL query, optionally scoped to a subset |
+### Costs and safety nets
 
-### LLM Classification
+- An instance only exists while a job runs (`EC2_AUTO_TERMINATE=true`).
+- `EC2_MAX_HOURS` (12 by default) shuts it down regardless of what the job is doing.
+- The mirror costs about $15/month. Check **EC2 → Instances** (filter by tag `oa-pipeline-job`) if in doubt.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/llm/model-catalog` | Available models with pricing |
-| POST | `/api/pipeline/{id}/llm/estimate` | Estimate batch cost |
-| POST | `/api/pipeline/{id}/llm/submit` | Prepare and submit a batch job |
-| GET | `/api/pipeline/{id}/llm/status` | Poll batch status (auto-refreshes from OpenAI) |
-| GET | `/api/pipeline/{id}/llm/stats` | Row counts: total, LLM done, pending |
-| POST | `/api/pipeline/{id}/llm/collect` | Download and save batch results to database |
-| GET | `/api/pipeline/{id}/llm/collect_status` | Poll collect job progress |
-| POST | `/api/pipeline/{id}/llm/cancel` | Cancel an active batch |
+### Alternative: work on an instance yourself
 
-### Export
+If you'd rather run commands interactively, launch an Ubuntu 24.04 instance with the `oa-pipeline-ec2` role, then:
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/{id}/export?fmt=csv` | Download chunked CSV ZIP (with schema) |
-| GET | `/api/pipeline/{id}/export?fmt=sqlite` | Download raw SQLite database |
-| GET | `/api/pipeline/{id}/export/schema` | Download `research_schema.json` |
+1. **Connect.** Either use **EC2 → Connect → Session Manager** (needs `AmazonSSMManagedInstanceCore` on the role; then run `sudo su - ubuntu`), or SSH as `ubuntu@<public-ip>` with your key pair, after copying the `.pem` into `~/.ssh` and `chmod 400` on it.
+2. **Get the code.** The repository is private, so add a read-only **deploy key**: run `ssh-keygen -t ed25519 -f ~/.ssh/github_deploy -N ""` on the instance, paste `~/.ssh/github_deploy.pub` under [repo → Settings → Deploy keys](https://github.com/lielmazar/oa_pipeline/settings/keys) with write access off, and add `Host github.com` / `IdentityFile ~/.ssh/github_deploy` / `IdentitiesOnly yes` to `~/.ssh/config`. Then clone `git@github.com:lielmazar/oa_pipeline.git`.
+3. **Set up and run.** Run `bash deploy/ec2_bootstrap.sh`, set `tmp_dir: /mnt/scratch` in `config.yaml`, run `python -m pipeline.check_aws`, and start jobs inside `tmux new -A -s oa`.
 
-### QA / Inter-Rater Reliability
+## Exploring the data
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/qa/fields` | Available QA fields and annotation dimensions |
-| GET | `/api/pipeline/{id}/qa/records` | Sample records for rating (smart sampling by confidence) |
-| GET | `/api/pipeline/{id}/qa/ratings` | List all ratings |
-| POST | `/api/pipeline/{id}/qa/ratings` | Submit a rating (openalex_id, field, human_value) |
-| GET | `/api/pipeline/{id}/qa/irr` | Compute Krippendorff's alpha |
-| GET | `/api/pipeline/{id}/qa/disagreements` | List inter-rater disagreements |
-| GET | `/api/pipeline/{id}/qa/annotations` | List annotations |
-| POST | `/api/pipeline/{id}/qa/annotations` | Submit an annotation |
+`explore.py` opens DuckDB with these views: `stage2` (journal articles), `journals` (journal metrics from the `sources` entity), and `stage3` / `filtered_records` (matches). It reads straight from S3 with the instance credentials, or from a local `storage_root`.
 
-### Logs
+```bash
+python -m pipeline.explore tables                    # views, row counts, documented columns
+python -m pipeline.explore sql "SELECT journal_name, count(*) n FROM stage3 GROUP BY 1 ORDER BY n DESC LIMIT 20"
+python -m pipeline.explore sql "SELECT * FROM stage3 WHERE fuel_in_title AND impact_in_title" --out both_in_title.csv
+python -m pipeline.explore sql "SELECT s.title, j.two_yr_mean_citedness FROM stage3 s JOIN journals j USING (journal_id) ORDER BY 2 DESC LIMIT 20"
+python -m pipeline.explore sample -n 5               # random matches with their terms
+python -m pipeline.explore shell                     # interactive SQL
+python -m pipeline.explore export --out exports/     # ≤25 MB CSV parts + schema, zipped, for Claude Desktop
+```
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/pipeline/{id}/logs` | Tail the pipeline log file |
+Useful columns: list columns such as `matched_fuel_terms` and `countries` can be queried with `list_contains(...)` or `unnest(...)`. `raw_json` holds the complete original OpenAlex record, e.g. `json_extract(raw_json, '$.authorships[0].institutions')`. The [stage 3 report](#4-get-the-reports) and `research_schema.json` document every column.
+
+You can also use any Parquet tool on the files directly (pandas, polars, Spark, Athena): `runs/<run_id>/stage3/results.parquet` holds all matches in one file.
+
+## Configuration
+
+Everything is in [`config.yaml`](config.yaml). The most-used values can be overridden per command with `--storage-root`, `--snapshot-id`, `--run-id`, `--workers` and `--tmp-dir`.
+
+- **Stage 2 rules** (`stage2:`): `work_types`, `require_journal_source`, `allow_location_fallback` (accept a journal found in a non-primary location, e.g. for PubMed-hosted copies), `exclude_paratext` / `exclude_retracted` / `exclude_xpac`, `require_doi`, `languages`, `allow_unknown_language`, `require_abstract`, `store_raw_json`. Note that many older Crossref records have `language: null`. They are dropped unless `allow_unknown_language: true`, and the funnel shows how many that affects.
+- **Keywords** (`stage3.keywords_file`): the `keywords` section of [`pipeline/research_schema.json`](pipeline/research_schema.json). Each group has a `key` (used in column names: `matched_<key>_terms`, `<key>_in_title`), a name, and subgroups of terms. Matching is case-insensitive on normalised, lightly-stemmed tokens: `emissions` ≈ `emission`, `bio-oil` ≈ `bio oil` ≈ `biooil`, `PM2.5` ≈ `pm25`. Title and abstract are matched separately, so a phrase can't span the two.
+
+### Runs, resuming and reproducibility
+
+- **Snapshots.** Stage 1 names each snapshot after the OpenAlex release date in `s3://openalex/data/jsonl/manifest.json` and records every file in `snapshot_manifest.json`. OpenAlex writes that manifest last, so if it's missing (a release in progress) the snapshot is marked partial. Side files such as `deleted_ids.csv.gz` aren't mirrored. Later stages use the newest snapshot unless you pass `--snapshot-id`.
+- **Format.** OpenAlex publishes the same data as JSON Lines (`data/jsonl`) and as Parquet (`data/parquet`). The pipeline uses JSON Lines so that `raw_json` keeps each record exactly as published.
+- **Runs.** A **run** (`run_id`) is pinned to one snapshot and one set of stage 2 rules (`runs/<run_id>/run.json`). Stage 3 also pins its keyword list (`stage3/keywords.json`). If you change either, the stage refuses to mix results: use a new `--run-id`, or `--restart` to discard that stage's outputs.
+- **Resuming.** Every partition writes its stats file last, which marks it as done. Re-running a stage only processes missing or failed partitions, so after a spot interruption you just run the same command again.
+- **Partial results.** If you used `--max-files`, `--max-partitions`, or some partitions failed, the reports say "incomplete" and `report.json` has `"complete": false`.
+- **Rebuilding reports.** `--report-only` rebuilds a report from existing outputs.
+
+## Storage layout
+
+```
+<storage_root>/
+  snapshots/<snapshot_id>/
+    data/works/updated_date=…/part_NNNN.gz     mirrored OpenAlex works
+    data/sources/…                             mirrored journal metadata
+    snapshot_manifest.json, stage1_report.html/json
+  runs/<run_id>/
+    run.json
+    stage2/parquet/*.parquet, stage2/stats/*.json, stage2/journals.parquet, stage2/report.html/json
+    stage3/parquet/*.parquet, stage3/stats/*.json, stage3/keywords.json,
+    stage3/results.parquet, stage3/filtered_records.sqlite, stage3/report.html/json
+  deploy/jobs/<job_id>/
+    code.tar.gz, job.json, status.json, job.log     remote jobs launched by deploy/remote.py
+```
+
+## Repository layout
+
+```
+config.yaml                 run configuration
+pipeline/
+  stage1_mirror.py          stage 1 — mirror snapshot to S3
+  stage2_journals.py        stage 2 — journal-article filter
+  stage3_keywords.py        stage 3 — keyword-pair filter
+  explore.py                SQL exploration, report download, CSV export
+  run_all.py                stages 1→3 in sequence
+  check_aws.py              preflight: credentials, bucket access, DuckDB-on-S3
+  research_schema.json      keywords, column docs, LLM taxonomy
+  lib/                      config, storage (S3/local), records, keywords, parallel runner, reports
+llm/                        parked LLM classification + QA code, to become stages 4–5
+deploy/                     remote.py (launch/watch EC2 jobs), job_agent.py, aws.env, IAM policies, bootstrap
+tests/                      synthetic-corpus tests (local + mocked S3)
+```
