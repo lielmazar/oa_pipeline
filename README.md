@@ -115,11 +115,72 @@ The policy grants read access to the public OpenAlex bucket and read/write/delet
    - Root volume: 30 GB.
    - **Advanced details → IAM instance profile**: `oa-pipeline-ec2`.
    - Spot pricing is fine: every stage resumes after an interruption.
-3. Connect (SSH or Session Manager), then:
+
+### 5. Connect to the instance
+
+Either way works and lands you in the same place.
+
+**SSH from WSL/Linux.** SSH refuses keys that other users can read, and files under `/mnt/c/...` can't get the right permissions, so copy the key pair file into `~/.ssh` first:
 
 ```bash
-git clone https://github.com/lielmazar/oa_pipeline.git && cd oa_pipeline
+mkdir -p ~/.ssh && cp /mnt/c/Users/<you>/Downloads/<key>.pem ~/.ssh/ && chmod 400 ~/.ssh/<key>.pem
 ```
+
+```bash
+ssh -i ~/.ssh/<key>.pem ubuntu@<public-ip>
+```
+
+The user is always `ubuntu` on Ubuntu AMIs. The public IP is shown in **EC2 → Instances** and changes after a stop/start. If the connection times out, the security group needs an inbound rule for SSH (22) from your *current* IP.
+
+**Session Manager (browser, no key, no open port).** This requires `AmazonSSMManagedInstanceCore` on the role. Go to **EC2 → Instances → Connect → Session Manager → Connect**. If the button is greyed out, wait a few minutes or reboot the instance so the agent registers. Sessions start as `ssm-user` in `sh`, so switch to `ubuntu` so that the repo and venv live in one home directory:
+
+```bash
+sudo su - ubuntu
+```
+
+Then start tmux, or reattach to an existing session, so dropped connections don't kill long jobs. Session Manager tabs close after about 20 minutes idle.
+
+```bash
+tmux new -A -s oa
+```
+
+### 6. Give the instance read access to the GitHub repo
+
+The repository is private, and GitHub doesn't accept account passwords for git (`Invalid username or token`). Use a **deploy key**: an SSH key that lives only on this instance and has read-only access to this one repo. Delete it on GitHub to revoke access.
+
+On the instance, create the key and print its public half:
+
+```bash
+ssh-keygen -t ed25519 -C "oa-pipeline-ec2" -f ~/.ssh/github_deploy -N ""
+```
+
+```bash
+cat ~/.ssh/github_deploy.pub
+```
+
+On GitHub, open **[repo → Settings → Deploy keys](https://github.com/lielmazar/oa_pipeline/settings/keys) → Add deploy key**. Paste the line, title it `oa-pipeline-ec2`, leave **Allow write access** unchecked, and choose **Add key**.
+
+Back on the instance, make SSH use that key for GitHub, then test the connection. Answer `yes` to the first host-key prompt; the expected reply is `Hi lielmazar/oa_pipeline! You've successfully authenticated…`.
+
+```bash
+printf 'Host github.com\n  IdentityFile ~/.ssh/github_deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config && chmod 600 ~/.ssh/config
+```
+
+```bash
+ssh -T git@github.com
+```
+
+A read-only fine-grained personal access token (Contents: Read-only, this repo only), pasted as the password over HTTPS, also works. It's tied to your account and expires, though, so the deploy key is preferred.
+
+### 7. Clone and bootstrap
+
+Clone over SSH (`git@github.com:…`), not HTTPS:
+
+```bash
+git clone git@github.com:lielmazar/oa_pipeline.git && cd oa_pipeline
+```
+
+To use a branch that isn't merged yet, add `-b <branch>`.
 
 ```bash
 bash deploy/ec2_bootstrap.sh
@@ -127,9 +188,9 @@ bash deploy/ec2_bootstrap.sh
 
 The bootstrap script installs Python dependencies and tmux, mounts the NVMe disk at `/mnt/scratch`, and pre-installs DuckDB's S3 extensions.
 
-4. In `config.yaml` on the instance, set `tmp_dir: /mnt/scratch`. `storage_root` should already point to your bucket.
+Finally, in `config.yaml` on the instance, set `tmp_dir: /mnt/scratch`. `storage_root` should already point to your bucket.
 
-### 5. Preflight check
+### 8. Preflight check
 
 Run this on the instance, and on your laptop if you configured credentials:
 
